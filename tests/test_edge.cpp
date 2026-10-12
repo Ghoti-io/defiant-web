@@ -659,6 +659,7 @@ TEST_F(Edge, Cookie) {
   EXPECT_EQ(200, anon.status);
   EXPECT_NE(std::string::npos, anon.body.find("Hello Title"));
   EXPECT_EQ(200, logged.status);
+  EXPECT_EQ(std::string::npos, logged.body.find("Hello Title"));
   EXPECT_EQ(anon.status, bad.status);
   EXPECT_EQ(anon.body, bad.body);
   {
@@ -837,6 +838,11 @@ TEST_F(Edge, Logout) {
                    "username=ada&password=secret"),
       20000);
   cookie = HeaderValue(logged, "Set-Cookie");
+  refused = Ask(Req("POST", "/logout", "site.example",
+                    (std::string("Cookie: ") + cookie + "\r\n").c_str(), ""),
+      5000);
+  EXPECT_EQ(403, refused.status);
+  EXPECT_EQ(std::string::npos, HeaderValue(refused, "Set-Cookie").find("Max-Age=0"));
   refused = Ask(Req("POST", "/logout", "site.example",
                     (std::string("Origin: http://evil.example\r\nCookie: ") +
                         cookie + "\r\n")
