@@ -31,6 +31,7 @@
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-storage-memory/memory.h>
 #include <ghoti.io/cutil/fiber.h>
+#include <ghoti.io/security/sha256.h>
 
 #include <gtest/gtest.h>
 
@@ -42,6 +43,7 @@
 #include <unistd.h>
 
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -212,6 +214,102 @@ std::string HeaderValue(const Reply & reply, const char * name) {
     at = end + 2;
   }
   return std::string();
+}
+
+
+std::vector<std::string> HeaderAll(const Reply & reply, const char * name) {
+  std::string needle = std::string(name) + ":";
+  std::vector<std::string> out;
+  size_t at = 0;
+  while (at < reply.headers.size()) {
+    size_t end = reply.headers.find("\r\n", at);
+    std::string line = reply.headers.substr(at,
+        end == std::string::npos ? std::string::npos : end - at);
+    if (line.size() >= needle.size() &&
+        strncasecmp(line.c_str(), needle.c_str(), needle.size()) == 0) {
+      size_t v = needle.size();
+      while (v < line.size() && line[v] == ' ') {
+        v += 1;
+      }
+      out.push_back(line.substr(v));
+    }
+    if (end == std::string::npos) {
+      break;
+    }
+    at = end + 2;
+  }
+  return out;
+}
+
+/* The name=value pair of the Set-Cookie line that sets @p name, or "". */
+std::string CookiePair(const Reply & reply, const char * name) {
+  std::string prefix = std::string(name) + "=";
+  for (const std::string & line : HeaderAll(reply, "Set-Cookie")) {
+    if (line.compare(0, prefix.size(), prefix) == 0) {
+      return line.substr(0, line.find(';'));
+    }
+  }
+  return std::string();
+}
+
+std::string SetCookieLine(const Reply & reply, const char * name) {
+  std::string prefix = std::string(name) + "=";
+  for (const std::string & line : HeaderAll(reply, "Set-Cookie")) {
+    if (line.compare(0, prefix.size(), prefix) == 0) {
+      return line;
+    }
+  }
+  return std::string();
+}
+
+/* The value of the @p nth hidden input called @p name on a page. */
+std::string InputValue(const std::string & page, const char * name, size_t nth) {
+  std::string needle = std::string("name=\"") + name + "\" value=\"";
+  size_t at = 0;
+  size_t seen = 0;
+  while ((at = page.find(needle, at)) != std::string::npos) {
+    size_t from = at + needle.size();
+    if (seen == nth) {
+      return page.substr(from, page.find('"', from) - from);
+    }
+    seen += 1;
+    at = from;
+  }
+  return std::string();
+}
+
+/* The token in the form whose action is @p action and whose button says @p label. */
+std::string FormToken(const std::string & page, const char * label) {
+  size_t at = page.find(label);
+  size_t form;
+  if (at == std::string::npos) {
+    return std::string();
+  }
+  form = page.rfind("<form", at);
+  if (form == std::string::npos) {
+    return std::string();
+  }
+  return InputValue(page.substr(form, at - form), "token", 0);
+}
+
+/* The token of the undo form that carries @p label. */
+std::string UndoToken(const std::string & page, const char * label) {
+  size_t at = page.find(label);
+  if (at == std::string::npos) {
+    return std::string();
+  }
+  return InputValue(page.substr(at), "token", 0);
+}
+
+/* The history lines of the undo form that carries @p label. */
+std::string UndoLines(const std::string & page, const char * label) {
+  size_t at = page.find(label);
+  size_t end;
+  if (at == std::string::npos) {
+    return std::string();
+  }
+  end = page.find("</form>", at);
+  return page.substr(at, end == std::string::npos ? end : end - at);
 }
 
 void OneValue(GDEFCORE_Value * value, const char * field, const char * text,
@@ -434,6 +532,90 @@ class Edge : public ::testing::Test {
     gdefcore_text_free(catalog, token);
     gdefcore_request_destroy(request);
     gdefcore_catalog_destroy(catalog);
+  }
+
+
+  Reply Login(const char * user, const char * pass) {
+    std::string body = std::string("username=") + user + "&password=" + pass;
+    return Ask(Req("POST", "/login", "site.example",
+                   "Origin: http://site.example\r\n"
+                   "Content-Type: application/x-www-form-urlencoded\r\n",
+                   body.c_str()),
+        20000);
+  }
+
+  /* The Cookie header line for a login: both cookies when both were set. */
+  std::string CookieLine(const Reply & login) {
+    std::string line = "Cookie: " + CookiePair(login, "__Host-session");
+    std::string admin = CookiePair(login, "__Host-admin");
+    if (!admin.empty()) {
+      line += "; " + admin;
+    }
+    return line + "\r\n";
+  }
+
+  Reply Get(const char * path, const std::string & cookie) {
+    return Ask(Req("GET", path, "site.example", cookie.c_str(), NULL), 20000);
+  }
+
+  Reply PostForm(const char * path, const std::string & cookie, const std::string & body,
+      const char * origin = "http://site.example") {
+    return Ask(Req("POST", path, "site.example",
+                   (std::string("Origin: ") + origin + "\r\n" +
+                       "Content-Type: application/x-www-form-urlencoded\r\n" + cookie)
+                       .c_str(),
+                   body.c_str()),
+        20000);
+  }
+
+  /* A tenant with the kit, one published post, and an admin called ada. */
+  void Site(char * id) {
+    Listen(NULL);
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_inst_tenant_create(inst_, "site.example", 12, "", 0, id));
+    InstallKit(id);
+    Publish(id, "hello-title", "Hello Title");
+  }
+
+
+  /* A second account that holds no role. */
+  void AddUser(const char * id, const char * name, const char * pass) {
+    GDEFCORE_Catalog * catalog = NULL;
+    GDEFCORE_Keyring * keyring;
+    char principal[GDEFCORE_PUBLIC_ID_LEN + 1];
+    char account[GDEFCORE_PUBLIC_ID_LEN + 1];
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_inst_catalog_open(inst_, id, strlen(id), &catalog));
+    keyring = gdefcore_inst_tenant_keyring(inst_, id, strlen(id));
+    ASSERT_NE(keyring, nullptr);
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_access_principal_create(catalog, principal));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_account_bind(catalog, keyring, root_, sizeof root_, principal,
+            strlen(principal), name, strlen(name), pass, strlen(pass), account));
+    gdefcore_catalog_destroy(catalog);
+  }
+
+  std::string AdminPrincipal(const char * id) {
+    GDEFCORE_Catalog * catalog = NULL;
+    char admin[GDEFCORE_PUBLIC_ID_LEN + 1];
+    EXPECT_EQ(GDEFCORE_OK,
+        gdefcore_inst_catalog_open(inst_, id, strlen(id), &catalog));
+    EXPECT_EQ(GDEFCORE_OK, gdefcore_access_admin_principal(catalog, admin));
+    gdefcore_catalog_destroy(catalog);
+    return std::string(admin);
+  }
+
+  /* What a visitor with no cookie is shown. */
+  std::string Visit(const char * path) {
+    return Get(path, std::string()).body;
+  }
+
+  static bool Has(const std::string & hay, const char * needle) {
+    return hay.find(needle) != std::string::npos;
+  }
+
+  static std::string Form(const std::string & token, const char * rest) {
+    return "token=" + token + rest;
   }
 
   void ExpectSecurity(const Reply & reply) {
@@ -976,4 +1158,369 @@ TEST_F(Edge, Throttle) {
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
+}
+
+TEST_F(Edge, AdminFirstScreen) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  Site(id);
+  std::string cookie = CookieLine(Login("ada", "secret"));
+  Reply home = Get("/admin", cookie);
+  EXPECT_EQ(200, home.status);
+  EXPECT_TRUE(Has(home.body, "href=\"/admin/post\""));
+  EXPECT_TRUE(Has(home.body, "href=\"/admin/front\""));
+  EXPECT_TRUE(Has(home.body, "href=\"/admin/undo\""));
+  EXPECT_TRUE(Has(home.body, "href=\"/admin/more\""));
+  EXPECT_FALSE(Has(home.body, "<form"));
+  EXPECT_FALSE(Has(home.body, "<input"));
+  ExpectSecurity(home);
+  for (const char * path : {"/admin/post", "/admin/front", "/admin/undo", "/admin/more"}) {
+    Reply page = Get(path, cookie);
+    EXPECT_EQ(200, page.status) << path;
+    EXPECT_TRUE(Has(page.body, "href=\"/admin\"")) << path;
+    EXPECT_FALSE(Has(page.body, "<style")) << path;
+    EXPECT_FALSE(Has(page.body, " style=")) << path;
+    EXPECT_FALSE(Has(page.body, "<script>")) << path;
+    EXPECT_TRUE(Has(page.body, "href=\"/defiant.css\"")) << path;
+    ExpectSecurity(page);
+  }
+  Reply more = Get("/admin/more", cookie);
+  EXPECT_TRUE(Has(more.body, "Server"));
+  EXPECT_FALSE(Has(more.body, "enant"));
+  EXPECT_FALSE(Has(more.body, "<form"));
+  Reply post = Get("/admin/post", cookie);
+  EXPECT_TRUE(Has(post.body, "<form"));
+  EXPECT_FALSE(Has(post.body, "id=\"panes\""));
+  Reply front = Get("/admin/front", cookie);
+  EXPECT_TRUE(Has(front.body, "side view recent"));
+  EXPECT_FALSE(Has(front.body, "name=\"title\""));
+  Reply undo = Get("/admin/undo", cookie);
+  EXPECT_FALSE(Has(undo.body, "rase"));
+}
+
+TEST_F(Edge, AdminHidden) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  Site(id);
+  AddUser(id, "bob", "hunter2");
+  Reply admin = Login("ada", "secret");
+  Reply bob = Login("bob", "hunter2");
+  std::string lax_only = "Cookie: " + CookiePair(admin, "__Host-session") + "\r\n";
+  std::string bob_cookie = CookieLine(bob);
+  /* Bob's session token offered as the Strict cookie as well. */
+  std::string bob_forged = "Cookie: " + CookiePair(bob, "__Host-session") + "; __Host-admin=" +
+      CookiePair(bob, "__Host-session").substr(strlen("__Host-session=")) + "\r\n";
+  std::string bad_cookie = "Cookie: __Host-admin=not-a-token\r\n";
+  EXPECT_FALSE(CookiePair(admin, "__Host-admin").empty());
+  EXPECT_TRUE(CookiePair(bob, "__Host-admin").empty());
+  const char * paths[] = {"/admin", "/admin/post", "/admin/front", "/admin/undo",
+      "/admin/more", "/admin/nothing"};
+  std::string cookies[] = {std::string(), lax_only, bob_cookie, bob_forged, bad_cookie};
+  for (const std::string & cookie : cookies) {
+    Reply unknown = Get("/no-such-path", cookie);
+    for (const char * path : paths) {
+      Reply got = Get(path, cookie);
+      EXPECT_EQ(unknown.status, got.status) << path << " " << cookie;
+      EXPECT_EQ(unknown.body, got.body) << path << " " << cookie;
+      EXPECT_FALSE(Has(got.body, "dmin")) << path;
+    }
+    Reply unknown_post = PostForm("/no-such-path", cookie, "x=1");
+    Reply got = PostForm("/admin/post", cookie, "title=Sneak&body=Sneak&summary=x");
+    EXPECT_EQ(unknown_post.status, got.status) << cookie;
+    EXPECT_EQ(unknown_post.body, got.body) << cookie;
+  }
+  EXPECT_FALSE(Has(Visit("/"), "Sneak"));
+}
+
+TEST_F(Edge, AdminCookies) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  Site(id);
+  AddUser(id, "bob", "hunter2");
+  Reply admin = Login("ada", "secret");
+  Reply bob = Login("bob", "hunter2");
+  std::string session = SetCookieLine(admin, "__Host-session");
+  std::string strict = SetCookieLine(admin, "__Host-admin");
+  EXPECT_TRUE(Has(session, "SameSite=Lax"));
+  EXPECT_TRUE(Has(strict, "SameSite=Strict"));
+  EXPECT_TRUE(Has(strict, "Secure"));
+  EXPECT_TRUE(Has(strict, "HttpOnly"));
+  EXPECT_TRUE(Has(strict, "Path=/"));
+  EXPECT_FALSE(Has(strict, "Domain="));
+  EXPECT_EQ(CookiePair(admin, "__Host-session").substr(strlen("__Host-session=")),
+      CookiePair(admin, "__Host-admin").substr(strlen("__Host-admin=")));
+  EXPECT_FALSE(SetCookieLine(bob, "__Host-session").empty());
+  EXPECT_TRUE(SetCookieLine(bob, "__Host-admin").empty());
+  Reply out = Ask(Req("POST", "/logout", "site.example",
+                      (std::string("Origin: http://site.example\r\n") + CookieLine(admin))
+                          .c_str(),
+                      ""),
+      5000);
+  EXPECT_TRUE(Has(SetCookieLine(out, "__Host-session"), "Max-Age=0"));
+  EXPECT_TRUE(Has(SetCookieLine(out, "__Host-admin"), "Max-Age=0"));
+  EXPECT_TRUE(Has(SetCookieLine(out, "__Host-admin"), "SameSite=Strict"));
+}
+
+TEST_F(Edge, AdminAssets) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  Site(id);
+  Reply js = Get("/defiant.js", std::string());
+  Reply css = Get("/defiant.css", std::string());
+  EXPECT_EQ(200, js.status);
+  EXPECT_EQ(200, css.status);
+  EXPECT_TRUE(Has(HeaderValue(js, "Content-Type"), "javascript"));
+  EXPECT_TRUE(Has(HeaderValue(css, "Content-Type"), "text/css"));
+  EXPECT_TRUE(Has(css.body, "color-scheme: light dark"));
+  EXPECT_TRUE(Has(js.body, "panes"));
+  EXPECT_FALSE(js.body.empty());
+  /* The CSP names the hash of exactly these bytes, and nothing else. */
+  unsigned char dig[GSEC_SHA256_DIGEST_LEN];
+  ASSERT_EQ(GSEC_OK, gsec_sha256(js.body.data(), js.body.size(), dig));
+  static const char tab[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string b64;
+  size_t i = 0;
+  for (; i + 3 <= sizeof dig; i += 3) {
+    unsigned v = (dig[i] << 16) | (dig[i + 1] << 8) | dig[i + 2];
+    b64 += tab[(v >> 18) & 63];
+    b64 += tab[(v >> 12) & 63];
+    b64 += tab[(v >> 6) & 63];
+    b64 += tab[v & 63];
+  }
+  unsigned v = (dig[i] << 16) | (dig[i + 1] << 8);
+  b64 += tab[(v >> 18) & 63];
+  b64 += tab[(v >> 12) & 63];
+  b64 += tab[(v >> 6) & 63];
+  b64 += '=';
+  std::string csp = HeaderValue(js, "Content-Security-Policy");
+  EXPECT_TRUE(Has(csp, ("script-src 'sha256-" + b64 + "';").c_str())) << csp;
+  EXPECT_TRUE(Has(csp, "style-src 'self'"));
+  EXPECT_TRUE(Has(csp, "frame-ancestors 'none'"));
+  EXPECT_FALSE(Has(csp, "unsafe"));
+  EXPECT_EQ(csp, HeaderValue(Get("/", std::string()), "Content-Security-Policy"));
+  /* An unknown host is the fixed 404, the same as for any path. */
+  Reply fixed = Ask(Req("GET", "/no-such", "unknown.example", NULL, NULL), 5000);
+  Reply other_js = Ask(Req("GET", "/defiant.js", "unknown.example", NULL, NULL), 5000);
+  Reply other_css = Ask(Req("GET", "/defiant.css", "unknown.example", NULL, NULL), 5000);
+  EXPECT_EQ(404, other_js.status);
+  EXPECT_EQ(404, other_css.status);
+  EXPECT_EQ(fixed.body, other_js.body);
+  EXPECT_EQ(fixed.body, other_css.body);
+}
+
+TEST_F(Edge, AdminWritePost) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  Site(id);
+  std::string cookie = CookieLine(Login("ada", "secret"));
+  Reply form = Get("/admin/post", cookie);
+  std::string token = InputValue(form.body, "token", 0);
+  ASSERT_FALSE(token.empty());
+  std::string fields = "&title=Fresh+Words&summary=A+summary&body=The+body";
+  /* A foreign Origin, a damaged token, and another tenant's session write nothing. */
+  Reply foreign = PostForm("/admin/post", cookie, Form(token, fields.c_str()),
+      "http://evil.example");
+  EXPECT_EQ(403, foreign.status);
+  std::string damaged = token;
+  damaged[damaged.size() / 2] = damaged[damaged.size() / 2] == 'A' ? 'B' : 'A';
+  PostForm("/admin/post", cookie, Form(damaged, fields.c_str()));
+  EXPECT_FALSE(Has(Visit("/"), "Fresh Words"));
+  /* The real submit publishes it. */
+  Reply done = PostForm("/admin/post", cookie, Form(token, fields.c_str()));
+  EXPECT_EQ(200, done.status);
+  EXPECT_TRUE(Has(done.body, "Saved"));
+  std::string front = Visit("/");
+  EXPECT_TRUE(Has(front, "Fresh Words"));
+  EXPECT_TRUE(Has(front, "Hello Title"));
+  /* A replay of the same token writes nothing more. */
+  Reply again = PostForm("/admin/post", cookie, Form(token, "&title=Replayed&summary=s&body=b"));
+  EXPECT_FALSE(Has(again.body, "Saved"));
+  EXPECT_FALSE(Has(Visit("/"), "Replayed"));
+  /* A missing required field writes nothing. */
+  Reply fresh = Get("/admin/post", cookie);
+  std::string token2 = InputValue(fresh.body, "token", 0);
+  Reply missing = PostForm("/admin/post", cookie, Form(token2, "&summary=only"));
+  EXPECT_FALSE(Has(missing.body, "Saved"));
+  /* The Lax cookie alone cannot post. */
+  std::string lax_only = "Cookie: " + CookiePair(Login("ada", "secret"), "__Host-session") + "\r\n";
+  Reply lax = PostForm("/admin/post", lax_only, Form(token2, "&title=Lax+Post&summary=s&body=b"));
+  EXPECT_FALSE(Has(lax.body, "Saved"));
+  EXPECT_FALSE(Has(Visit("/"), "Lax Post"));
+}
+
+TEST_F(Edge, AdminFront) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  Site(id);
+  std::string cookie = CookieLine(Login("ada", "secret"));
+  Reply page = Get("/admin/front", cookie);
+  auto in_region = [&](const std::string & html, const char * region, const char * word) {
+    size_t at = html.find(std::string("class=\"") + region + "\"");
+    if (at == std::string::npos) {
+      return false;
+    }
+    size_t end = html.find("</div>", at);
+    std::string part = html.substr(at, end == std::string::npos ? end : end - at);
+    return Has(part, word);
+  };
+  EXPECT_TRUE(in_region(Visit("/"), "side", "Hello Title"));
+  /* Remove, with no script. */
+  std::string remove = FormToken(page.body, "Remove recent posts");
+  ASSERT_FALSE(remove.empty());
+  PostForm("/admin/front", cookie, Form(remove + "x", ""));
+  EXPECT_TRUE(in_region(Visit("/"), "side", "Hello Title"));
+  Reply foreign = PostForm("/admin/front", cookie, Form(remove, ""), "http://evil.example");
+  EXPECT_EQ(403, foreign.status);
+  EXPECT_TRUE(in_region(Visit("/"), "side", "Hello Title"));
+  Reply removed = PostForm("/admin/front", cookie, Form(remove, ""));
+  EXPECT_EQ(200, removed.status);
+  EXPECT_FALSE(Has(Visit("/"), "Hello Title"));
+  EXPECT_FALSE(Has(removed.body, "data-pane"));
+  /* The old token is stale now: replaying it changes nothing. */
+  PostForm("/admin/front", cookie, Form(remove, ""));
+  EXPECT_FALSE(Has(Visit("/"), "Hello Title"));
+  /* Place, with no script. */
+  std::string place = FormToken(removed.body, "Place recent posts");
+  ASSERT_FALSE(place.empty());
+  Reply placed = PostForm("/admin/front", cookie, Form(place, ""));
+  EXPECT_TRUE(Has(placed.body, "side view recent"));
+  EXPECT_TRUE(in_region(Visit("/"), "side", "Hello Title"));
+  /* Placing twice does not double it. */
+  std::string place2 = FormToken(placed.body, "Place recent posts");
+  Reply twice = PostForm("/admin/front", cookie, Form(place2, ""));
+  size_t first = twice.body.find("data-pane");
+  ASSERT_NE(std::string::npos, first);
+  EXPECT_EQ(std::string::npos, twice.body.find("data-pane", first + 1));
+  /* Drag: the script posts the whole pane list as the signed form. */
+  std::string order = InputValue(twice.body, "token", 2);
+  ASSERT_FALSE(order.empty());
+  PostForm("/admin/front", cookie,
+      Form(order, "&panes=main+view+recent%0Aside+view+other"));
+  EXPECT_TRUE(in_region(Visit("/"), "side", "Hello Title"));
+  PostForm("/admin/front", cookie,
+      Form(order, "&panes=main+entity+recent"));
+  EXPECT_TRUE(in_region(Visit("/"), "side", "Hello Title"));
+  PostForm("/admin/front", cookie, Form(order, "&panes="));
+  EXPECT_TRUE(in_region(Visit("/"), "side", "Hello Title"));
+  Reply dragged = PostForm("/admin/front", cookie,
+      Form(order, "&panes=main+view+recent"));
+  EXPECT_EQ(200, dragged.status);
+  EXPECT_TRUE(in_region(Visit("/"), "main", "Hello Title"));
+  EXPECT_FALSE(in_region(Visit("/"), "side", "Hello Title"));
+  /* The Lax cookie alone drags nothing. */
+  std::string lax_only = "Cookie: " + CookiePair(Login("ada", "secret"), "__Host-session") + "\r\n";
+  std::string order2 = InputValue(dragged.body, "token", 2);
+  PostForm("/admin/front", lax_only, Form(order2, "&panes=side+view+recent"));
+  EXPECT_TRUE(in_region(Visit("/"), "main", "Hello Title"));
+}
+
+TEST_F(Edge, AdminUndo) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  GDEFCORE_Catalog * catalog = NULL;
+  Site(id);
+  AddUser(id, "bob", "hunter2");
+  std::string admin = AdminPrincipal(id);
+  std::string cookie = CookieLine(Login("ada", "secret"));
+  char other[GDEFCORE_PUBLIC_ID_LEN + 1];
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_id_generate(other));
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_catalog_open(inst_, id, strlen(id), &catalog));
+
+  /* A post changed twice, the second time by someone else. */
+  char ** posts = NULL;
+  size_t npost = 0;
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_entity_ids(catalog, "site.post", 9, &posts, &npost));
+  ASSERT_EQ(1u, npost);
+  {
+    GDEFCORE_Changeset * cs = NULL;
+    GDEFCORE_Value value;
+    const char * slot;
+    size_t len;
+    OneValue(&value, "title", "Hello Again", &slot, &len);
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, other, strlen(other), &cs));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_entity_save(cs, posts[0], GDEFCORE_PUBLIC_ID_LEN, "en", 2, &value, 1));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, NULL, 0));
+    gdefcore_changeset_destroy(cs);
+  }
+  gdefcore_ids_free(catalog, posts, npost);
+  EXPECT_TRUE(Has(Visit("/"), "Hello Again"));
+  Reply page = Get("/admin/undo", cookie);
+  std::string post_lines = UndoLines(page.body, "Post Hello Again");
+  EXPECT_TRUE(Has(post_lines, admin.c_str())) << post_lines;
+  EXPECT_TRUE(Has(post_lines, other)) << post_lines;
+  Reply undone = PostForm("/admin/undo", cookie, Form(UndoToken(page.body, "Post Hello Again"), ""));
+  EXPECT_EQ(200, undone.status);
+  std::string front = Visit("/");
+  EXPECT_TRUE(Has(front, "Hello Title"));
+  EXPECT_FALSE(Has(front, "Hello Again"));
+  /* The restore is itself a revision, and this admin is its actor. */
+  std::string after = UndoLines(undone.body, "Post Hello Title");
+  size_t admins = 0;
+  for (size_t at = after.find(admin); at != std::string::npos; at = after.find(admin, at + 1)) {
+    admins += 1;
+  }
+  EXPECT_EQ(2u, admins) << after;
+
+  /* The front page layout: remove the pane, then undo the removal. */
+  Reply fp = Get("/admin/front", cookie);
+  PostForm("/admin/front", cookie, Form(FormToken(fp.body, "Remove recent posts"), ""));
+  EXPECT_FALSE(Has(Visit("/"), "Hello Title"));
+  page = Get("/admin/undo", cookie);
+  EXPECT_TRUE(Has(UndoLines(page.body, "Front page"), admin.c_str()));
+  undone = PostForm("/admin/undo", cookie, Form(UndoToken(page.body, "Front page"), ""));
+  EXPECT_EQ(200, undone.status);
+  EXPECT_TRUE(Has(Visit("/"), "Hello Title"));
+  EXPECT_TRUE(Has(Get("/admin/front", cookie).body, "side view recent"));
+
+  /* A role change. */
+  {
+    GDEFCORE_Permission permission;
+    char ** grants = NULL;
+    size_t count = 0;
+    bool seen = false;
+    memset(&permission, 0, sizeof permission);
+    permission.size = sizeof permission;
+    permission.label = "Read extras";
+    permission.label_len = 11;
+    permission.module_name = "site";
+    permission.module_name_len = 4;
+    permission.action = "read";
+    permission.action_len = 4;
+    permission.condition = GDEFCORE_ACCESS_ANY;
+    permission.type_name = "site.post";
+    permission.type_name_len = 9;
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_access_declare(catalog, &permission));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_access_grant(catalog, "authenticated", 13, "Read extras", 11,
+            GDEFCORE_ACCESS_CONFIRM_AUTHENTICATED,
+            strlen(GDEFCORE_ACCESS_CONFIRM_AUTHENTICATED)));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_access_role_grants(catalog, "authenticated", 13, &grants, &count));
+    for (size_t i = 0; i < count; i++) {
+      seen = seen || strcmp(grants[i], "Read extras") == 0;
+    }
+    gdefcore_access_free(catalog, grants, count);
+    EXPECT_TRUE(seen);
+    page = Get("/admin/undo", cookie);
+    ASSERT_TRUE(Has(page.body, "Role authenticated"));
+    undone = PostForm("/admin/undo", cookie,
+        Form(UndoToken(page.body, "Role authenticated"), ""));
+    EXPECT_EQ(200, undone.status);
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_access_role_grants(catalog, "authenticated", 13, &grants, &count));
+    seen = false;
+    for (size_t i = 0; i < count; i++) {
+      seen = seen || strcmp(grants[i], "Read extras") == 0;
+    }
+    gdefcore_access_free(catalog, grants, count);
+    EXPECT_FALSE(seen);
+  }
+  gdefcore_catalog_destroy(catalog);
+
+  /* A bad token, a foreign Origin and the Lax cookie alone undo nothing. */
+  page = Get("/admin/undo", cookie);
+  std::string token = UndoToken(page.body, "Post Hello Title");
+  ASSERT_FALSE(token.empty());
+  PostForm("/admin/undo", cookie, Form(token + "x", ""));
+  EXPECT_EQ(403, PostForm("/admin/undo", cookie, Form(token, ""), "http://evil.example").status);
+  std::string lax_only = "Cookie: " + CookiePair(Login("ada", "secret"), "__Host-session") + "\r\n";
+  PostForm("/admin/undo", lax_only, Form(token, ""));
+  EXPECT_TRUE(Has(Visit("/"), "Hello Title"));
+  /* Erasure is not offered. */
+  EXPECT_FALSE(Has(page.body, "rase"));
 }

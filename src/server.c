@@ -31,6 +31,7 @@
 #include <ghoti.io/defiant-core/account.h>
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/request.h>
+#include "admin.h"
 #include <ghoti.io/cutil/fiber.h>
 #include <ghoti.io/http/parser.h>
 #include <ghoti.io/http/writer.h>
@@ -45,9 +46,6 @@
 #define kStack (1024u * 1024u)
 #define kSessionLife ((uint64_t)24 * 60 * 60)
 
-static const char kCsp[] =
-    "default-src 'none'; script-src 'none'; style-src 'none'; "
-    "frame-ancestors 'none'";
 static const char kFixed[] = "Not found\n";
 static const char kActive[] = "active";
 
@@ -858,10 +856,14 @@ static int write_all(GDEFWEB_Server * server, GCU_Socket * sock, const void * da
   return server->op.result.status == GCU_LOOP_OK ? 0 : -1;
 }
 
+struct Cookies {
+  const char * values[2];
+};
+
 static int reply(GDEFWEB_Server * server, GCU_Socket * sock, int status,
-    const char * reason, const void * body, size_t body_len, const char * cookie,
-    const char * type, const char * method, const char * path,
-    const char * client) {
+    const char * reason, const void * body, size_t body_len,
+    const struct Cookies * cookies, const char * type, const char * method,
+    const char * path, const char * client) {
   GHTTP_Response * response = NULL;
   GHTTP_Buffer * buffer = NULL;
   GHTTP_Headers * headers;
@@ -878,13 +880,19 @@ static int reply(GDEFWEB_Server * server, GCU_Socket * sock, int status,
   if (ghttp_headers_add(headers, "Content-Length", length) != GHTTP_OK ||
       ghttp_headers_add(headers, "Content-Type",
           type == NULL ? "text/plain; charset=utf-8" : type) != GHTTP_OK ||
-      ghttp_headers_add(headers, "Content-Security-Policy", kCsp) != GHTTP_OK ||
+      ghttp_headers_add(headers, "Content-Security-Policy", gdefweb_admin_csp()) !=
+          GHTTP_OK ||
       ghttp_headers_add(headers, "Connection", "close") != GHTTP_OK) {
     goto done;
   }
-  if (cookie != NULL &&
-      ghttp_headers_add(headers, "Set-Cookie", cookie) != GHTTP_OK) {
-    goto done;
+  if (cookies != NULL) {
+    int i;
+    for (i = 0; i < 2; i++) {
+      if (cookies->values[i] != NULL &&
+          ghttp_headers_add(headers, "Set-Cookie", cookies->values[i]) != GHTTP_OK) {
+        goto done;
+      }
+    }
   }
   if (ghttp_buffer_create(NULL, &buffer) != GHTTP_OK ||
       ghttp_write_response_head(buffer, response) != GHTTP_OK ||
@@ -1227,7 +1235,9 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
     size_t token_n = 0;
     char encoded[1024];
     size_t encoded_n = 0;
-    char set_cookie[1200];
+    char session_cookie[1200];
+    char admin_cookie[1200];
+    struct Cookies cookies;
     int form_ok;
     snprintf(user_key, sizeof user_key, "u:");
     snprintf(addr_key, sizeof addr_key, "a:%s", client);
@@ -1240,7 +1250,8 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
           in.path, client);
       wipe(password, sizeof password);
       wipe(encoded, sizeof encoded);
-      wipe(set_cookie, sizeof set_cookie);
+      wipe(session_cookie, sizeof session_cookie);
+      wipe(admin_cookie, sizeof admin_cookie);
       goto out;
     }
     form_ok = 1;
@@ -1256,7 +1267,8 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
       wipe(password, sizeof password);
       wipe(username, sizeof username);
       wipe(encoded, sizeof encoded);
-      wipe(set_cookie, sizeof set_cookie);
+      wipe(session_cookie, sizeof session_cookie);
+      wipe(admin_cookie, sizeof admin_cookie);
       goto out;
     }
     rc = gdefcore_account_login(catalog, keyring, server->root, sizeof server->root,
@@ -1272,24 +1284,66 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
       reply(server, sock, 401, "Unauthorized", "", 0, NULL, NULL, in.method,
           in.path, client);
       wipe(encoded, sizeof encoded);
-      wipe(set_cookie, sizeof set_cookie);
+      wipe(session_cookie, sizeof session_cookie);
+      wipe(admin_cookie, sizeof admin_cookie);
       goto out;
     }
     note_success(server, user_key);
-    snprintf(set_cookie, sizeof set_cookie,
+    (void)gdefcore_account_check(catalog, request, keyring, server->root,
+        sizeof server->root, token, token_n);
+    snprintf(session_cookie, sizeof session_cookie,
         "__Host-session=%s; Secure; HttpOnly; SameSite=Lax; Path=/", encoded);
+    cookies.values[0] = session_cookie;
+    cookies.values[1] = NULL;
+    if (gdefweb_admin_is_admin(catalog, request)) {
+      snprintf(admin_cookie, sizeof admin_cookie,
+          "__Host-admin=%s; Secure; HttpOnly; SameSite=Strict; Path=/", encoded);
+      cookies.values[1] = admin_cookie;
+    }
     gdefcore_text_free(catalog, token);
-    reply(server, sock, 200, "OK", "", 0, set_cookie, NULL, in.method, in.path,
+    reply(server, sock, 200, "OK", "", 0, &cookies, NULL, in.method, in.path,
         client);
     wipe(encoded, sizeof encoded);
-    wipe(set_cookie, sizeof set_cookie);
+    wipe(session_cookie, sizeof session_cookie);
+    wipe(admin_cookie, sizeof admin_cookie);
     goto out;
   }
   if (span_eq(in.method, strlen(in.method), "POST") &&
       span_eq(in.path, strlen(in.path), "/logout")) {
-    reply(server, sock, 200, "OK", "", 0,
-        "__Host-session=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
-        NULL, in.method, in.path, client);
+    struct Cookies cookies;
+    cookies.values[0] =
+        "__Host-session=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
+    cookies.values[1] =
+        "__Host-admin=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
+    reply(server, sock, 200, "OK", "", 0, &cookies, NULL, in.method, in.path,
+        client);
+    goto out;
+  }
+  if (span_eq(in.method, strlen(in.method), "GET")) {
+    const char * asset = NULL;
+    size_t asset_n = 0;
+    const char * asset_type = NULL;
+    if (gdefweb_admin_static(in.path, &asset, &asset_n, &asset_type)) {
+      reply(server, sock, 200, "OK", asset, asset_n, NULL, asset_type, in.method,
+          in.path, client);
+      goto out;
+    }
+  }
+  if (gdefweb_admin_path(in.path) &&
+      gdefweb_admin_allowed(catalog, request, keyring, server->root,
+          sizeof server->root, in.cookie)) {
+    struct GDEFWEB_Admin_Reply page;
+    memset(&page, 0, sizeof page);
+    if (gdefweb_admin_serve(server->alloc, catalog, request, keyring,
+            server->root, sizeof server->root, in.method, in.path, in.cookie,
+            in.body, in.body_len, in.ctype, &page) != 0) {
+      reply(server, sock, 500, "Internal Server Error", "", 0, NULL, NULL,
+          in.method, in.path, client);
+    } else {
+      reply(server, sock, page.status, page.reason, page.body, page.len, NULL,
+          page.type, in.method, in.path, client);
+    }
+    gcu_allocator_free(server->alloc, page.body);
     goto out;
   }
   if (span_eq(in.method, strlen(in.method), "GET")) {
