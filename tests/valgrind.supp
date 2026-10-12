@@ -1,0 +1,3 @@
+# Valgrind suppressions for defiant-web.
+#
+# Add an entry only for an allocation that is demonstrably not ours.
