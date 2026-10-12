@@ -696,9 +696,37 @@ TEST_F(Edge, Cookie) {
     principal = gdefcore_request_principal(request, &principal_n);
     EXPECT_NE(principal, nullptr);
     EXPECT_EQ(GDEFCORE_PUBLIC_ID_LEN, principal_n);
+    {
+      char ** roles = NULL;
+      size_t role_count = 0;
+      size_t ri;
+      ASSERT_EQ(GDEFCORE_OK,
+          gdefcore_access_principal_roles(catalog, principal, principal_n, &roles,
+              &role_count));
+      ASSERT_GT(role_count, 0u);
+      for (ri = 0; ri < role_count; ri++) {
+        const char * confirm = "core.role";
+        if (strcmp(roles[ri], "authenticated") == 0) {
+          confirm = GDEFCORE_ACCESS_CONFIRM_AUTHENTICATED;
+        } else if (strcmp(roles[ri], "anonymous") == 0) {
+          confirm = GDEFCORE_ACCESS_CONFIRM_ANONYMOUS;
+        }
+        ASSERT_EQ(GDEFCORE_OK,
+            gdefcore_access_grant(catalog, roles[ri], strlen(roles[ri]),
+                "Read posts", 10, confirm, strlen(confirm)));
+      }
+      gdefcore_access_free(catalog, roles, role_count);
+    }
     gdefcore_request_destroy(request);
     gdefcore_catalog_destroy(catalog);
   }
+  logged = Ask(Req("GET", "/hello-title", "site.example",
+                   (std::string("Cookie: ") + cookie + "\r\n").c_str(), NULL),
+      20000);
+  EXPECT_EQ(200, logged.status);
+  EXPECT_GT(logged.body.size(), 0u);
+  EXPECT_NE(std::string::npos, logged.body.find("class=\"post\""));
+  EXPECT_NE(std::string::npos, logged.body.find("Hello Title"));
 }
 
 TEST_F(Edge, Inactive) {
@@ -796,12 +824,20 @@ TEST_F(Edge, Login) {
   char id[GDEFCORE_PUBLIC_ID_LEN + 1];
   Reply ok;
   Reply bad;
+  Reply foreign;
   std::string cookie;
   Listen(NULL);
   ASSERT_EQ(GDEFCORE_OK,
       gdefcore_inst_tenant_create(inst_, "site.example", 12, "", 0, id));
   InstallKit(id);
   Publish(id, "hello-title", "Hello Title");
+  foreign = Ask(Req("POST", "/login", "site.example",
+                    "Origin: http://evil.example\r\n"
+                    "Content-Type: application/x-www-form-urlencoded\r\n",
+                    "username=ada&password=secret"),
+      5000);
+  EXPECT_EQ(403, foreign.status);
+  EXPECT_EQ(std::string::npos, HeaderValue(foreign, "Set-Cookie").find("__Host-session="));
   bad = Ask(Req("POST", "/login", "site.example",
                 "Origin: http://site.example\r\n"
                 "Content-Type: application/x-www-form-urlencoded\r\n",
@@ -868,27 +904,73 @@ TEST_F(Edge, Logout) {
 TEST_F(Edge, Throttle) {
   char id[GDEFCORE_PUBLIC_ID_LEN + 1];
   Reply ninth;
+  Reply later;
+  Reply locked;
+  Reply cleared;
+  Reply shared;
+  Reply other_addr;
   int i;
-  Listen(NULL);
+  auto post = [&](const char * user, const char * pass, const char * xff) {
+    std::string extra =
+        "Origin: http://site.example\r\n"
+        "Content-Type: application/x-www-form-urlencoded\r\n";
+    std::string body = std::string("username=") + user + "&password=" + pass;
+    if (xff != NULL) {
+      extra += std::string("X-Forwarded-For: ") + xff + "\r\n";
+    }
+    return Ask(Req("POST", "/login", "site.example", extra.c_str(), body.c_str()),
+        30000);
+  };
+  Listen("127.0.0.1");
   ASSERT_EQ(GDEFCORE_OK,
       gdefcore_inst_tenant_create(inst_, "site.example", 12, "", 0, id));
   InstallKit(id);
   Publish(id, "hello-title", "Hello Title");
+  {
+    GDEFCORE_Catalog * catalog = NULL;
+    GDEFCORE_Keyring * keyring = NULL;
+    char principal[GDEFCORE_PUBLIC_ID_LEN + 1];
+    char account[GDEFCORE_PUBLIC_ID_LEN + 1];
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_inst_catalog_open(inst_, id, strlen(id), &catalog));
+    keyring = gdefcore_inst_tenant_keyring(inst_, id, strlen(id));
+    ASSERT_NE(keyring, nullptr);
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_account_create(catalog, keyring, root_, sizeof root_, "bea", 3,
+            "secret", 6, principal, account));
+    gdefcore_catalog_destroy(catalog);
+  }
   for (i = 0; i < 8; i++) {
-    Reply fail = Ask(Req("POST", "/login", "site.example",
-                         "Origin: http://site.example\r\n"
-                         "Content-Type: application/x-www-form-urlencoded\r\n",
-                         "username=ada&password=wrong"),
-        30000);
+    Reply fail = post("ada", "wrong", NULL);
+    EXPECT_EQ(401, fail.status);
     EXPECT_EQ(std::string::npos, HeaderValue(fail, "Set-Cookie").find("__Host-session="));
   }
-  ninth = Ask(Req("POST", "/login", "site.example",
-                  "Origin: http://site.example\r\n"
-                  "Content-Type: application/x-www-form-urlencoded\r\n",
-                  "username=ada&password=secret"),
-      5000);
+  ninth = post("ada", "secret", NULL);
   EXPECT_EQ(429, ninth.status);
   EXPECT_EQ(std::string::npos, HeaderValue(ninth, "Set-Cookie").find("__Host-session="));
+  usleep(1100 * 1000);
+  later = post("ada", "wrong", NULL);
+  EXPECT_EQ(401, later.status);
+  locked = post("ada", "wrong", NULL);
+  EXPECT_EQ(429, locked.status);
+  for (i = 0; i < 7; i++) {
+    Reply fail = post("bea", "wrong", "203.0.113.10");
+    EXPECT_EQ(401, fail.status);
+  }
+  cleared = post("bea", "secret", "203.0.113.10");
+  EXPECT_NE(std::string::npos, HeaderValue(cleared, "Set-Cookie").find("__Host-session="));
+  for (i = 0; i < 8; i++) {
+    Reply fail = post("bea", "wrong", "203.0.113.20");
+    EXPECT_EQ(401, fail.status) << i;
+  }
+  for (i = 0; i < 8; i++) {
+    Reply fail = post("cara", "wrong", "198.51.100.7");
+    EXPECT_EQ(401, fail.status);
+  }
+  shared = post("dora", "wrong", "198.51.100.7");
+  EXPECT_EQ(429, shared.status);
+  other_addr = post("dora", "wrong", "198.51.100.8");
+  EXPECT_EQ(401, other_addr.status);
 }
 
 int main(int argc, char ** argv) {

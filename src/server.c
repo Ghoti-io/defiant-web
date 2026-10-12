@@ -173,6 +173,12 @@ void gdefweb_server_destroy(GDEFWEB_Server * server) {
   if (server == NULL) {
     return;
   }
+  /* Cancel a parked accept first. The fiber runs to completion on that
+   * cancellation, and only then is it safe to free. */
+  if (server->loop != NULL) {
+    gcu_loop_destroy(server->loop);
+    server->loop = NULL;
+  }
   if (server->fiber != NULL) {
     gcu_fiber_destroy(server->fiber);
     server->fiber = NULL;
@@ -180,10 +186,6 @@ void gdefweb_server_destroy(GDEFWEB_Server * server) {
   if (server->listener != NULL) {
     gcu_socket_close(server->listener);
     server->listener = NULL;
-  }
-  if (server->loop != NULL) {
-    gcu_loop_destroy(server->loop);
-    server->loop = NULL;
   }
   wipe(server->root, sizeof server->root);
   wipe(server->attempts, sizeof server->attempts);
@@ -275,7 +277,9 @@ GDEFWEB_Result gdefweb_server_listen(GDEFWEB_Server * server) {
     return GDEFWEB_ERR_INVALID;
   }
   if (server->listener != NULL) {
-    gcu_socket_close(server->listener);
+    if (gcu_socket_close(server->listener) != GCU_SOCKET_OK) {
+      return GDEFWEB_ERR_BUSY;
+    }
     server->listener = NULL;
   }
   memset(&server->local, 0, sizeof server->local);
@@ -408,7 +412,8 @@ static int listed(const char * list, size_t list_len, const char * peer) {
   while (i < list_len) {
     size_t start;
     size_t end;
-    while (i < list_len && (list[i] == ' ' || list[i] == ',')) {
+    while (i < list_len &&
+        (list[i] == ' ' || list[i] == '\t' || list[i] == ',')) {
       i += 1;
     }
     start = i;
@@ -736,10 +741,9 @@ static int form_pair(const char * body, size_t n, const char * name, char * out,
   return -1;
 }
 
-static struct Attempt * attempt_slot(GDEFWEB_Server * server, const char * key) {
+static struct Attempt * find_attempt(GDEFWEB_Server * server, const char * key) {
   size_t n = strlen(key);
   size_t i;
-  struct Attempt * free_slot = NULL;
   if (n == 0 || n >= kAttemptKey) {
     return NULL;
   }
@@ -748,9 +752,34 @@ static struct Attempt * attempt_slot(GDEFWEB_Server * server, const char * key) 
         memcmp(server->attempts[i].key, key, n) == 0) {
       return &server->attempts[i];
     }
-    if (!server->attempts[i].used && free_slot == NULL) {
-      free_slot = &server->attempts[i];
+  }
+  return NULL;
+}
+
+static struct Attempt * attempt_slot(GDEFWEB_Server * server, const char * key) {
+  size_t n = strlen(key);
+  size_t i;
+  struct Attempt * free_slot = NULL;
+  struct Attempt * expired = NULL;
+  uint64_t now;
+  if (n == 0 || n >= kAttemptKey) {
+    return NULL;
+  }
+  now = now_ms();
+  for (i = 0; i < kAttempts; i++) {
+    struct Attempt * slot = &server->attempts[i];
+    if (slot->used && slot->key_len == n && memcmp(slot->key, key, n) == 0) {
+      return slot;
     }
+    if (!slot->used && free_slot == NULL) {
+      free_slot = slot;
+    } else if (slot->used && slot->until_ms != 0 && now >= slot->until_ms &&
+               expired == NULL) {
+      expired = slot;
+    }
+  }
+  if (free_slot == NULL) {
+    free_slot = expired;
   }
   if (free_slot == NULL) {
     return NULL;
@@ -763,13 +792,11 @@ static struct Attempt * attempt_slot(GDEFWEB_Server * server, const char * key) 
 }
 
 static int throttled(GDEFWEB_Server * server, const char * key) {
-  struct Attempt * slot = attempt_slot(server, key);
-  uint64_t now;
+  struct Attempt * slot = find_attempt(server, key);
   if (slot == NULL) {
-    return 1;
+    return 0;
   }
-  now = now_ms();
-  return slot->until_ms != 0 && now < slot->until_ms;
+  return slot->until_ms != 0 && now_ms() < slot->until_ms;
 }
 
 static void note_failure(GDEFWEB_Server * server, const char * key) {
@@ -895,6 +922,9 @@ static void in_free(const GDEFWEB_Allocator * alloc, struct InReq * in) {
   mem_free(alloc, in->host);
   mem_free(alloc, in->xhost);
   mem_free(alloc, in->xfor);
+  if (in->cookie != NULL) {
+    wipe(in->cookie, strlen(in->cookie));
+  }
   mem_free(alloc, in->cookie);
   mem_free(alloc, in->origin);
   mem_free(alloc, in->ctype);
@@ -1004,6 +1034,9 @@ static int read_request(GDEFWEB_Server * server, GCU_Socket * sock, struct InReq
   (void)target;
   rc = 0;
 done:
+  if (body != NULL && body_len > 0) {
+    wipe(body, body_len);
+  }
   mem_free(server->alloc, body);
   ghttp_parser_destroy(parser);
   if (rc != 0) {
@@ -1163,12 +1196,22 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
           sizeof server->root, (const char *)raw, raw_n);
       wipe(raw, sizeof raw);
     }
+    wipe(encoded, sizeof encoded);
   }
   state_change = span_eq(in.method, strlen(in.method), "POST") ||
       span_eq(in.method, strlen(in.method), "PUT") ||
       span_eq(in.method, strlen(in.method), "PATCH") ||
       span_eq(in.method, strlen(in.method), "DELETE");
-  origin_good = origin_ok(in.origin, key);
+  {
+    char host_z[512];
+    if (key_len >= sizeof host_z) {
+      origin_good = 0;
+    } else {
+      memcpy(host_z, key, key_len);
+      host_z[key_len] = '\0';
+      origin_good = origin_ok(in.origin, host_z);
+    }
+  }
   if (state_change && !origin_good) {
     reply(server, sock, 403, "Forbidden", "", 0, NULL, NULL, in.method, in.path,
         client);
@@ -1196,6 +1239,8 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
       reply(server, sock, 400, "Bad Request", "", 0, NULL, NULL, in.method,
           in.path, client);
       wipe(password, sizeof password);
+      wipe(encoded, sizeof encoded);
+      wipe(set_cookie, sizeof set_cookie);
       goto out;
     }
     form_ok = 1;
@@ -1210,6 +1255,8 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
           in.path, client);
       wipe(password, sizeof password);
       wipe(username, sizeof username);
+      wipe(encoded, sizeof encoded);
+      wipe(set_cookie, sizeof set_cookie);
       goto out;
     }
     rc = gdefcore_account_login(catalog, keyring, server->root, sizeof server->root,
@@ -1224,6 +1271,8 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
       note_failure(server, addr_key);
       reply(server, sock, 401, "Unauthorized", "", 0, NULL, NULL, in.method,
           in.path, client);
+      wipe(encoded, sizeof encoded);
+      wipe(set_cookie, sizeof set_cookie);
       goto out;
     }
     note_success(server, user_key);
@@ -1232,6 +1281,8 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
     gdefcore_text_free(catalog, token);
     reply(server, sock, 200, "OK", "", 0, set_cookie, NULL, in.method, in.path,
         client);
+    wipe(encoded, sizeof encoded);
+    wipe(set_cookie, sizeof set_cookie);
     goto out;
   }
   if (span_eq(in.method, strlen(in.method), "POST") &&
@@ -1249,7 +1300,10 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
     render_path(in.path, &page_path, &page_n);
     rc = gdefcore_render_page(catalog, NULL, request, page_path, page_n,
         GDEFCORE_RENDER_PAGE_FUEL, &bytes, &bytes_n);
-    if (rc != GDEFCORE_OK) {
+    if (rc == GDEFCORE_ERR_OOM) {
+      reply(server, sock, 500, "Internal Server Error", "", 0, NULL,
+          "text/html; charset=utf-8", in.method, in.path, client);
+    } else if (rc != GDEFCORE_OK) {
       reply(server, sock, 200, "OK", "", 0, NULL, "text/html; charset=utf-8",
           in.method, in.path, client);
     } else {
@@ -1296,7 +1350,7 @@ GDEFWEB_Result gdefweb_server_accept_one(GDEFWEB_Server * server) {
   }
   if (server->fiber != NULL) {
     if (!gcu_fiber_is_finished(server->fiber)) {
-      return GDEFWEB_ERR_INVALID;
+      return GDEFWEB_ERR_BUSY;
     }
     gcu_fiber_destroy(server->fiber);
     server->fiber = NULL;
@@ -1307,6 +1361,8 @@ GDEFWEB_Result gdefweb_server_accept_one(GDEFWEB_Server * server) {
     return GDEFWEB_ERR_OOM;
   }
   if (gcu_fiber_switch_to(server->fiber) != GCU_FIBER_OK) {
+    gcu_fiber_destroy(server->fiber);
+    server->fiber = NULL;
     return GDEFWEB_ERR_IO;
   }
   return GDEFWEB_OK;
