@@ -505,7 +505,7 @@ static int page_begin(struct Page * page, const char * title) {
           0 ||
       page_esc(page, title, strlen(title)) != 0 ||
       page_str(page, "</title><link rel=\"stylesheet\" href=\"/defiant.css\">"
-                     "<script src=\"/defiant.js\" integrity=\"") != 0 ||
+                     "<script defer src=\"/defiant.js\" integrity=\"") != 0 ||
       page_str(page, kHash) != 0 ||
       page_str(page, "\"></script></head><body><p><a href=\"/admin\">Home</a></p>") !=
           0) {
@@ -767,7 +767,7 @@ static int home_page(const GDEFWEB_Allocator * alloc, struct GDEFWEB_Admin_Reply
   page.alloc = alloc;
   if (page_str(&page, "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
                       "<title>Home</title><link rel=\"stylesheet\" href=\"/defiant.css\">"
-                      "<script src=\"/defiant.js\" integrity=\"") != 0) {
+                      "<script defer src=\"/defiant.js\" integrity=\"") != 0) {
     page_free(&page);
     return -1;
   }

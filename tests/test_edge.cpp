@@ -1181,6 +1181,8 @@ TEST_F(Edge, AdminFirstScreen) {
     EXPECT_FALSE(Has(page.body, " style=")) << path;
     EXPECT_FALSE(Has(page.body, "<script>")) << path;
     EXPECT_TRUE(Has(page.body, "href=\"/defiant.css\"")) << path;
+    /* Run in <head>, the script would look for #panes before it exists. */
+    EXPECT_TRUE(Has(page.body, "<script defer src=\"/defiant.js\"")) << path;
     ExpectSecurity(page);
   }
   Reply more = Get("/admin/more", cookie);
