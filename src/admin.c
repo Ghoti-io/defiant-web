@@ -78,6 +78,15 @@ static const char kCss[] =
     "  color-scheme: light dark;\n"
     "  background-color: Canvas;\n"
     "  color: CanvasText;\n"
+    "}\n"
+    "[data-region] {\n"
+    "  min-height: 3rem;\n"
+    "  margin: 0.5rem 0;\n"
+    "  padding: 0.25rem 0.5rem;\n"
+    "  border: 1px dashed GrayText;\n"
+    "}\n"
+    "[data-pane] {\n"
+    "  cursor: grab;\n"
     "}\n";
 
 static char kHash[80];
@@ -761,6 +770,16 @@ static int base_matches(GDEFCORE_Catalog * catalog, const char * id, uint64_t ba
   return current == base;
 }
 
+static int redirect(struct GDEFWEB_Admin_Reply * out, const char * location) {
+  out->status = 303;
+  out->reason = "See Other";
+  out->type = "text/plain; charset=utf-8";
+  out->location = location;
+  out->body = NULL;
+  out->len = 0;
+  return 0;
+}
+
 static int home_page(const GDEFWEB_Allocator * alloc, struct GDEFWEB_Admin_Reply * out) {
   struct Page page;
   memset(&page, 0, sizeof page);
@@ -804,7 +823,7 @@ static int more_page(const GDEFWEB_Allocator * alloc, struct GDEFWEB_Admin_Reply
 
 static int post_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
-    size_t root_len, const char * session, size_t session_len,
+    size_t root_len, const char * session, size_t session_len, int saved,
     struct GDEFWEB_Admin_Reply * out) {
   struct Page page;
   GDEFCORE_Form * form = NULL;
@@ -860,6 +879,7 @@ static int post_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog
   if (sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
           "post", id, values, nvalues, &token) != 0 ||
       page_begin(&page, "Write a post") != 0 ||
+      (saved && page_str(&page, "<p>Saved.</p>") != 0) ||
       page_str(&page, "<form method=\"post\" action=\"/admin/post\">"
                       "<input type=\"hidden\" name=\"token\" value=\"") != 0 ||
       page_esc(&page, token, strlen(token)) != 0 ||
@@ -1306,11 +1326,7 @@ static int post_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   }
   wipe(token, sizeof token);
   wipe(raw, sizeof raw);
-  if (page_begin(&page, "Write a post") != 0 || page_str(&page, "<p>Saved.</p>") != 0) {
-    page_free(&page);
-    return -1;
-  }
-  return take_page(&page, out);
+  return redirect(out, "/admin/post/saved");
 refuse:
   for (i = 0; i < nvalues; i++) {
     if (texts[i] != NULL) {
@@ -1377,6 +1393,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * session, size_t session_len, const char * body,
     size_t body_len, struct GDEFWEB_Admin_Reply * out) {
+  (void)alloc;
   char token[4096];
   size_t token_n = 0;
   char target[GDEFCORE_PUBLIC_ID_LEN + 1];
@@ -1400,8 +1417,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0) {
     wipe(token, sizeof token);
     wipe(raw, sizeof raw);
-    return front_page(alloc, catalog, request, keyring, root, root_len, session,
-        session_len, out);
+    return redirect(out, "/admin/front");
   }
   wipe(token, sizeof token);
   wipe(raw, sizeof raw);
@@ -1409,8 +1425,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       memcmp(target, front, GDEFCORE_PUBLIC_ID_LEN) != 0 ||
       !base_matches(catalog, front, base) ||
       load_panes(catalog, front, held, 32, &npanes) != 0) {
-    return front_page(alloc, catalog, request, keyring, root, root_len, session,
-        session_len, out);
+    return redirect(out, "/admin/front");
   }
   if (form_len == 5 && memcmp(form_id, "place", 5) == 0) {
     kind = 1;
@@ -1419,8 +1434,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
   } else if (form_len == 5 && memcmp(form_id, "order", 5) == 0) {
     kind = 3;
   } else {
-    return front_page(alloc, catalog, request, keyring, root, root_len, session,
-        session_len, out);
+    return redirect(out, "/admin/front");
   }
   if (kind == 1) {
     int already = 0;
@@ -1454,8 +1468,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
     size_t posted_n = 0;
     if (form_pair(body, body_len, "panes", text, sizeof text, &text_n) != 0 ||
         panes_from_post(text, text_n, posted, &posted_n) != 0) {
-      return front_page(alloc, catalog, request, keyring, root, root_len, session,
-          session_len, out);
+      return redirect(out, "/admin/front");
     }
     for (i = 0; i < posted_n; i++) {
       lines[i] = posted[i];
@@ -1464,14 +1477,14 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       return -1;
     }
   }
-  return front_page(alloc, catalog, request, keyring, root, root_len, session,
-      session_len, out);
+  return redirect(out, "/admin/front");
 }
 
 static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * session, size_t session_len, const char * body,
     size_t body_len, struct GDEFWEB_Admin_Reply * out) {
+  (void)alloc;
   char token[4096];
   size_t token_n = 0;
   unsigned char raw[3072];
@@ -1497,15 +1510,13 @@ static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
       !base_matches(catalog, target, base)) {
     wipe(token, sizeof token);
     wipe(raw, sizeof raw);
-    return undo_page(alloc, catalog, request, keyring, root, root_len, session,
-        session_len, out);
+    return redirect(out, "/admin/undo");
   }
   wipe(token, sizeof token);
   wipe(raw, sizeof raw);
   if (gdefcore_entity_type(catalog, target, GDEFCORE_PUBLIC_ID_LEN, &type, &type_n) !=
       GDEFCORE_OK) {
-    return undo_page(alloc, catalog, request, keyring, root, root_len, session,
-        session_len, out);
+    return redirect(out, "/admin/undo");
   }
   if (type_n == 9 && memcmp(type, "site.post", 9) == 0) {
     allowed = 1;
@@ -1520,8 +1531,7 @@ static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   }
   if (!allowed) {
     gdefcore_text_free(catalog, type);
-    return undo_page(alloc, catalog, request, keyring, root, root_len, session,
-        session_len, out);
+    return redirect(out, "/admin/undo");
   }
   who = gdefcore_request_principal(request, &who_n);
   rc = gdefcore_changeset_revert(catalog, target, GDEFCORE_PUBLIC_ID_LEN, who, who_n,
@@ -1539,11 +1549,9 @@ static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   gdefcore_changeset_destroy(cs);
   gdefcore_text_free(catalog, type);
   if (rc != GDEFCORE_OK) {
-    return undo_page(alloc, catalog, request, keyring, root, root_len, session,
-        session_len, out);
+    return redirect(out, "/admin/undo");
   }
-  return undo_page(alloc, catalog, request, keyring, root, root_len, session,
-      session_len, out);
+  return redirect(out, "/admin/undo");
 }
 
 static int unknown_admin(const char * method, struct GDEFWEB_Admin_Reply * out) {
@@ -1599,9 +1607,13 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
     rc = more_page(alloc, out);
   } else if (strcmp(path, "/admin/post") == 0) {
     rc = is_get ? post_page(alloc, catalog, request, keyring, root, root_len,
-                            (const char *)raw, raw_n, out)
+                            (const char *)raw, raw_n, 0, out)
                 : post_write(alloc, catalog, request, keyring, root, root_len,
                       (const char *)raw, raw_n, body, body_len, out);
+  } else if (strcmp(path, "/admin/post/saved") == 0) {
+    rc = is_get ? post_page(alloc, catalog, request, keyring, root, root_len,
+                            (const char *)raw, raw_n, 1, out)
+                : unknown_admin(method, out);
   } else if (strcmp(path, "/admin/front") == 0) {
     rc = is_get ? front_page(alloc, catalog, request, keyring, root, root_len,
                              (const char *)raw, raw_n, out)

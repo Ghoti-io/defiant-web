@@ -38,6 +38,7 @@ struct GDEFWEB_Admin_Reply {
   int status;
   const char * reason;
   const char * type;
+  const char * location;
   char * body;
   size_t len;
 };

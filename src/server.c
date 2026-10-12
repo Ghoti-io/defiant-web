@@ -860,10 +860,10 @@ struct Cookies {
   const char * values[2];
 };
 
-static int reply(GDEFWEB_Server * server, GCU_Socket * sock, int status,
+static int reply_ex(GDEFWEB_Server * server, GCU_Socket * sock, int status,
     const char * reason, const void * body, size_t body_len,
     const struct Cookies * cookies, const char * type, const char * method,
-    const char * path, const char * client) {
+    const char * path, const char * client, const char * location) {
   GHTTP_Response * response = NULL;
   GHTTP_Buffer * buffer = NULL;
   GHTTP_Headers * headers;
@@ -883,6 +883,10 @@ static int reply(GDEFWEB_Server * server, GCU_Socket * sock, int status,
       ghttp_headers_add(headers, "Content-Security-Policy", gdefweb_admin_csp()) !=
           GHTTP_OK ||
       ghttp_headers_add(headers, "Connection", "close") != GHTTP_OK) {
+    goto done;
+  }
+  if (location != NULL &&
+      ghttp_headers_add(headers, "Location", location) != GHTTP_OK) {
     goto done;
   }
   if (cookies != NULL) {
@@ -910,6 +914,14 @@ done:
   ghttp_buffer_destroy(buffer);
   ghttp_response_destroy(response);
   return rc;
+}
+
+static int reply(GDEFWEB_Server * server, GCU_Socket * sock, int status,
+    const char * reason, const void * body, size_t body_len,
+    const struct Cookies * cookies, const char * type, const char * method,
+    const char * path, const char * client) {
+  return reply_ex(server, sock, status, reason, body, body_len, cookies, type,
+      method, path, client, NULL);
 }
 
 static char * copy_header(const GDEFWEB_Allocator * alloc, const GHTTP_Headers * h,
@@ -1340,8 +1352,8 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
       reply(server, sock, 500, "Internal Server Error", "", 0, NULL, NULL,
           in.method, in.path, client);
     } else {
-      reply(server, sock, page.status, page.reason, page.body, page.len, NULL,
-          page.type, in.method, in.path, client);
+      reply_ex(server, sock, page.status, page.reason, page.body, page.len, NULL,
+          page.type, in.method, in.path, client, page.location);
     }
     gcu_allocator_free(server->alloc, page.body);
     goto out;

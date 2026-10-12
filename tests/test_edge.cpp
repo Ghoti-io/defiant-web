@@ -558,7 +558,8 @@ class Edge : public ::testing::Test {
     return Ask(Req("GET", path, "site.example", cookie.c_str(), NULL), 20000);
   }
 
-  Reply PostForm(const char * path, const std::string & cookie, const std::string & body,
+  /* The reply as sent, with no redirect followed. */
+  Reply PostRaw(const char * path, const std::string & cookie, const std::string & body,
       const char * origin = "http://site.example") {
     return Ask(Req("POST", path, "site.example",
                    (std::string("Origin: ") + origin + "\r\n" +
@@ -566,6 +567,17 @@ class Edge : public ::testing::Test {
                        .c_str(),
                    body.c_str()),
         20000);
+  }
+
+  /* A browser follows a 303 with a GET of its Location. */
+  Reply PostForm(const char * path, const std::string & cookie, const std::string & body,
+      const char * origin = "http://site.example") {
+    Reply sent = PostRaw(path, cookie, body, origin);
+    if (sent.status != 303) {
+      return sent;
+    }
+    std::string where = HeaderValue(sent, "Location");
+    return Get(where.c_str(), cookie);
   }
 
   /* A tenant with the kit, one published post, and an admin called ada. */
@@ -1270,6 +1282,9 @@ TEST_F(Edge, AdminAssets) {
   EXPECT_TRUE(Has(HeaderValue(js, "Content-Type"), "javascript"));
   EXPECT_TRUE(Has(HeaderValue(css, "Content-Type"), "text/css"));
   EXPECT_TRUE(Has(css.body, "color-scheme: light dark"));
+  /* An empty region still has room to drop a pane on. */
+  EXPECT_TRUE(Has(css.body, "[data-region]"));
+  EXPECT_TRUE(Has(css.body, "min-height"));
   EXPECT_TRUE(Has(js.body, "panes"));
   EXPECT_FALSE(js.body.empty());
   /* The CSP names the hash of exactly these bytes, and nothing else. */
@@ -1525,4 +1540,39 @@ TEST_F(Edge, AdminUndo) {
   EXPECT_TRUE(Has(Visit("/"), "Hello Title"));
   /* Erasure is not offered. */
   EXPECT_FALSE(Has(page.body, "rase"));
+}
+
+TEST_F(Edge, AdminRedirects) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  Site(id);
+  std::string cookie = CookieLine(Login("ada", "secret"));
+  /* A write answers with a redirect, so a refresh does not post it again. */
+  std::string token = InputValue(Get("/admin/post", cookie).body, "token", 0);
+  Reply saved = PostRaw("/admin/post", cookie,
+      Form(token, "&title=Once&summary=s&body=b"));
+  EXPECT_EQ(303, saved.status);
+  EXPECT_EQ("/admin/post/saved", HeaderValue(saved, "Location"));
+  EXPECT_TRUE(saved.body.empty());
+  Reply notice = Get("/admin/post/saved", cookie);
+  EXPECT_TRUE(Has(notice.body, "Saved."));
+  EXPECT_TRUE(Has(notice.body, "<form"));
+  EXPECT_FALSE(Has(Get("/admin/post", cookie).body, "Saved."));
+  Reply front = Get("/admin/front", cookie);
+  Reply removed = PostRaw("/admin/front", cookie,
+      Form(FormToken(front.body, "Remove recent posts"), ""));
+  EXPECT_EQ(303, removed.status);
+  EXPECT_EQ("/admin/front", HeaderValue(removed, "Location"));
+  Reply refused = PostRaw("/admin/front", cookie, Form("not-a-token", ""));
+  EXPECT_EQ(303, refused.status);
+  Reply undo = Get("/admin/undo", cookie);
+  Reply undone = PostRaw("/admin/undo", cookie,
+      Form(UndoToken(undo.body, "Front page"), ""));
+  EXPECT_EQ(303, undone.status);
+  EXPECT_EQ("/admin/undo", HeaderValue(undone, "Location"));
+  /* Hidden from a visitor, and the notice page is not a way around that. */
+  Reply unknown = Get("/no-such-path", std::string());
+  Reply hidden = Get("/admin/post/saved", std::string());
+  EXPECT_EQ(unknown.status, hidden.status);
+  EXPECT_EQ(unknown.body, hidden.body);
+  EXPECT_EQ(404, PostRaw("/admin/post", std::string(), "x=1").status);
 }
