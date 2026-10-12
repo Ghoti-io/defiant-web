@@ -73,6 +73,7 @@ struct GDEFWEB_Server {
   GCU_Loop_Op op;
   struct Attempt attempts[kAttempts];
   int done;
+  int serving;
 };
 
 struct InReq {
@@ -317,6 +318,10 @@ GDEFWEB_Result gdefweb_server_local(const GDEFWEB_Server * server,
 
 GCU_Loop * gdefweb_server_loop(GDEFWEB_Server * server) {
   return server == NULL ? NULL : server->loop;
+}
+
+int gdefweb_server_serving(const GDEFWEB_Server * server) {
+  return server != NULL && server->serving;
 }
 
 int gdefweb_server_done(const GDEFWEB_Server * server) {
@@ -1293,8 +1298,11 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
       gdefcore_text_free(catalog, token);
       note_failure(server, user_key);
       note_failure(server, addr_key);
-      reply(server, sock, 401, "Unauthorized", "", 0, NULL, NULL, in.method,
-          in.path, client);
+      {
+        const char * page = gdefweb_admin_login_page(1);
+        reply(server, sock, 401, "Unauthorized", page, strlen(page), NULL,
+            "text/html; charset=utf-8", in.method, in.path, client);
+      }
       wipe(encoded, sizeof encoded);
       wipe(session_cookie, sizeof session_cookie);
       wipe(admin_cookie, sizeof admin_cookie);
@@ -1313,8 +1321,8 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
       cookies.values[1] = admin_cookie;
     }
     gdefcore_text_free(catalog, token);
-    reply(server, sock, 200, "OK", "", 0, &cookies, NULL, in.method, in.path,
-        client);
+    reply_ex(server, sock, 303, "See Other", "", 0, &cookies, NULL, in.method,
+        in.path, client, cookies.values[1] != NULL ? "/admin" : "/");
     wipe(encoded, sizeof encoded);
     wipe(session_cookie, sizeof session_cookie);
     wipe(admin_cookie, sizeof admin_cookie);
@@ -1329,6 +1337,13 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
         "__Host-admin=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
     reply(server, sock, 200, "OK", "", 0, &cookies, NULL, in.method, in.path,
         client);
+    goto out;
+  }
+  if (span_eq(in.method, strlen(in.method), "GET") &&
+      span_eq(in.path, strlen(in.path), "/login")) {
+    const char * page = gdefweb_admin_login_page(0);
+    reply(server, sock, 200, "OK", page, strlen(page), NULL,
+        "text/html; charset=utf-8", in.method, in.path, client);
     goto out;
   }
   if (span_eq(in.method, strlen(in.method), "GET")) {
@@ -1406,7 +1421,9 @@ static void serve_fiber(void * arg) {
   }
   sock = server->op.result.accepted;
   peer = server->op.result.peer;
+  server->serving = 1;
   serve_connection(server, sock, &peer);
+  server->serving = 0;
   server->done = 1;
 }
 
@@ -1422,6 +1439,7 @@ GDEFWEB_Result gdefweb_server_accept_one(GDEFWEB_Server * server) {
     server->fiber = NULL;
   }
   server->done = 0;
+  server->serving = 0;
   if (gcu_fiber_create(&server->fiber, serve_fiber, server, kStack, NULL) !=
       GCU_FIBER_OK) {
     return GDEFWEB_ERR_OOM;

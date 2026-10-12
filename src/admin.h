@@ -45,6 +45,9 @@ struct GDEFWEB_Admin_Reply {
 
 const char * gdefweb_admin_csp(void);
 
+/* The sign-in page. @p failed adds the one sentence a refusal shows. */
+const char * gdefweb_admin_login_page(int failed);
+
 int gdefweb_admin_static(const char * path, const char ** body, size_t * len,
     const char ** type);
 

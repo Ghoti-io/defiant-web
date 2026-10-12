@@ -1576,3 +1576,41 @@ TEST_F(Edge, AdminRedirects) {
   EXPECT_EQ(unknown.body, hidden.body);
   EXPECT_EQ(404, PostRaw("/admin/post", std::string(), "x=1").status);
 }
+
+TEST_F(Edge, LoginPage) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  Site(id);
+  AddUser(id, "bob", "hunter2");
+  /* The form is public, needs no script, and posts to /login. */
+  Reply page = Get("/login", std::string());
+  EXPECT_EQ(200, page.status);
+  EXPECT_TRUE(Has(page.body, "<form method=\"post\" action=\"/login\">"));
+  EXPECT_TRUE(Has(page.body, "name=\"username\""));
+  EXPECT_TRUE(Has(page.body, "type=\"password\""));
+  EXPECT_FALSE(Has(page.body, "<script"));
+  EXPECT_FALSE(Has(page.body, "did not work"));
+  ExpectSecurity(page);
+  /* An admin goes to /admin, anyone else to /. */
+  Reply admin = PostRaw("/login", std::string(), "username=ada&password=secret");
+  Reply other = PostRaw("/login", std::string(), "username=bob&password=hunter2");
+  EXPECT_EQ(303, admin.status);
+  EXPECT_EQ("/admin", HeaderValue(admin, "Location"));
+  EXPECT_FALSE(CookiePair(admin, "__Host-session").empty());
+  EXPECT_EQ(303, other.status);
+  EXPECT_EQ("/", HeaderValue(other, "Location"));
+  EXPECT_TRUE(CookiePair(other, "__Host-admin").empty());
+  /* A wrong password and an unknown user get the same page, and no cookie. */
+  Reply wrong = PostRaw("/login", std::string(), "username=ada&password=nope");
+  Reply unknown = PostRaw("/login", std::string(), "username=nobody&password=nope");
+  EXPECT_EQ(401, wrong.status);
+  EXPECT_EQ(wrong.status, unknown.status);
+  EXPECT_EQ(wrong.body, unknown.body);
+  EXPECT_TRUE(Has(wrong.body, "did not work"));
+  EXPECT_TRUE(Has(wrong.body, "<form method=\"post\" action=\"/login\">"));
+  EXPECT_TRUE(HeaderAll(wrong, "Set-Cookie").empty());
+  EXPECT_FALSE(Has(wrong.body, "ada"));
+  EXPECT_FALSE(Has(wrong.body, "nobody"));
+  /* Signing in with the page's own form lands on the admin. */
+  std::string cookie = CookieLine(admin);
+  EXPECT_TRUE(Has(Get("/admin", cookie).body, "href=\"/admin/post\""));
+}

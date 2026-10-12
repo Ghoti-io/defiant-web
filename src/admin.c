@@ -155,6 +155,27 @@ const char * gdefweb_admin_csp(void) {
   return kPolicy;
 }
 
+const char * gdefweb_admin_login_page(int failed) {
+  static const char kHead[] =
+      "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+      "<title>Sign in</title><link rel=\"stylesheet\" href=\"/defiant.css\">"
+      "</head><body><h1>Sign in</h1>";
+  static const char kForm[] =
+      "<form method=\"post\" action=\"/login\">"
+      "<p><label>Username <input name=\"username\" autocomplete=\"username\"></label></p>"
+      "<p><label>Password <input name=\"password\" type=\"password\" "
+      "autocomplete=\"current-password\"></label></p>"
+      "<p><button type=\"submit\">Sign in</button></p></form></body></html>";
+  static char ok[sizeof kHead + sizeof kForm];
+  static char bad[sizeof kHead + sizeof kForm + 64];
+  if (ok[0] == '\0') {
+    snprintf(ok, sizeof ok, "%s%s", kHead, kForm);
+    snprintf(bad, sizeof bad, "%s<p>That username and password did not work.</p>%s",
+        kHead, kForm);
+  }
+  return failed ? bad : ok;
+}
+
 int gdefweb_admin_static(const char * path, const char ** body, size_t * len,
     const char ** type) {
   if (path == NULL || body == NULL || len == NULL || type == NULL) {

@@ -101,6 +101,12 @@ GDEFWEB_API GDEFWEB_Result gdefweb_server_accept_one(GDEFWEB_Server * server);
 /** @brief Non-zero after the connection started by accept_one has finished. */
 GDEFWEB_API int gdefweb_server_done(const GDEFWEB_Server * server);
 
+/**
+ * @brief Non-zero while a connection is being served, not while the fiber is
+ * only waiting to accept one.
+ */
+GDEFWEB_API int gdefweb_server_serving(const GDEFWEB_Server * server);
+
 #ifdef __cplusplus
 }
 #endif

@@ -393,6 +393,7 @@ CORE_PC ?= ghoti.io-defiant-core$(BRANCH)
 HTTP_PC ?= ghoti.io-http$(BRANCH)
 CUTIL_PC ?= ghoti.io-cutil$(BRANCH)
 MEM_PC ?= ghoti.io-defiant-storage-memory$(BRANCH)
+SQLITE_PC ?= ghoti.io-defiant-storage-sqlite$(BRANCH)
 pkg_cflags = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cflags $(1) 2>/dev/null)
 pkg_libs = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs $(1) 2>/dev/null)
 CORE_CFLAGS := $(call pkg_cflags,$(CORE_PC))
@@ -403,6 +404,8 @@ CUTIL_CFLAGS := $(call pkg_cflags,$(CUTIL_PC))
 CUTIL_LIBS := $(call pkg_libs,$(CUTIL_PC))
 MEM_CFLAGS := $(call pkg_cflags,$(MEM_PC))
 MEM_LIBS := $(call pkg_libs,$(MEM_PC))
+SQLITE_CFLAGS := $(call pkg_cflags,$(SQLITE_PC))
+SQLITE_LIBS := $(call pkg_libs,$(SQLITE_PC))
 STOR_CONFORMANCE_I :=
 ifeq ($(strip $(CORE_CFLAGS)),)
 ifndef SKIP_DEP_CHECK
@@ -419,12 +422,17 @@ ifndef SKIP_DEP_CHECK
 $(error ghoti.io-cutil was not found by pkg-config. Install cutil into PREFIX, or point PKG_CONFIG_PATH at the directory holding its .pc file.)
 endif
 endif
+ifeq ($(strip $(SQLITE_LIBS)),)
+ifndef SKIP_DEP_CHECK
+$(error ghoti.io-defiant-storage-sqlite was not found by pkg-config. The defiant program opens it. Install defiant-storage-sqlite into PREFIX, or point PKG_CONFIG_PATH at the directory holding its .pc file.)
+endif
+endif
 ifeq ($(strip $(MEM_LIBS)),)
 ifndef SKIP_DEP_CHECK
 $(error ghoti.io-defiant-storage-memory was not found by pkg-config. Install defiant-storage-memory into PREFIX, or point PKG_CONFIG_PATH at the directory holding its .pc file.)
 endif
 endif
-INCLUDE += $(CORE_CFLAGS) $(HTTP_CFLAGS) $(CUTIL_CFLAGS) $(MEM_CFLAGS)
+INCLUDE += $(CORE_CFLAGS) $(HTTP_CFLAGS) $(CUTIL_CFLAGS) $(MEM_CFLAGS) $(SQLITE_CFLAGS)
 DEP_LIBS := $(CORE_LIBS) $(HTTP_LIBS) $(CUTIL_LIBS)
 # Tests open the memory backend. The shared library does not.
 ARCHIVE_CFLAGS :=
@@ -454,7 +462,7 @@ TESTFLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs --cfla
 # coverage target does, because --coverage links the gcov runtime, whose
 # mangle_path check-symbols is right to reject in a shipping library and
 # wrong to reject in an instrumented one. Spelled as text's TEST_GATES is.
-TEST_GATES ?= check-symbols check-aliasing
+TEST_GATES ?= check-symbols check-aliasing check-defiant
 
 # Valgrind flags (exclude "still reachable" as it's not a leak)
 # --suppressions: see tests/valgrind.supp. It holds allocations that are
@@ -503,7 +511,7 @@ EXAMPLES := $(patsubst examples/%.c,$(APP_DIR)/examples/%$(EXE_EXTENSION),$(EXAM
 MODEL_ROOT := $(CURDIR)
 TEST_DATA := $(CURDIR)/tests/data
 
-all: $(APP_DIR)/$(TARGET) $(APP_DIR)/$(STATIC_TARGET) ## Build shared + static libraries
+all: $(APP_DIR)/$(TARGET) $(APP_DIR)/$(STATIC_TARGET) $(APP_DIR)/defiant$(EXE_EXTENSION) ## Build shared + static libraries and the defiant program
 
 ####################################################################
 # Dependency Inclusion
@@ -669,11 +677,22 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c $(APP_DIR)/$(STATIC_TARGET) 
 	$(CC) $(CFLAGS) $(INCLUDE) -o $@ $< $(LDFLAGS) $(MEMLIBRARY) $(DEP_LIBS)
 
 ####################################################################
+# The defiant program
+####################################################################
+
+# One installation, one listener. It opens both backends, so it links the
+# archive and the two backend packages; the library itself links neither.
+$(APP_DIR)/defiant$(EXE_EXTENSION): app/defiant.c $(APP_DIR)/$(STATIC_TARGET) \
+		$(FLAGS_STAMP) | $(APP_DIR)/$(TARGET)
+	@printf "\n### Compiling the defiant program ###\n"
+	$(CC) $(CFLAGS) $(INCLUDE) -o $@ $< $(LDFLAGS) $(MEMLIBRARY) $(MEM_LIBS) $(SQLITE_LIBS) $(DEP_LIBS)
+
+####################################################################
 # Commands
 ####################################################################
 
 # General commands
-.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-gates
+.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-gates check-defiant
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-valgrind test-valgrind-quiet test-watch uninstall watch
 # Debug build commands
@@ -940,6 +959,11 @@ endif
 $(APP_DIR)/readzip: tests/read_zip.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(ARCHIVE_CFLAGS) -o $@ $< $(ARCHIVE_LIBS)
+
+check-defiant: $(APP_DIR)/defiant$(EXE_EXTENSION) ## The defiant program starts, restarts, refuses and stops
+	@LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/check-defiant.sh "$(APP_DIR)/defiant$(EXE_EXTENSION)"
+	@# The control: a program that starts nothing must turn the gate red.
+	@if tools/check-defiant.sh /bin/true >/dev/null 2>&1; then echo "check-defiant: the planted program passed the gate" >&2; exit 1; else echo "check-defiant: the planted program turned the gate red"; fi
 
 check-gates: $(APP_DIR)/testHarness$(EXE_EXTENSION) ## Plants turn the milestone gates red
 	@LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/check-gates.sh "$(APP_DIR)/testHarness$(EXE_EXTENSION)"
@@ -1334,6 +1358,9 @@ ifeq ($(OS_NAME), Windows)
 	@cp $(APP_DIR)/$(TARGET).a $(LIB_INSTALL_PATH)/$(SUITE)/
 	@cp $(APP_DIR)/$(TARGET) $(BIN_INSTALL_PATH)/
 endif
+	# Installing the defiant program.
+	@mkdir -p $(BIN_INSTALL_PATH)
+	@cp $(APP_DIR)/defiant$(EXE_EXTENSION) $(BIN_INSTALL_PATH)/
 	# Installing the headers.
 	# Removed first: this directory is owned entirely by this project and
 	# branch, and copying over the top of it would leave headers behind that
