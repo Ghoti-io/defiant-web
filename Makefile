@@ -462,7 +462,7 @@ TESTFLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs --cfla
 # coverage target does, because --coverage links the gcov runtime, whose
 # mangle_path check-symbols is right to reject in a shipping library and
 # wrong to reject in an instrumented one. Spelled as text's TEST_GATES is.
-TEST_GATES ?= check-symbols check-aliasing check-defiant
+TEST_GATES ?= check-symbols check-aliasing check-defiant $(if $(filter Linux,$(OS_NAME)),check-demo)
 
 # Valgrind flags (exclude "still reachable" as it's not a leak)
 # --suppressions: see tests/valgrind.supp. It holds allocations that are
@@ -687,12 +687,22 @@ $(APP_DIR)/defiant$(EXE_EXTENSION): app/defiant.c $(APP_DIR)/$(STATIC_TARGET) \
 	@printf "\n### Compiling the defiant program ###\n"
 	$(CC) $(CFLAGS) $(INCLUDE) -o $@ $< $(LDFLAGS) $(MEMLIBRARY) $(MEM_LIBS) $(SQLITE_LIBS) $(DEP_LIBS)
 
+# The success-signal demo's helper. tools/demo.sh starts the program and calls
+# this for each stage. It is not part of `all`.
+$(APP_DIR)/defiant-demo$(EXE_EXTENSION): app/demo.cpp $(APP_DIR)/$(STATIC_TARGET) \
+		$(FLAGS_STAMP) | $(APP_DIR)/$(TARGET)
+	@printf "\n### Compiling the demo helper ###\n"
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -o $@ $< $(LDFLAGS) $(MEMLIBRARY) $(SQLITE_LIBS) $(DEP_LIBS)
+
+demo: $(APP_DIR)/defiant$(EXE_EXTENSION) $(APP_DIR)/defiant-demo$(EXE_EXTENSION) ## Run the success-signal demo
+	@APP_DIR="$(APP_DIR)" LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/demo.sh
+
 ####################################################################
 # Commands
 ####################################################################
 
 # General commands
-.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-gates check-defiant
+.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-gates check-defiant check-demo demo
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-valgrind test-valgrind-quiet test-watch uninstall watch
 # Debug build commands
@@ -964,6 +974,12 @@ check-defiant: $(APP_DIR)/defiant$(EXE_EXTENSION) ## The defiant program starts,
 	@LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/check-defiant.sh "$(APP_DIR)/defiant$(EXE_EXTENSION)"
 	@# The control: a program that starts nothing must turn the gate red.
 	@if tools/check-defiant.sh /bin/true >/dev/null 2>&1; then echo "check-defiant: the planted program passed the gate" >&2; exit 1; else echo "check-defiant: the planted program turned the gate red"; fi
+
+check-demo: $(APP_DIR)/defiant$(EXE_EXTENSION) $(APP_DIR)/defiant-demo$(EXE_EXTENSION) ## The demo passes, and fails at step 5 when the restore trusts the snapshot's ledger
+	@APP_DIR="$(APP_DIR)" LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/demo.sh
+	@out=$$(GHOTI_DEMO_PLANT=ledger APP_DIR="$(APP_DIR)" LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/demo.sh 2>&1); rc=$$?; \
+	if [ $$rc -ne 0 ] && printf '%s\n' "$$out" | grep -q '^FAIL 5 '; then echo "check-demo: the planted restore failed at step 5"; \
+	else echo "check-demo: the planted restore did not fail at step 5 (exit $$rc)" >&2; printf '%s\n' "$$out" >&2; exit 1; fi
 
 check-gates: $(APP_DIR)/testHarness$(EXE_EXTENSION) ## Plants turn the milestone gates red
 	@LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/check-gates.sh "$(APP_DIR)/testHarness$(EXE_EXTENSION)"
