@@ -41,11 +41,32 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 #include <string>
 #include <vector>
 
 namespace {
+
+/* The C runtime on Windows has _putenv_s where POSIX has setenv and unsetenv. */
+void SetEnv(const char * name, const char * value) {
+#ifdef _WIN32
+  _putenv_s(name, value);
+#else
+  setenv(name, value, 1);
+#endif
+}
+
+void UnsetEnv(const char * name) {
+#ifdef _WIN32
+  _putenv_s(name, "");
+#else
+  unsetenv(name);
+#endif
+}
 
 const uint64_t kLife = 3600;
 const uint8_t kRegistry[] = {0x02};
@@ -353,9 +374,9 @@ class Edge : public ::testing::Test {
 
   void Restore(const char * name, const std::string & saved, int had) {
     if (had) {
-      setenv(name, saved.c_str(), 1);
+      SetEnv(name, saved.c_str());
     } else {
-      unsetenv(name);
+      UnsetEnv(name);
     }
   }
 
@@ -370,10 +391,10 @@ class Edge : public ::testing::Test {
     Remember("DEFIANT_SECRET", &saved_secret_, &had_secret_);
     Remember("DEFIANT_SECRET_FILE", &saved_secret_file_, &had_secret_file_);
     Remember("DEFIANT_CONFIG", &saved_config_, &had_config_);
-    unsetenv("DEFIANT_SECRET");
-    unsetenv("DEFIANT_SECRET_FILE");
-    unsetenv("DEFIANT_CONFIG");
-    unsetenv("DEFIANT_TRUSTED_PROXIES");
+    UnsetEnv("DEFIANT_SECRET");
+    UnsetEnv("DEFIANT_SECRET_FILE");
+    UnsetEnv("DEFIANT_CONFIG");
+    UnsetEnv("DEFIANT_TRUSTED_PROXIES");
     ASSERT_EQ(GDEFSMEMORY_OK, gdefsmemory_store_create(NULL, NULL, &registry_));
     ASSERT_EQ(GDEFSMEMORY_OK, gdefsmemory_store_create(NULL, NULL, &site_));
     ASSERT_EQ(GDEFCORE_OK,
@@ -395,11 +416,11 @@ class Edge : public ::testing::Test {
 
   void Listen(const char * proxies) {
     GDEFCORE_Inst_Config * config = NULL;
-    setenv("DEFIANT_LISTEN", "127.0.0.1:0", 1);
+    SetEnv("DEFIANT_LISTEN", "127.0.0.1:0");
     if (proxies == NULL) {
-      unsetenv("DEFIANT_TRUSTED_PROXIES");
+      UnsetEnv("DEFIANT_TRUSTED_PROXIES");
     } else {
-      setenv("DEFIANT_TRUSTED_PROXIES", proxies, 1);
+      SetEnv("DEFIANT_TRUSTED_PROXIES", proxies);
     }
     ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_config_load(NULL, &config));
     ASSERT_EQ(GDEFWEB_OK, gdefweb_server_create(config, NULL, &server_));
@@ -642,8 +663,8 @@ class Edge : public ::testing::Test {
 
 TEST_F(Edge, EmptyListenBindsNothing) {
   GDEFCORE_Inst_Config * config = NULL;
-  setenv("DEFIANT_LISTEN", "", 1);
-  unsetenv("DEFIANT_TRUSTED_PROXIES");
+  SetEnv("DEFIANT_LISTEN", "");
+  UnsetEnv("DEFIANT_TRUSTED_PROXIES");
   ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_config_load(NULL, &config));
   ASSERT_EQ(GDEFWEB_OK, gdefweb_server_create(config, NULL, &server_));
   gdefcore_inst_config_destroy(config);
@@ -722,10 +743,7 @@ TEST_F(Edge, UntrustedForward) {
   char acme[GDEFCORE_PUBLIC_ID_LEN + 1];
   char other[GDEFCORE_PUBLIC_ID_LEN + 1];
   Reply reply;
-  int saved = dup(STDOUT_FILENO);
-  int pipes[2];
-  char log[1024];
-  ssize_t n;
+  std::string log;
   Listen("203.0.113.5");
   ASSERT_EQ(GDEFCORE_OK,
       gdefcore_inst_tenant_create(inst_, "acme.example", 12, "", 0, acme));
@@ -735,40 +753,30 @@ TEST_F(Edge, UntrustedForward) {
   InstallKit(other);
   Publish(acme, "acme-post", "Acme Title");
   Publish(other, "other-post", "Other Title");
-  ASSERT_EQ(0, pipe(pipes));
   fflush(stdout);
-  ASSERT_EQ(STDOUT_FILENO, dup2(pipes[1], STDOUT_FILENO));
+  testing::internal::CaptureStdout();
   reply = Ask(Req("GET", "/?password=hunter2", "acme.example",
                   "X-Forwarded-Host: other.example\r\n"
                   "X-Forwarded-For: 203.0.113.9\r\n",
                   NULL),
       20000);
   fflush(stdout);
-  ASSERT_EQ(STDOUT_FILENO, dup2(saved, STDOUT_FILENO));
-  close(saved);
-  close(pipes[1]);
-  n = read(pipes[0], log, sizeof log - 1);
-  close(pipes[0]);
-  ASSERT_GE(n, 0);
-  log[n] = '\0';
+  log = testing::internal::GetCapturedStdout();
   EXPECT_EQ(200, reply.status);
   EXPECT_NE(std::string::npos, reply.body.find("Acme Title"));
   EXPECT_EQ(std::string::npos, reply.body.find("Other Title"));
-  EXPECT_NE(std::string::npos, std::string(log).find("client=127.0.0.0"));
-  EXPECT_EQ(std::string::npos, std::string(log).find("203.0.113.9"));
-  EXPECT_EQ(std::string::npos, std::string(log).find("hunter2"));
-  EXPECT_EQ(std::string::npos, std::string(log).find("?"));
-  EXPECT_EQ(std::string::npos, std::string(log).find("password"));
+  EXPECT_NE(std::string::npos, log.find("client=127.0.0.0"));
+  EXPECT_EQ(std::string::npos, log.find("203.0.113.9"));
+  EXPECT_EQ(std::string::npos, log.find("hunter2"));
+  EXPECT_EQ(std::string::npos, log.find("?"));
+  EXPECT_EQ(std::string::npos, log.find("password"));
 }
 
 TEST_F(Edge, TrustedForward) {
   char acme[GDEFCORE_PUBLIC_ID_LEN + 1];
   char other[GDEFCORE_PUBLIC_ID_LEN + 1];
   Reply reply;
-  int saved = dup(STDOUT_FILENO);
-  int pipes[2];
-  char log[1024];
-  ssize_t n;
+  std::string log;
   Listen("127.0.0.1");
   ASSERT_EQ(GDEFCORE_OK,
       gdefcore_inst_tenant_create(inst_, "acme.example", 12, "", 0, acme));
@@ -778,35 +786,28 @@ TEST_F(Edge, TrustedForward) {
   InstallKit(other);
   Publish(acme, "acme-post", "Acme Title");
   Publish(other, "other-post", "Other Title");
-  ASSERT_EQ(0, pipe(pipes));
   fflush(stdout);
-  ASSERT_EQ(STDOUT_FILENO, dup2(pipes[1], STDOUT_FILENO));
+  testing::internal::CaptureStdout();
   reply = Ask(Req("GET", "/", "acme.example",
                   "X-Forwarded-Host: other.example\r\n"
                   "X-Forwarded-For: 203.0.113.9\r\n",
                   NULL),
       20000);
   fflush(stdout);
-  ASSERT_EQ(STDOUT_FILENO, dup2(saved, STDOUT_FILENO));
-  close(saved);
-  close(pipes[1]);
-  n = read(pipes[0], log, sizeof log - 1);
-  close(pipes[0]);
-  ASSERT_GE(n, 0);
-  log[n] = '\0';
+  log = testing::internal::GetCapturedStdout();
   EXPECT_EQ(200, reply.status);
   EXPECT_NE(std::string::npos, reply.body.find("Other Title"));
   EXPECT_EQ(std::string::npos, reply.body.find("Acme Title"));
-  EXPECT_NE(std::string::npos, std::string(log).find("client=203.0.0.0"));
-  EXPECT_EQ(std::string::npos, std::string(log).find("203.0.113.9"));
+  EXPECT_NE(std::string::npos, log.find("client=203.0.0.0"));
+  EXPECT_EQ(std::string::npos, log.find("203.0.113.9"));
 }
 
 TEST_F(Edge, ReadyBeforeOpen) {
   GDEFCORE_Inst_Config * config = NULL;
   Reply closed;
   Reply open;
-  setenv("DEFIANT_LISTEN", "127.0.0.1:0", 1);
-  unsetenv("DEFIANT_TRUSTED_PROXIES");
+  SetEnv("DEFIANT_LISTEN", "127.0.0.1:0");
+  UnsetEnv("DEFIANT_TRUSTED_PROXIES");
   ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_config_load(NULL, &config));
   ASSERT_EQ(GDEFWEB_OK, gdefweb_server_create(config, NULL, &server_));
   gdefcore_inst_config_destroy(config);
