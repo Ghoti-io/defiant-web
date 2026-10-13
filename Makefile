@@ -394,6 +394,8 @@ HTTP_PC ?= ghoti.io-http$(BRANCH)
 CUTIL_PC ?= ghoti.io-cutil$(BRANCH)
 MEM_PC ?= ghoti.io-defiant-storage-memory$(BRANCH)
 SQLITE_PC ?= ghoti.io-defiant-storage-sqlite$(BRANCH)
+# Tests only: the response scanner (item 8) lives in defiant-test.
+DEFTEST_PC ?= ghoti.io-defiant-test$(BRANCH)
 pkg_cflags = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cflags $(1) 2>/dev/null)
 pkg_libs = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs $(1) 2>/dev/null)
 CORE_CFLAGS := $(call pkg_cflags,$(CORE_PC))
@@ -406,6 +408,8 @@ MEM_CFLAGS := $(call pkg_cflags,$(MEM_PC))
 MEM_LIBS := $(call pkg_libs,$(MEM_PC))
 SQLITE_CFLAGS := $(call pkg_cflags,$(SQLITE_PC))
 SQLITE_LIBS := $(call pkg_libs,$(SQLITE_PC))
+DEFTEST_CFLAGS := $(call pkg_cflags,$(DEFTEST_PC))
+DEFTEST_LIBS := $(call pkg_libs,$(DEFTEST_PC))
 STOR_CONFORMANCE_I :=
 ifeq ($(strip $(CORE_CFLAGS)),)
 ifndef SKIP_DEP_CHECK
@@ -432,7 +436,12 @@ ifndef SKIP_DEP_CHECK
 $(error ghoti.io-defiant-storage-memory was not found by pkg-config. Install defiant-storage-memory into PREFIX, or point PKG_CONFIG_PATH at the directory holding its .pc file.)
 endif
 endif
-INCLUDE += $(CORE_CFLAGS) $(HTTP_CFLAGS) $(CUTIL_CFLAGS) $(MEM_CFLAGS) $(SQLITE_CFLAGS)
+ifeq ($(strip $(DEFTEST_LIBS)),)
+ifndef SKIP_DEP_CHECK
+$(error ghoti.io-defiant-test was not found by pkg-config. The response-scanner gate uses it. Install defiant-test into PREFIX, or point PKG_CONFIG_PATH at the directory holding its .pc file.)
+endif
+endif
+INCLUDE += $(CORE_CFLAGS) $(HTTP_CFLAGS) $(CUTIL_CFLAGS) $(MEM_CFLAGS) $(SQLITE_CFLAGS) $(DEFTEST_CFLAGS)
 DEP_LIBS := $(CORE_LIBS) $(HTTP_LIBS) $(CUTIL_LIBS)
 # Tests open the memory backend. The shared library does not.
 ARCHIVE_CFLAGS :=
@@ -462,7 +471,7 @@ TESTFLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs --cfla
 # coverage target does, because --coverage links the gcov runtime, whose
 # mangle_path check-symbols is right to reject in a shipping library and
 # wrong to reject in an instrumented one. Spelled as text's TEST_GATES is.
-TEST_GATES ?= check-symbols check-aliasing $(if $(filter Linux,$(OS_NAME)),check-defiant check-demo)
+TEST_GATES ?= check-symbols check-aliasing check-seams check-plants $(if $(filter Linux,$(OS_NAME)),check-defiant check-demo)
 
 # Valgrind flags (exclude "still reachable" as it's not a leak)
 # --suppressions: see tests/valgrind.supp. It holds allocations that are
@@ -659,7 +668,7 @@ $(APP_DIR)/$2$(EXE_EXTENSION): $$(TEST_OBJ_$1) $(TEST_HELPER_OBJ) \
 		$(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking Test: $2 ###\n"
 	@mkdir -p $$(@D)
-	$(CXX) $(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $(TEST_HELPER_OBJ) $(LDFLAGS) $(TEST_LDFLAGS) $(MEMLIBRARY) $(DEP_LIBS) $(ARCHIVE_LIBS) $(TESTFLAGS)
+	$(CXX) $(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $(TEST_HELPER_OBJ) $(LDFLAGS) $(TEST_LDFLAGS) $(MEMLIBRARY) $(DEP_LIBS) $(ARCHIVE_LIBS) $(DEFTEST_LIBS) $(SQLITE_LIBS) $(TESTFLAGS)
 endef
 
 $(foreach pair,$(TEST_PAIRS),\
@@ -702,7 +711,7 @@ demo: $(APP_DIR)/defiant$(EXE_EXTENSION) $(APP_DIR)/defiant-demo$(EXE_EXTENSION)
 ####################################################################
 
 # General commands
-.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-gates check-defiant check-demo demo
+.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-seams check-plants check-gates check-defiant check-demo demo
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-valgrind test-valgrind-quiet test-watch uninstall watch
 # Debug build commands
@@ -770,6 +779,9 @@ TEST_LD_PATH := $(APP_DIR):$(LIB_INSTALL_PATH)/$(SUITE):$(CORE_LD_PATH):$(STOR_L
 ####################################################################
 # Symbol namespace check
 ####################################################################
+
+check-seams: ## Fail if a subsystem includes another's private header
+	@tools/check-seams.sh .
 
 check-aliasing: ## Fail if the strict-aliasing warning is not actually armed
 # CFLAGS names -fstrict-aliasing and -Wstrict-aliasing=1, and neither spelling
@@ -969,6 +981,9 @@ endif
 $(APP_DIR)/readzip: tests/read_zip.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(ARCHIVE_CFLAGS) -o $@ $< $(ARCHIVE_LIBS)
+
+check-plants: ## Plants in scratch copies of the server turn the scanner and cross-tenant tests red, by name
+	@tools/check-plants.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX))
 
 check-defiant: $(APP_DIR)/defiant$(EXE_EXTENSION) ## The defiant program starts, restarts, refuses and stops
 	@LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/check-defiant.sh "$(APP_DIR)/defiant$(EXE_EXTENSION)"
@@ -1233,7 +1248,7 @@ ASAN_TEST_OBJ_$1 := $(ASAN_OBJ_DIR)/tests/$(basename $(notdir $1)).o
 $(ASAN_APP_DIR)/$2$(EXE_EXTENSION): $$(ASAN_TEST_OBJ_$1) $(ASAN_APP_DIR)/$(ASAN_TARGET)
 	@printf "\n### Linking ASan Test: $2 ###\n"
 	@mkdir -p $$(@D)
-	$(CXX) $(ASAN_CXXFLAGS) -o $$@ $$(ASAN_TEST_OBJ_$1) $(ASAN_LDFLAGS) $(ASAN_MEMLIBRARY) $(DEP_LIBS) $(ARCHIVE_LIBS) $(TESTFLAGS)
+	$(CXX) $(ASAN_CXXFLAGS) -o $$@ $$(ASAN_TEST_OBJ_$1) $(ASAN_LDFLAGS) $(ASAN_MEMLIBRARY) $(DEP_LIBS) $(ARCHIVE_LIBS) $(DEFTEST_LIBS) $(SQLITE_LIBS) $(TESTFLAGS)
 endef
 
 $(foreach pair,$(TEST_PAIRS),\
