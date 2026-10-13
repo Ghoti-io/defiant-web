@@ -1035,7 +1035,7 @@ static int front_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
       if (strcmp(held[i].region, region_store[r]) != 0) {
         continue;
       }
-      if (page_str(&page, "<div draggable=\"true\" data-pane=\"1\">") != 0 ||
+      if (page_str(&page, "<div draggable=\"true\" data-pane=\"\">") != 0 ||
           page_esc(&page, held[i].line, strlen(held[i].line)) != 0 ||
           page_str(&page, "</div>") != 0) {
         goto fail;
@@ -1080,20 +1080,20 @@ static int undo_lines(struct Page * page, GDEFCORE_Catalog * catalog, const char
     uint64_t seq = 0;
     char * actor = NULL;
     size_t actor_n = 0;
-    char seq_text[32];
-    int n;
     if (gdefcore_entity_revision_at(catalog, id, GDEFCORE_PUBLIC_ID_LEN, i, &seq,
             &actor, &actor_n) != GDEFCORE_OK) {
       return -1;
     }
-    n = snprintf(seq_text, sizeof seq_text, "%llu", (unsigned long long)seq);
-    if (n <= 0 || page_str(page, "<li>") != 0 ||
-        page_esc(page, seq_text, (size_t)n) != 0) {
+    /* The revision's sequence number stays on the server: a bare integer on a
+     * page is the shape of an internal id (AD-18 item 8), and the line is
+     * already in order. */
+    (void)seq;
+    if (page_str(page, "<li>") != 0) {
       gdefcore_text_free(catalog, actor);
       return -1;
     }
     if (actor != NULL && actor_n > 0) {
-      if (page_str(page, " ") != 0 || page_esc(page, actor, actor_n) != 0) {
+      if (page_esc(page, actor, actor_n) != 0) {
         gdefcore_text_free(catalog, actor);
         return -1;
       }
