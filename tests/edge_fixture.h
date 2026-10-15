@@ -33,6 +33,8 @@
 #include <ghoti.io/defiant-core/access.h>
 #include <ghoti.io/defiant-core/account.h>
 #include <ghoti.io/defiant-core/form.h>
+#include <ghoti.io/defiant-core/module.h>
+#include <ghoti.io/defiant-core/template.h>
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-storage-memory/memory.h>
 #include <ghoti.io/cutil/fiber.h>
@@ -356,6 +358,7 @@ class Edge : public ::testing::Test {
   GDEFSTOR_Store * registry_;
   GDEFSTOR_Store * site_;
   GDEFCORE_Inst * inst_;
+  GDEFCORE_Host * host_ = NULL;
   GDEFWEB_Server * server_;
   uint8_t root_[GDEFCORE_ACCOUNT_ROOT_LEN];
   std::string saved_listen_;
@@ -409,6 +412,8 @@ class Edge : public ::testing::Test {
 
   void TearDown() override {
     gdefweb_server_destroy(server_);
+    gdefcore_host_destroy(host_);
+    host_ = NULL;
     gdefcore_inst_destroy(inst_);
     gdefstor_store_destroy(site_);
     gdefstor_store_destroy(registry_);
@@ -434,6 +439,33 @@ class Edge : public ::testing::Test {
         gdefweb_server_set_inst(server_, inst_, root_, sizeof root_));
     ASSERT_EQ(GDEFWEB_OK, gdefweb_server_listen(server_));
     ASSERT_NE(gdefweb_server_accepting(server_), 0);
+  }
+
+  /* The module host of the process, given to the server. After Listen. */
+  void UseHost() {
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_host_open(site_, NULL, &host_));
+    ASSERT_EQ(GDEFWEB_OK, gdefweb_server_set_host(server_, host_));
+  }
+
+  /*
+   * Grant the admin role the permission to edit templates of each kind, by
+   * changeset, as an operator would. Nothing grants it before this.
+   */
+  void GrantTemplateKinds(const char * id, const std::vector<std::string> & kinds) {
+    GDEFCORE_Catalog * catalog = NULL;
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_inst_catalog_open(inst_, id, strlen(id), &catalog));
+    for (const std::string & kind : kinds) {
+      char * label = NULL;
+      size_t label_len = 0;
+      ASSERT_EQ(GDEFCORE_OK,
+          gdefcore_template_edit_label(catalog, kind.c_str(), kind.size(), &label,
+              &label_len));
+      ASSERT_EQ(GDEFCORE_OK,
+          gdefcore_access_grant(catalog, "admin", 5, label, label_len, "core.role", 9));
+      gdefcore_text_free(catalog, label);
+    }
+    gdefcore_catalog_destroy(catalog);
   }
 
   bool Pump(Exchange * ex, int ms) {

@@ -27,7 +27,10 @@
  * Scan.EveryRoute drives the real server, two tenants on one process, across
  * every route it serves, as an anonymous visitor and as each tenant's admin:
  * the public pages, the sign-in page and its refusal, the admin pages, a
- * saved post, the front-page edit, the undo page and an undo, a logout, the
+ * saved post, the front-page edit, the undo page and an undo, the template
+ * editor (the list, a template, its history, and validate, preview, a refused
+ * and a stale save, a save and a revert, each with the page it redirects to),
+ * a logout, the
  * fixed 404 for an unknown host, a bad request, a refused cross-origin write,
  * and the redirects. The scanner reads every body and every header line.
  *
@@ -272,6 +275,10 @@ TEST_F(Scan, Control) {
 
 TEST_F(Scan, EveryRoute) {
   Open();
+  /* The template editor shows nothing to an admin who holds no template
+   * permission, which would be a scan of empty pages: grant both kinds. */
+  GrantTemplateKinds(a_, {"core.page", "core.pane"});
+  GrantTemplateKinds(b_, {"core.page", "core.pane"});
   const struct {
     const char * host;
     const char * alias;
@@ -287,7 +294,9 @@ TEST_F(Scan, EveryRoute) {
   const char * const get_paths[] = {"/", "/no-such", "/login", "/admin",
       "/admin/post", "/admin/front", "/admin/undo", "/admin/more",
       "/admin/nothing", "/admin/post/saved", "/defiant.css", "/defiant.js",
-      "/alive", "/ready", "/logout"};
+      "/alive", "/ready", "/logout", "/admin/templates", "/admin/templates/layout",
+      "/admin/templates/recent", "/admin/templates/recent/history",
+      "/admin/templates/no-such", "/admin/templates/no-such/history"};
   /* Interleaved: both tenants, every identity, in turn. */
   for (int round = 0; round < 2; round++) {
     for (int i = 0; i < 2; i++) {
@@ -342,6 +351,63 @@ TEST_F(Scan, EveryRoute) {
       Check(label + " POST /admin/undo", undone);
       Check(label + " GET after POST /admin/undo",
           GetAt(host, HeaderValue(undone, "Location").c_str(), admin[i]));
+    }
+  }
+  /* The template editor: every action, and the pages each one redirects to. */
+  for (int i = 0; i < 2; i++) {
+    const char * host = tenants[i].host;
+    std::string label = std::string(host) + " templates";
+    for (const char * name : {"recent", "layout"}) {
+      std::string path = std::string("/admin/templates/") + name;
+      const char * kind = std::string(name) == "layout" ? "core.page" : "core.pane";
+      std::string page = GetAt(host, path.c_str(), admin[i]).body;
+      std::string tokens = "token=" + InputValue(page, "token", 0) + "&token=" +
+          InputValue(page, "token", 1) + "&kind=" + kind;
+      ASSERT_FALSE(InputValue(page, "token", 1).empty());
+      const std::string bad = "%3Cp%3Eone%3C%2Fp%3E%0A%0A%3C%25%3D+titl+%25%3E";
+      const std::string good = std::string(name) == "layout" ? "%3Cp%3Efixed%3C%2Fp%3E"
+          : "%3C%25+use+title%3B+%25%3E%3Cb%3E%3C%25%3D+title+%25%3E%3C%2Fb%3E";
+      for (const char * action : {"validate", "preview"}) {
+        for (const std::string & body : {bad, good}) {
+          Reply sent = PostAt(host, path.c_str(), admin[i],
+              tokens + "&body=" + body + "&confirm=&do=" + action);
+          Check(label + " POST " + path + " " + action + " (303)", sent);
+          EXPECT_EQ(303, sent.status);
+          Check(label + " GET after " + action,
+              GetAt(host, HeaderValue(sent, "Location").c_str(), admin[i]));
+        }
+      }
+      Reply wrong = PostAt(host, path.c_str(), admin[i],
+          tokens + "&body=" + good + "&confirm=nope&do=save");
+      Check(label + " POST " + path + " save (wrong name)", wrong);
+      Check(label + " GET after wrong name",
+          GetAt(host, HeaderValue(wrong, "Location").c_str(), admin[i]));
+      Reply invalid = PostAt(host, path.c_str(), admin[i],
+          tokens + "&body=" + bad + "&confirm=" + name + "&do=save");
+      Check(label + " POST " + path + " save (invalid)", invalid);
+      Check(label + " GET after invalid save",
+          GetAt(host, HeaderValue(invalid, "Location").c_str(),
+              admin[i]));
+      Reply saved = PostAt(host, path.c_str(), admin[i],
+          tokens + "&body=" + good + "&confirm=" + name + "&do=save");
+      Check(label + " POST " + path + " save (303)", saved);
+      Check(label + " GET after save",
+          GetAt(host, HeaderValue(saved, "Location").c_str(), admin[i]));
+      /* The same form again is stale: a conflict page. */
+      Reply stale = PostAt(host, path.c_str(), admin[i],
+          tokens + "&body=" + good + "&confirm=" + name + "&do=save");
+      Check(label + " POST " + path + " save (stale)", stale);
+      Check(label + " GET after stale save",
+          GetAt(host, HeaderValue(stale, "Location").c_str(), admin[i]));
+      std::string history_path = path + "/history";
+      std::string history = GetAt(host, history_path.c_str(), admin[i]).body;
+      Check(label + " GET " + history_path + " (after saves)",
+          GetAt(host, history_path.c_str(), admin[i]));
+      Reply reverted = PostAt(host, history_path.c_str(), admin[i],
+          "token=" + InputValue(history, "token", 0) + "&confirm=" + name + "&do=revert");
+      Check(label + " POST " + history_path + " revert", reverted);
+      Check(label + " GET after revert",
+          GetAt(host, HeaderValue(reverted, "Location").c_str(), admin[i]));
     }
   }
   /* Responses that name no tenant. */

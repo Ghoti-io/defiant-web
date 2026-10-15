@@ -36,6 +36,7 @@
 #include <ghoti.io/defiant-web/allocator.h>
 #include <ghoti.io/defiant-web/core.h>
 #include <ghoti.io/defiant-core/inst.h>
+#include <ghoti.io/defiant-core/module.h>
 #include <ghoti.io/cutil/loop.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -69,6 +70,18 @@ GDEFWEB_API void gdefweb_server_destroy(GDEFWEB_Server * server);
  */
 GDEFWEB_API GDEFWEB_Result gdefweb_server_set_inst(GDEFWEB_Server * server,
     GDEFCORE_Inst * inst, const uint8_t * root, size_t root_len);
+
+/**
+ * @brief Give every request the module host of this process, or clear it.
+ *
+ * The host is bound to the catalog each request opens, so the template
+ * editor's writes run the `template-write` decision hook and the contracts
+ * it validates against include the modules' contributions. The host is
+ * borrowed and must outlive the server. A server with none runs no module
+ * code.
+ */
+GDEFWEB_API GDEFWEB_Result gdefweb_server_set_host(GDEFWEB_Server * server,
+    GDEFCORE_Host * host);
 
 /**
  * @brief Bind `DEFIANT_LISTEN`. An empty value binds nothing and succeeds.

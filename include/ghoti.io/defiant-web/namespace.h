@@ -46,6 +46,7 @@
 #define gdefweb_server_local GHOTIIO_DEFWEB(gdefweb_server_local)
 #define gdefweb_server_loop GHOTIIO_DEFWEB(gdefweb_server_loop)
 #define gdefweb_server_serving GHOTIIO_DEFWEB(gdefweb_server_serving)
+#define gdefweb_server_set_host GHOTIIO_DEFWEB(gdefweb_server_set_host)
 #define gdefweb_server_set_inst GHOTIIO_DEFWEB(gdefweb_server_set_inst)
 
 /// @endcond

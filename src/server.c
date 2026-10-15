@@ -67,6 +67,7 @@ struct GDEFWEB_Server {
   char * proxies;
   size_t proxies_len;
   GDEFCORE_Inst * inst;
+  GDEFCORE_Host * host;
   uint8_t root[GDEFCORE_ACCOUNT_ROOT_LEN];
   int has_root;
   GCU_Fiber * fiber;
@@ -210,6 +211,15 @@ GDEFWEB_Result gdefweb_server_set_inst(GDEFWEB_Server * server,
   memcpy(server->root, root, GDEFCORE_ACCOUNT_ROOT_LEN);
   server->has_root = 1;
   server->inst = inst;
+  return GDEFWEB_OK;
+}
+
+GDEFWEB_Result gdefweb_server_set_host(GDEFWEB_Server * server,
+    GDEFCORE_Host * host) {
+  if (server == NULL) {
+    return GDEFWEB_ERR_INVALID;
+  }
+  server->host = host;
   return GDEFWEB_OK;
 }
 
@@ -1203,6 +1213,9 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
         in.method, in.path, client);
     goto out;
   }
+  /* The modules the process runs are asked about template writes, and the
+   * contracts they extend are the ones templates are validated against. */
+  gdefcore_catalog_bind_host(catalog, server->host);
   keyring = gdefcore_inst_tenant_keyring(server->inst, id, strlen(id));
   if (keyring == NULL ||
       gdefcore_request_create(storage, sizeof storage, 0, 0, NULL, &request) !=

@@ -32,6 +32,9 @@
  * token's own tenant, which must be accepted: a test that refuses everything
  * proves nothing.
  *
+ * The template editor is held to the same: its forms, its redirects' notes and
+ * its saves belong to the tenant that made them.
+ *
  * tools/check-plants.sh plants "a tenant-A token accepted at tenant B" and
  * "the forwarded host trusted from a stranger" in scratch copies of the
  * server and requires Tenants.SessionAtOtherTenant and Tenants.HostSelects to
@@ -175,6 +178,67 @@ TEST_F(Tenants, FormAtOtherTenant) {
   EXPECT_FALSE(Has(front_a, "Beta Only"));
   EXPECT_TRUE(Has(front_b, "Beta Only"));
   EXPECT_FALSE(Has(front_b, "Alpha Only"));
+}
+
+TEST_F(Tenants, TemplateEditorAtOtherTenant) {
+  Open();
+  GrantTemplateKinds(a_, {"core.pane"});
+  GrantTemplateKinds(b_, {"core.pane"});
+  std::string ca = CookiesFor(kHostA, "ada", "secret");
+  std::string cb = CookiesFor(kHostB, "ada", "secret");
+  ASSERT_FALSE(ca.empty());
+  ASSERT_FALSE(cb.empty());
+  const std::string body = "%3C%25+use+title%3B+%25%3E";
+  const std::string fields = "&kind=core.pane&confirm=recent&do=save&body=";
+  Reply page_a = GetAt(kHostA, "/admin/templates/recent", ca);
+  Reply page_b = GetAt(kHostB, "/admin/templates/recent", cb);
+  ASSERT_FALSE(InputValue(page_a.body, "token", 1).empty());
+  ASSERT_FALSE(InputValue(page_b.body, "token", 1).empty());
+  auto tokens = [](const Reply & page) {
+    return "token=" + InputValue(page.body, "token", 0) + "&token=" +
+        InputValue(page.body, "token", 1);
+  };
+  /* A session at B is a stranger at B, for every editor page. */
+  for (const char * path : {"/admin/templates", "/admin/templates/recent",
+           "/admin/templates/recent/history"}) {
+    ExpectStranger(kHostB, path, GetAt(kHostB, path, ca), "A's session at B");
+    ExpectStranger(kHostA, path, GetAt(kHostA, path, cb), "B's session at A");
+  }
+  /* A's form under B's session and under A's, sent to B; and B's sent to A. */
+  PostFollow(kHostB, "/admin/templates/recent", cb,
+      tokens(page_a) + fields + body + "CROSS-ONE");
+  PostFollow(kHostB, "/admin/templates/recent", ca,
+      tokens(page_a) + fields + body + "CROSS-TWO");
+  PostFollow(kHostA, "/admin/templates/recent", ca,
+      tokens(page_b) + fields + body + "CROSS-THREE");
+  PostFollow(kHostA, "/admin/templates/recent", cb,
+      tokens(page_b) + fields + body + "CROSS-FOUR");
+  for (const char * host : {kHostA, kHostB}) {
+    std::string front = GetAt(host, "/", std::string()).body;
+    for (const char * mark : {"CROSS-ONE", "CROSS-TWO", "CROSS-THREE", "CROSS-FOUR"}) {
+      EXPECT_FALSE(Has(front, mark)) << host << " shows " << mark;
+    }
+  }
+  /* What a redirect carries is its tenant's. */
+  Reply sent = PostAt(kHostA, "/admin/templates/recent", ca,
+      tokens(page_a) + "&kind=core.pane&do=validate&body=" + body + "ALPHA-DRAFT");
+  std::string where = HeaderValue(sent, "Location");
+  ASSERT_FALSE(where.empty());
+  EXPECT_TRUE(Has(GetAt(kHostA, where.c_str(), ca).body, "ALPHA-DRAFT"));
+  EXPECT_FALSE(Has(GetAt(kHostB, where.c_str(), cb).body, "ALPHA-DRAFT"));
+  /* The controls: each form at its own tenant, with its own session. */
+  Reply done_a = PostFollow(kHostA, "/admin/templates/recent", ca,
+      tokens(page_a) + fields + body + "%3Cp%3EALPHA-ONLY%3C%2Fp%3E");
+  Reply done_b = PostFollow(kHostB, "/admin/templates/recent", cb,
+      tokens(page_b) + fields + body + "%3Cp%3EBETA-ONLY%3C%2Fp%3E");
+  EXPECT_TRUE(Has(done_a.body, "Saved."));
+  EXPECT_TRUE(Has(done_b.body, "Saved."));
+  std::string front_a = GetAt(kHostA, "/", std::string()).body;
+  std::string front_b = GetAt(kHostB, "/", std::string()).body;
+  EXPECT_TRUE(Has(front_a, "ALPHA-ONLY"));
+  EXPECT_FALSE(Has(front_a, "BETA-ONLY"));
+  EXPECT_TRUE(Has(front_b, "BETA-ONLY"));
+  EXPECT_FALSE(Has(front_b, "ALPHA-ONLY"));
 }
 
 TEST_F(Tenants, NoPageLeaks) {
