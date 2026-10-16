@@ -471,7 +471,7 @@ TESTFLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs --cfla
 # coverage target does, because --coverage links the gcov runtime, whose
 # mangle_path check-symbols is right to reject in a shipping library and
 # wrong to reject in an instrumented one. Spelled as text's TEST_GATES is.
-TEST_GATES ?= check-symbols check-aliasing check-seams check-plants check-tpladmin $(if $(filter Linux,$(OS_NAME)),check-defiant check-demo)
+TEST_GATES ?= check-symbols check-aliasing check-seams check-plants check-tpladmin check-access $(if $(filter Linux,$(OS_NAME)),check-defiant check-demo)
 
 # Valgrind flags (exclude "still reachable" as it's not a leak)
 # --suppressions: see tests/valgrind.supp. It holds allocations that are
@@ -711,7 +711,7 @@ demo: $(APP_DIR)/defiant$(EXE_EXTENSION) $(APP_DIR)/defiant-demo$(EXE_EXTENSION)
 ####################################################################
 
 # General commands
-.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-seams check-plants check-tpladmin check-gates check-defiant check-demo demo
+.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-seams check-plants check-tpladmin check-access check-gates check-defiant check-demo demo
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-valgrind test-valgrind-quiet test-watch uninstall watch
 # Debug build commands
@@ -986,6 +986,8 @@ check-plants: ## Plants in scratch copies of the server turn the scanner and cro
 	@tools/check-plants.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX))
 check-tpladmin: ## Plants in scratch copies of the template editor turn its named tests red
 	@tools/check-tpladmin.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX))
+check-access: ## Plants in scratch copies of the access matrix page turn its named tests red
+	@tools/check-access.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX))
 
 check-defiant: $(APP_DIR)/defiant$(EXE_EXTENSION) ## The defiant program starts, restarts, refuses and stops
 	@LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/check-defiant.sh "$(APP_DIR)/defiant$(EXE_EXTENSION)"

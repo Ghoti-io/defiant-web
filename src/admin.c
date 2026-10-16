@@ -850,11 +850,93 @@ static int more_page(const GDEFWEB_Allocator * alloc, struct GDEFWEB_Admin_Reply
   memset(&page, 0, sizeof page);
   page.alloc = alloc;
   if (page_begin(&page, "More") != 0 ||
-      page_str(&page, "<h2>Server</h2><p>This server is running.</p>") != 0) {
+      page_str(&page, "<h2>Server</h2><p>This server is running.</p>") != 0 ||
+      page_str(&page, "<h2>Access</h2><p><a href=\"/admin/access\">What is "
+                      "granted</a></p>") != 0) {
     page_free(&page);
     return -1;
   }
   return take_page(&page, out);
+}
+
+static int unknown_admin(const char * method, struct GDEFWEB_Admin_Reply * out);
+
+/*
+ * /admin/access: what is granted, and by whom. Read only. The rows come from
+ * gdefcore_access_matrix(), which answers an administrator alone, and every
+ * text in them (a role's name, a module's name, a permission's label, a
+ * condition's words) was written by someone, so every one is escaped. Nothing
+ * is printed raw.
+ */
+static int access_cell(struct Page * page, const char * open_tag,
+    const char * text, size_t n) {
+  return page_str(page, open_tag) != 0 || page_esc(page, text, n) != 0 ||
+         page_str(page, "</td>") != 0;
+}
+
+static int access_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, struct GDEFWEB_Admin_Reply * out) {
+  struct Page page;
+  GDEFCORE_Access_Matrix_Row * rows = NULL;
+  size_t n = 0;
+  size_t i;
+  GDEFCORE_Result rc = gdefcore_access_matrix(catalog, request, &rows, &n);
+  if (rc == GDEFCORE_ERR_INVALID) {
+    return unknown_admin("GET", out);
+  }
+  if (rc != GDEFCORE_OK) {
+    return -1;
+  }
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  if (page_begin(&page, "Access") != 0 ||
+      page_str(&page, "<h1>Access</h1><p>What each role and each enabled module "
+                      "grants. Nothing denies: a person holds whatever any of "
+                      "these gives them.</p>") != 0) {
+    goto fail;
+  }
+  if (n == 0) {
+    if (page_str(&page, "<p>Nothing is granted.</p>") != 0) {
+      goto fail;
+    }
+    gdefcore_access_matrix_free(catalog, rows, n);
+    return take_page(&page, out);
+  }
+  if (page_str(&page, "<table><thead><tr><th>Granted by</th><th>Permission</th>"
+                      "<th>Action</th><th>On</th><th>When</th><th>Risk</th></tr>"
+                      "</thead><tbody>") != 0) {
+    goto fail;
+  }
+  for (i = 0; i < n; i++) {
+    const GDEFCORE_Access_Matrix_Row * r = &rows[i];
+    const char * risk = gdefcore_access_risk_name(r->risk);
+    if (page_str(&page, "<tr>") != 0 ||
+        access_cell(&page, "<td>", r->source, r->source_len) != 0 ||
+        access_cell(&page, "<td>", r->permission, r->permission_len) != 0 ||
+        access_cell(&page, "<td>", r->action, r->action_len) != 0 ||
+        page_str(&page, "<td>") != 0 ||
+        page_esc(&page, r->type_name, r->type_name_len) != 0 ||
+        (r->field_len > 0 &&
+            (page_str(&page, ", field ") != 0 ||
+                page_esc(&page, r->field, r->field_len) != 0)) ||
+        page_str(&page, "</td>") != 0 ||
+        access_cell(&page, "<td>", r->explain, r->explain_len) != 0 ||
+        page_str(&page, "<td class=\"risk-") != 0 ||
+        page_esc(&page, risk, strlen(risk)) != 0 || page_str(&page, "\">") != 0 ||
+        page_esc(&page, risk, strlen(risk)) != 0 ||
+        page_str(&page, "</td></tr>") != 0) {
+      goto fail;
+    }
+  }
+  if (page_str(&page, "</tbody></table>") != 0) {
+    goto fail;
+  }
+  gdefcore_access_matrix_free(catalog, rows, n);
+  return take_page(&page, out);
+fail:
+  gdefcore_access_matrix_free(catalog, rows, n);
+  page_free(&page);
+  return -1;
 }
 
 static int post_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
@@ -3195,6 +3277,9 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
     rc = is_get ? home_page(alloc, out) : unknown_admin(method, out);
   } else if (strcmp(path, "/admin/more") == 0) {
     rc = more_page(alloc, out);
+  } else if (strcmp(path, "/admin/access") == 0) {
+    rc = is_get ? access_page(alloc, catalog, request, out)
+                : unknown_admin(method, out);
   } else if (strcmp(path, "/admin/post") == 0) {
     rc = is_get ? post_page(alloc, catalog, request, keyring, root, root_len,
                             (const char *)raw, raw_n, 0, out)

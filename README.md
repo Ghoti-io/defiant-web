@@ -24,11 +24,20 @@ exist. A module that subscribes to the `template-write` decision hook is asked
 about every save, once `gdefweb_server_set_host()` has given the server the
 process's module host. The rules are in defiant-core's `documentation/templates.md`.
 
+`/admin/access` is the access matrix: a read-only table of what each role and
+each enabled module grants (who grants it, the permission, the action, the
+type, the condition in plain words and a risk of low, medium or high). It is
+there for the administrator only; to anyone else it is a page that does not
+exist. Every text in it was written by someone, a module's author included, and
+is escaped. The rows and their order are defiant-core's
+(`gdefcore_access_matrix()`, `documentation/access.md`).
+
 ## Tests and gates
 
 `make test PREFIX=...` also runs `check-seams` (no private header is included
 across a seam), `check-plants` (the response scanner and the two-tenant tests
 are shown to fail, by name, when a defect is planted in a scratch copy of the
-server), `check-tpladmin` (the same for the template editor), and on Linux
+server), `check-tpladmin` (the same for the template editor), `check-access` (the same
+for the access matrix page), and on Linux
 `check-defiant` and `check-demo`. The scanner uses
 `defiant-test`, which has to be installed in the same prefix.
