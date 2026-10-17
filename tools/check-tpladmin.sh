@@ -53,7 +53,7 @@ run_tests() { # run_tests <dir> <log> <exe>...
 }
 
 copy_tree "$SCRATCH/control"
-if ! run_tests "$SCRATCH/control" "$SCRATCH/control.log" testTpladmin; then
+if ! run_tests "$SCRATCH/control" "$SCRATCH/control.log" testTpladmin testEdge; then
   printf 'check-tpladmin: the CONTROL (unpatched) copy fails, so no result below\n' >&2
   printf 'would mean anything. Its log:\n' >&2
   grep -v '^g++\|^cc \|^gcc ' "$SCRATCH/control.log" | tail -40 >&2
@@ -218,6 +218,37 @@ edit src/admin.c \
       memcmp(form_id, act == A_SAVE ? "tpl-save" : "tpl-check", form_len) != 0) {' \
 '      0) {'
 caught testTpladmin TplAdmin.ASignedFormIsRequired 'out of date'
+
+# The editor is shown the body in force and not the latest draft (A5b: what the
+# editor sees is the head).
+begin editor-shows-the-body-in-force
+edit src/admin.c '  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_DRAFT,' \
+'  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_ACTIVE,'
+caught testTpladmin TplAdmin.TheEditorOpensTheLatestDraftAndNotOnlyTheBodyInForce \
+  'LATEST-DRAFT-BODY'
+
+# The pages name entities by the published view, so an unpublished template
+# cannot be opened by the person who would republish it.
+begin admin-names-by-the-published-view
+edit src/admin.c '  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_ACTIVE,
+      id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, field, strlen(field), &texts, &lens,
+      &count);' \
+'  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED,
+      id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, field, strlen(field), &texts, &lens,
+      &count);'
+caught testTpladmin TplAdmin.AnUnpublishedTemplateIsStillFoundAndOpenedByItsName \
+  '<textarea name'
+
+# The same plant, seen from the post list: a post that is only a draft has no
+# title in the editor's undo page.
+begin admin-names-posts-by-the-published-view
+edit src/admin.c '  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_ACTIVE,
+      id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, field, strlen(field), &texts, &lens,
+      &count);' \
+'  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED,
+      id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, field, strlen(field), &texts, &lens,
+      &count);'
+caught testEdge Edge.AdminNamesAPostThatIsOnlyADraft 'Post Only A Draft'
 
 if [ "$fail" -ne 0 ]; then
   exit 1

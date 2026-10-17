@@ -662,12 +662,19 @@ static int one_value(GDEFCORE_Value * value, const char * field, const char * te
   return 0;
 }
 
+/*
+ * A field of the revision the entity currently is (its active revision), whether
+ * or not it is published. The admin pages name entities for the person who edits
+ * them, so a post that is still a draft has a title here and a template that was
+ * unpublished can still be found by its name: the published view would show
+ * neither (SPEC decision 9).
+ */
 static int field_copy(GDEFCORE_Catalog * catalog, const char * id, const char * field,
     char * out, size_t cap) {
   char ** texts = NULL;
   size_t * lens = NULL;
   size_t count = 0;
-  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED,
+  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_ACTIVE,
       id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, field, strlen(field), &texts, &lens,
       &count);
   if (rc != GDEFCORE_OK || count == 0 || texts[0] == NULL || lens[0] + 1 > cap) {
@@ -2035,13 +2042,17 @@ static size_t normalize_newlines(char * s, size_t n) {
 
 /* Reading the store (unfiltered; made only for a principal who may) ------ */
 
-/* The first value of @p field, malloc'd; an absent field is the empty string. */
+/* The first value of @p field in the head revision, malloc'd; an absent field is
+ * the empty string. The head is the latest revision, which may be a draft not yet
+ * made active: it is what an editor opens to change and what a conflict check
+ * (made against the head's sequence) is about, so it is what the editor is shown
+ * as "the stored version". */
 static int stored_text(GDEFCORE_Catalog * catalog, const char * id, const char * field,
     char ** out, size_t * out_n) {
   char ** texts = NULL;
   size_t * lens = NULL;
   size_t count = 0;
-  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED,
+  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_DRAFT,
       id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, field, strlen(field), &texts, &lens, &count);
   if (rc == GDEFCORE_ERR_INVALID) {
     *out = dup_bytes("", 0);

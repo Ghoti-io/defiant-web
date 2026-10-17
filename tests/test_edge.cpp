@@ -909,6 +909,35 @@ TEST_F(Edge, AdminUndo) {
   EXPECT_FALSE(Has(page.body, "rase"));
 }
 
+/* The admin pages name a post by the revision it currently is, published or
+ * not: a post that exists only as a draft has a title in the editor's list, and
+ * the public front page does not show it. */
+TEST_F(Edge, AdminNamesAPostThatIsOnlyADraft) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  char post[GDEFCORE_PUBLIC_ID_LEN + 1];
+  GDEFCORE_Catalog * catalog = NULL;
+  Site(id);
+  std::string cookie = CookieLine(Login("ada", "secret"));
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_catalog_open(inst_, id, strlen(id), &catalog));
+  {
+    GDEFCORE_Changeset * cs = NULL;
+    GDEFCORE_Value values[2];
+    const char * slots[2];
+    size_t lens[2];
+    OneValue(&values[0], "title", "Only A Draft", &slots[0], &lens[0]);
+    OneValue(&values[1], "body", "never published", &slots[1], &lens[1]);
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_entity_create(catalog, "site.post", 9, post, NULL));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_entity_save_draft(cs, post, GDEFCORE_PUBLIC_ID_LEN, "en", 2, values, 2));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, NULL, 0));
+    gdefcore_changeset_destroy(cs);
+  }
+  gdefcore_catalog_destroy(catalog);
+  EXPECT_FALSE(Has(Visit("/"), "Only A Draft"));
+  EXPECT_TRUE(Has(Get("/admin/undo", cookie).body, "Post Only A Draft"));
+}
+
 TEST_F(Edge, AdminRedirects) {
   char id[GDEFCORE_PUBLIC_ID_LEN + 1];
   Site(id);

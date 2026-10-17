@@ -247,6 +247,39 @@ class TplAdmin : public Edge {
     gdefcore_catalog_destroy(catalog);
   }
 
+  /* A newer draft of a template: the head moves, the active revision does not. */
+  void OperatorDraft(const char * name, const std::string & body, const char * kind) {
+    GDEFCORE_Catalog * catalog = Catalog();
+    char tid[GDEFCORE_PUBLIC_ID_LEN + 1];
+    GDEFCORE_Changeset * cs = NULL;
+    GDEFCORE_Value values[3];
+    const char * slots[3] = {name, body.c_str(), kind};
+    size_t lens[3] = {strlen(name), body.size(), strlen(kind)};
+    ASSERT_TRUE(FindId(catalog, name, tid));
+    Val(&values[0], "name", &slots[0], &lens[0]);
+    Val(&values[1], "body", &slots[1], &lens[1]);
+    Val(&values[2], "kind", &slots[2], &lens[2]);
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_entity_save_draft(cs, tid, GDEFCORE_PUBLIC_ID_LEN, "en", 2, values, 3));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, "core.template", 13));
+    gdefcore_changeset_destroy(cs);
+    gdefcore_catalog_destroy(catalog);
+  }
+
+  /* Unpublish a template: it keeps its content and stops being served. */
+  void Unpublish(const char * name) {
+    GDEFCORE_Catalog * catalog = Catalog();
+    char tid[GDEFCORE_PUBLIC_ID_LEN + 1];
+    GDEFCORE_Changeset * cs = NULL;
+    ASSERT_TRUE(FindId(catalog, name, tid));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_entity_unpublish(cs, tid, GDEFCORE_PUBLIC_ID_LEN));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, "core.template", 13));
+    gdefcore_changeset_destroy(cs);
+    gdefcore_catalog_destroy(catalog);
+  }
+
   /* Install and enable the judge for this tenant. */
   void EnableJudge(const std::string & allowed) {
     GDEFCORE_Catalog * catalog = Catalog();
@@ -705,6 +738,39 @@ TEST_F(TplAdmin, HistoryListsRevisionsAndRevertRestoresTheOldBody) {
 /* -------------------------------------------------------------------- */
 /* A hostile body, and the flash                                          */
 /* -------------------------------------------------------------------- */
+
+/* What the editor sees is the head: a draft newer than the body in force is
+ * the thing they are about to change, and a conflict is judged against it. The
+ * published view would show them a body they are no longer editing. */
+TEST_F(TplAdmin, TheEditorOpensTheLatestDraftAndNotOnlyTheBodyInForce) {
+  Open({"core.pane"});
+  const std::string draft = "<div id=\"d\">LATEST-DRAFT-BODY</div>";
+  /* Control: before the draft, the page shows the body in force. */
+  EXPECT_FALSE(Has(EditPage("recent").body, "LATEST-DRAFT-BODY"));
+  OperatorDraft("recent", draft, "core.pane");
+  Reply page = EditPage("recent");
+  EXPECT_EQ(200, page.status);
+  EXPECT_TRUE(Has(page.body, "LATEST-DRAFT-BODY"));
+  /* The body in force is untouched: the front page and the published view. */
+  EXPECT_NE(draft, Stored("recent", "body"));
+  EXPECT_FALSE(Has(Visit("/"), "LATEST-DRAFT-BODY"));
+}
+
+/* An unpublished template is still there for the person who edits it: the
+ * pages name and open entities by what they currently are, not by what the
+ * public may see. */
+TEST_F(TplAdmin, AnUnpublishedTemplateIsStillFoundAndOpenedByItsName) {
+  Open({"core.pane"});
+  Reply before = EditPage("recent");
+  ASSERT_EQ(200, before.status);
+  Unpublish("recent");
+  Reply page = EditPage("recent");
+  EXPECT_EQ(200, page.status);
+  EXPECT_TRUE(Has(page.body, "<textarea name=\"body\""));
+  EXPECT_TRUE(Has(Get("/admin/templates", cookie_).body, "recent"));
+  /* The control: a name nobody has is a page with no editor in it. */
+  EXPECT_FALSE(Has(EditPage("no-such-template").body, "<textarea name=\"body\""));
+}
 
 TEST_F(TplAdmin, AHostileStoredBodyCannotBreakTheEditPage) {
   Open({"core.pane"});
