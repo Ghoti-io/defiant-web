@@ -9,9 +9,9 @@
 # nothing of it. Each step prints one line. The first failure stops the run
 # and exits non-zero.
 #
-# GHOTI_DEMO_PLANT=ledger restores the snapshot through the storage import and
-# lets the snapshot's older ledger replace the live one, and the run must fail
-# at step 5.
+# GHOTI_DEMO_PLANT=ledger restores the backup pair trusting its own ledger
+# alone (the key set into a key store of its own, the live ledger never read)
+# and the rows through the storage import, and the run must fail at step 5.
 #
 # Linux only: the day passes through an LD_PRELOAD clock.
 set -u

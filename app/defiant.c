@@ -42,7 +42,9 @@
 #include <ghoti.io/defiant-core/entity.h>
 #include <ghoti.io/defiant-core/inst.h>
 #include <ghoti.io/defiant-core/render.h>
+#include <ghoti.io/defiant-core/subject.h>
 #include <ghoti.io/defiant-storage-memory/memory.h>
+#include <ghoti.io/defiant-storage-sqlite/model.h>
 #include <ghoti.io/defiant-storage-sqlite/sqlite.h>
 #include <ghoti.io/security/random.h>
 #include <ghoti.io/cutil/fiber.h>
@@ -127,6 +129,34 @@ static int open_store(const char * data, const char * name, GDEFSTOR_Store ** ou
   return 0;
 }
 
+/* The key store (AD-19): the tenant keyrings, and later subject keys and the
+ * ledger, apart from every data store. In memory without DEFIANT_DATA, else a
+ * directory of key files of its own. */
+static int open_keys(const char * data, GDEFSTOR_KeyStore ** out) {
+  static GDEFSTOR_KeyCipher cipher;
+  gdefcore_subject_cipher(&cipher);
+  if (data == NULL) {
+    if (gdefsmemory_keystore_create(NULL, &cipher, out) != GDEFSMEMORY_OK) {
+      fprintf(stderr, "defiant: cannot open the memory key store\n");
+      return -1;
+    }
+    return 0;
+  }
+  {
+    char path[1024];
+    if (snprintf(path, sizeof path, "%s/keys", data) >= (int)sizeof path ||
+        ensure_dir(path) != 0) {
+      return -1;
+    }
+    if (gdefssqlite_keystore_create(path, &cipher, NULL, NULL, out) !=
+        GDEFSSQLITE_OK) {
+      fprintf(stderr, "defiant: cannot open the key store in %s\n", path);
+      return -1;
+    }
+  }
+  return 0;
+}
+
 /* The first admin, only when the tenant has no account at all. */
 static int first_admin(GDEFCORE_Inst * inst, const char * id, const uint8_t * root) {
   GDEFCORE_Catalog * catalog = NULL;
@@ -176,7 +206,7 @@ int main(void) {
   GDEFCORE_Inst_Config * config = NULL;
   GDEFSTOR_Store * registry = NULL;
   GDEFSTOR_Store * site = NULL;
-  GDEFSTOR_Store * side = NULL;
+  GDEFSTOR_KeyStore * keys = NULL;
   GDEFCORE_Inst * inst = NULL;
   GDEFWEB_Server * server = NULL;
   GDEFCORE_Catalog * catalog = NULL;
@@ -212,10 +242,10 @@ int main(void) {
     goto done;
   }
   if (open_store(data, "registry", &registry) != 0 ||
-      open_store(data, "site", &site) != 0 || open_store(data, "side", &side) != 0) {
+      open_store(data, "site", &site) != 0 || open_keys(data, &keys) != 0) {
     goto done;
   }
-  if (gdefcore_inst_open_side(registry, site, side, root, sizeof root, "", 0, NULL,
+  if (gdefcore_inst_open_keys(registry, site, keys, root, sizeof root, "", 0, NULL,
           &inst) != GDEFCORE_OK ||
       gdefcore_inst_default(inst, id) != GDEFCORE_OK ||
       gdefcore_inst_catalog_open(inst, id, strlen(id), &catalog) != GDEFCORE_OK ||
@@ -285,8 +315,8 @@ done:
     gdefcore_catalog_destroy(catalog);
   }
   gdefcore_inst_destroy(inst);
-  if (side != NULL) {
-    gdefstor_store_destroy(side);
+  if (keys != NULL) {
+    gdefstor_keystore_destroy(keys);
   }
   if (site != NULL) {
     gdefstor_store_destroy(site);

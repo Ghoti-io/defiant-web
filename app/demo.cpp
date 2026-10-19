@@ -44,6 +44,7 @@
 #include <ghoti.io/defiant-core/inst.h>
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/subject.h>
+#include <ghoti.io/defiant-storage-sqlite/model.h>
 #include <ghoti.io/defiant-storage-sqlite/sqlite.h>
 #include <ghoti.io/defiant-storage/defiant-storage.h>
 #include <ghoti.io/defiant-storage/snapshot.h>
@@ -427,7 +428,8 @@ int Web3(uint16_t port, const std::string &) {
 struct Site {
   GDEFSTOR_Store * registry = NULL;
   GDEFSTOR_Store * site = NULL;
-  GDEFSTOR_Store * side = NULL;
+  GDEFSTOR_Store * side = NULL; /* the blind store */
+  GDEFSTOR_KeyStore * keys = NULL;
   GDEFCORE_Inst * inst = NULL;
   GDEFCORE_Subjects * subjects = NULL;
   GDEFCORE_Catalog * catalog = NULL;
@@ -451,6 +453,19 @@ GDEFSTOR_Store * OpenSqlite(const std::string & dir) {
   return store;
 }
 
+/* The installation's key store (AD-19): keyrings, subject keys and the
+ * ledger, in a directory of key files apart from every data store. */
+GDEFSTOR_KeyStore * OpenKeys(const std::string & dir) {
+  static GDEFSTOR_KeyCipher cipher;
+  GDEFSTOR_KeyStore * keys = NULL;
+  gdefcore_subject_cipher(&cipher);
+  mkdir(dir.c_str(), 0700);
+  Need(gdefssqlite_keystore_create(dir.c_str(), &cipher, NULL, NULL, &keys) ==
+           GDEFSSQLITE_OK,
+      "could not open the key store in " + dir);
+  return keys;
+}
+
 void OpenSite(Site * s, const std::string & data) {
   const char * secret = getenv("DEFIANT_SECRET");
   Need(secret != NULL && strlen(secret) == 64, "DEFIANT_SECRET is not set");
@@ -460,14 +475,15 @@ void OpenSite(Site * s, const std::string & data) {
   s->registry = OpenSqlite(data + "/registry");
   s->site = OpenSqlite(data + "/site");
   s->side = OpenSqlite(data + "/side");
-  Need(gdefcore_inst_open_side(s->registry, s->site, s->side, s->root, sizeof s->root, "", 0,
+  s->keys = OpenKeys(data + "/keys");
+  Need(gdefcore_inst_open_keys(s->registry, s->site, s->keys, s->root, sizeof s->root, "", 0,
            NULL, &s->inst) == GDEFCORE_OK &&
            gdefcore_inst_default(s->inst, s->tenant) == GDEFCORE_OK &&
            gdefcore_inst_storage_key(s->inst, s->tenant, strlen(s->tenant), s->storage) ==
                GDEFCORE_OK &&
            gdefcore_inst_catalog_open(s->inst, s->tenant, strlen(s->tenant), &s->catalog) ==
                GDEFCORE_OK &&
-           gdefcore_subject_open(s->side, s->storage, sizeof s->storage, s->root,
+           gdefcore_subject_open(s->keys, s->side, s->storage, sizeof s->storage, s->root,
                sizeof s->root, gdefcore_inst_tenant_keyring(s->inst, s->tenant, strlen(s->tenant)),
                NULL, &s->subjects) == GDEFCORE_OK,
       "could not open the installation");
@@ -477,6 +493,7 @@ void CloseSite(Site * s) {
   gdefcore_subject_destroy(s->subjects);
   gdefcore_catalog_destroy(s->catalog);
   gdefcore_inst_destroy(s->inst);
+  gdefstor_keystore_destroy(s->keys);
   gdefstor_store_destroy(s->side);
   gdefstor_store_destroy(s->site);
   gdefstor_store_destroy(s->registry);
@@ -525,6 +542,13 @@ int Operator1(const std::string & data, const std::string & scratch) {
       "could not take the snapshot");
   WriteFile(scratch + "/snapshot.zip", std::string((const char *)zip, zip_n));
   gdefstor_bytes_free(NULL, zip);
+  /* Its key set, taken after it: the key half of the backup pair. */
+  uint8_t * set = NULL;
+  size_t set_n = 0;
+  Need(gdefcore_subject_keyset(s.subjects, &set, &set_n) == GDEFCORE_OK,
+      "could not take the key set");
+  WriteFile(scratch + "/keyset", std::string((const char *)set, set_n));
+  gdefstor_bytes_free(NULL, set);
   WriteFile(scratch + "/person", std::string(subject) + "\n" + entity + "\n");
   /* A second tenant on the same installation, with the starter kit. */
   char other[GDEFCORE_PUBLIC_ID_LEN + 1];
@@ -559,38 +583,30 @@ int Operator2(const std::string & data, const std::string & scratch) {
   Ok(4, "erase a person: the record now reads as erased");
   /* 5. restore the earlier snapshot into an empty tenant. */
   std::string zip = ReadFile(scratch + "/snapshot.zip");
-  Need(!zip.empty(), "there is no snapshot to restore");
+  std::string set = ReadFile(scratch + "/keyset");
+  Need(!zip.empty() && !set.empty(), "there is no backup pair to restore");
   GDEFSTOR_Store * empty = OpenSqlite(scratch + "/restored");
   const char * plant = getenv("GHOTI_DEMO_PLANT");
   if (plant != NULL && strcmp(plant, "ledger") == 0) {
-    /* A restore that trusts the snapshot's ledger alone: the rows go back
-     * through the storage import, which replays nothing, and the snapshot's
-     * older ledger becomes the live one. */
-    uint8_t * ledger = NULL;
-    size_t ledger_n = 0;
-    GDEFSTOR_Write * write = NULL;
-    GDEFSTOR_Column column;
-    Need(gdefstor_snapshot_import(empty, (const char *)s.storage, sizeof s.storage,
-             (const uint8_t *)zip.data(), zip.size(), NULL) == GDEFSTOR_OK &&
-             gdefstor_snapshot_ledger(s.site, (const uint8_t *)zip.data(), zip.size(), NULL,
-                 &ledger, &ledger_n) == GDEFSTOR_OK &&
-             gdefstor_write_begin(s.side, (const char *)s.storage, sizeof s.storage, NULL,
-                 &write) == GDEFSTOR_OK,
+    /* A restore that trusts the backup's ledger alone: the key set goes into
+     * a key store of its own, the live ledger with the newer erasure is never
+     * read, and the rows go back through the storage import. */
+    GDEFSTOR_KeyStore * fresh = OpenKeys(scratch + "/keys-restored");
+    Need(gdefstor_keystore_import(fresh, (const char *)s.storage, sizeof s.storage,
+             (const uint8_t *)set.data(), set.size()) == GDEFSTOR_OK,
+        "the planted restore failed to import the key set");
+    gdefcore_subject_destroy(s.subjects);
+    s.subjects = NULL;
+    gdefstor_keystore_destroy(s.keys);
+    s.keys = fresh;
+    Need(gdefcore_subject_open(s.keys, s.side, s.storage, sizeof s.storage, s.root,
+             sizeof s.root, NULL, NULL, &s.subjects) == GDEFCORE_OK &&
+             gdefstor_snapshot_import(empty, (const char *)s.storage, sizeof s.storage,
+                 (const uint8_t *)zip.data(), zip.size(), NULL) == GDEFSTOR_OK,
         "the planted restore failed to import");
-    memset(&column, 0, sizeof column);
-    column.name = "text";
-    column.name_len = 4;
-    column.value = ledger_n == 0 ? (const uint8_t *)"" : ledger;
-    column.value_len = ledger_n;
-    Need(gdefstor_projection_put(write, GDEFCORE_SUBJECT_LEDGER_TYPE,
-             strlen(GDEFCORE_SUBJECT_LEDGER_TYPE), GDEFCORE_SUBJECT_LEDGER_ID,
-             strlen(GDEFCORE_SUBJECT_LEDGER_ID), &column, 1) == GDEFSTOR_OK &&
-             gdefstor_write_commit(write) == GDEFSTOR_OK,
-        "the planted restore failed to write the ledger");
-    gdefstor_bytes_free(NULL, ledger);
   } else {
-    Need(gdefcore_subject_import(s.subjects, empty, (const uint8_t *)zip.data(), zip.size()) ==
-             GDEFCORE_OK,
+    Need(gdefcore_subject_restore(s.subjects, empty, (const uint8_t *)zip.data(), zip.size(),
+             (const uint8_t *)set.data(), set.size()) == GDEFCORE_OK,
         "the restore failed to import");
   }
   GDEFCORE_Catalog * restored = NULL;
