@@ -219,18 +219,18 @@ edit src/admin.c \
 '      0) {'
 caught testTpladmin TplAdmin.ASignedFormIsRequired 'out of date'
 
-# The editor is shown the body in force and not the latest draft (A5b: what the
-# editor sees is the head).
+# The editor is shown the body in force and not the latest draft (what the
+# editor opens is the draft, else the current revision; story S6b).
 begin editor-shows-the-body-in-force
 edit src/admin.c '  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_DRAFT,' \
-'  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_ACTIVE,'
+'  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_CURRENT,'
 caught testTpladmin TplAdmin.TheEditorOpensTheLatestDraftAndNotOnlyTheBodyInForce \
   'LATEST-DRAFT-BODY'
 
 # The pages name entities by the published view, so an unpublished template
 # cannot be opened by the person who would republish it.
 begin admin-names-by-the-published-view
-edit src/admin.c '  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_ACTIVE,
+edit src/admin.c '  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_CURRENT,
       id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, field, strlen(field), &texts, &lens,
       &count);' \
 '  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED,
@@ -242,7 +242,7 @@ caught testTpladmin TplAdmin.AnUnpublishedTemplateIsStillFoundAndOpenedByItsName
 # The same plant, seen from the post list: a post that is only a draft has no
 # title in the editor's undo page.
 begin admin-names-posts-by-the-published-view
-edit src/admin.c '  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_ACTIVE,
+edit src/admin.c '  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_CURRENT,
       id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, field, strlen(field), &texts, &lens,
       &count);' \
 '  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED,

@@ -247,7 +247,7 @@ class TplAdmin : public Edge {
     gdefcore_catalog_destroy(catalog);
   }
 
-  /* A newer draft of a template: the head moves, the active revision does not. */
+  /* A newer draft of a template: the draft moves, the current revision does not. */
   void OperatorDraft(const char * name, const std::string & body, const char * kind) {
     GDEFCORE_Catalog * catalog = Catalog();
     char tid[GDEFCORE_PUBLIC_ID_LEN + 1];

@@ -67,7 +67,7 @@ std::string Describe(GDEFCORE_Catalog * cat, const std::string & id) {
   uint64_t head = 0;
   EXPECT_EQ(GDEFCORE_OK, gdefcore_entity_state(cat, id.c_str(), id.size(), &state));
   EXPECT_EQ(GDEFCORE_OK,
-      gdefcore_entity_active_revision(cat, id.c_str(), id.size(), &has, &seq));
+      gdefcore_entity_current_revision(cat, id.c_str(), id.size(), &has, &seq));
   EXPECT_EQ(GDEFCORE_OK, gdefcore_entity_version(cat, id.c_str(), id.size(), &version));
   EXPECT_EQ(GDEFCORE_OK, gdefcore_entity_revision(cat, id.c_str(), id.size(), &head));
   out += state == GDEFCORE_STATE_PUBLISHED ? "pub" : "unpub";
@@ -83,7 +83,7 @@ std::string Describe(GDEFCORE_Catalog * cat, const std::string & id) {
     out += text == NULL ? "-" : std::string(text, n);
     gdefcore_text_free(cat, text);
   }
-  for (int view : {GDEFCORE_VIEW_PUBLISHED, GDEFCORE_VIEW_ACTIVE,
+  for (int view : {GDEFCORE_VIEW_PUBLISHED, GDEFCORE_VIEW_CURRENT,
            GDEFCORE_VIEW_DRAFT}) {
     char ** texts = NULL;
     size_t * lens = NULL;
