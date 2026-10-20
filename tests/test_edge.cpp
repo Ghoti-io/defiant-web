@@ -26,6 +26,8 @@
 
 #include "edge_fixture.h"
 
+#include <ghoti.io/defiant-storage/model.h>
+
 
 TEST_F(Edge, EmptyListenBindsNothing) {
   GDEFCORE_Inst_Config * config = NULL;
@@ -293,18 +295,6 @@ TEST_F(Edge, Cookie) {
 TEST_F(Edge, Inactive) {
   char id[GDEFCORE_PUBLIC_ID_LEN + 1];
   char quiet[GDEFCORE_PUBLIC_ID_LEN + 1];
-  GDEFCORE_Catalog * catalog = NULL;
-  char ** ids = NULL;
-  size_t count = 0;
-  size_t i;
-  std::string found;
-  const char * fields[] = {"storage", "placement", "edition", "status",
-      "resolution", "is_default"};
-  std::string values[6];
-  GDEFCORE_Value staged[6];
-  const char * texts[6];
-  size_t lens[6];
-  GDEFCORE_Changeset * changeset = NULL;
   Reply unknown;
   Reply inactive;
   Listen(NULL);
@@ -312,60 +302,53 @@ TEST_F(Edge, Inactive) {
       gdefcore_inst_tenant_create(inst_, "quiet.example", 13, "", 0, quiet));
   gdefcore_inst_destroy(inst_);
   inst_ = NULL;
-  ASSERT_EQ(GDEFCORE_OK,
-      gdefcore_catalog_open(registry_, kRegistry, sizeof kRegistry, NULL, NULL,
-          &catalog));
-  ASSERT_EQ(GDEFCORE_OK,
-      gdefcore_entity_ids(catalog, "core.tenant", 11, &ids, &count));
-  for (i = 0; i < count; i++) {
-    char ** texts_out = NULL;
-    size_t * lens_out = NULL;
-    size_t n = 0;
-    ASSERT_EQ(GDEFCORE_OK,
-        gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED, ids[i],
-            GDEFCORE_PUBLIC_ID_LEN, "en", 2, "resolution", 10, &texts_out,
-            &lens_out, &n));
-    if (n == 1 && lens_out[0] == 13 &&
-        memcmp(texts_out[0], "quiet.example", 13) == 0) {
-      found = ids[i];
+  /* Close the tenant behind the installation's back, as an operator's tool
+   * would: its registry record (a system record since story S6b, one
+   * `name hex` line per fact) gets the status `closed`. */
+  {
+    auto Hex = [](const std::string & t) {
+      static const char d[] = "0123456789abcdef";
+      std::string out;
+      for (unsigned char c : t) {
+        out += d[c >> 4];
+        out += d[c & 15];
+      }
+      return out;
+    };
+    const char * tenant = reinterpret_cast<const char *>(kRegistry);
+    GDEFSTOR_RecordList * list = NULL;
+    ASSERT_EQ(GDEFSTOR_OK,
+        gdefstor_record_list(registry_, tenant, sizeof kRegistry, "core.tenant",
+            11, "", 0, 0, GDEFSTOR_RECORD_MAX_PAGE, &list));
+    std::string key;
+    std::string body;
+    for (size_t k = 0; k < gdefstor_record_list_count(list); k++) {
+      const char * rk = NULL;
+      size_t rkn = 0;
+      const uint8_t * rb = NULL;
+      size_t rbn = 0;
+      ASSERT_EQ(GDEFSTOR_OK, gdefstor_record_list_item(list, k, &rk, &rkn, &rb, &rbn));
+      std::string text((const char *)rb, rbn);
+      if (text.find("\nresolution " + Hex("quiet.example") + "\n") !=
+          std::string::npos) {
+        key.assign(rk, rkn);
+        body = text;
+      }
     }
-    gdefcore_values_free(catalog, texts_out, lens_out, n);
+    gdefstor_record_list_free(list);
+    ASSERT_FALSE(key.empty());
+    size_t at = body.find("\nstatus ");
+    ASSERT_NE(std::string::npos, at);
+    size_t end = body.find('\n', at + 1);
+    body.replace(at, end - at, "\nstatus " + Hex("closed"));
+    GDEFSTOR_Write * write = NULL;
+    ASSERT_EQ(GDEFSTOR_OK,
+        gdefstor_write_begin(registry_, tenant, sizeof kRegistry, NULL, &write));
+    ASSERT_EQ(GDEFSTOR_OK,
+        gdefstor_record_put(write, "core.tenant", 11, key.data(), key.size(),
+            (const uint8_t *)body.data(), body.size()));
+    ASSERT_EQ(GDEFSTOR_OK, gdefstor_write_commit(write));
   }
-  ASSERT_FALSE(found.empty());
-  for (i = 0; i < 6; i++) {
-    char ** texts_out = NULL;
-    size_t * lens_out = NULL;
-    size_t n = 0;
-    ASSERT_EQ(GDEFCORE_OK,
-        gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED,
-            found.c_str(), GDEFCORE_PUBLIC_ID_LEN, "en", 2, fields[i],
-            strlen(fields[i]), &texts_out, &lens_out, &n));
-    if (n == 1) {
-      values[i].assign(texts_out[0], lens_out[0]);
-    }
-    gdefcore_values_free(catalog, texts_out, lens_out, n);
-  }
-  values[3] = "closed";
-  for (i = 0; i < 6; i++) {
-    texts[i] = values[i].c_str();
-    lens[i] = values[i].size();
-    memset(&staged[i], 0, sizeof staged[i]);
-    staged[i].size = sizeof staged[i];
-    staged[i].field = fields[i];
-    staged[i].field_len = strlen(fields[i]);
-    staged[i].texts = &texts[i];
-    staged[i].text_lens = &lens[i];
-    staged[i].count = 1;
-  }
-  ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &changeset));
-  ASSERT_EQ(GDEFCORE_OK,
-      gdefcore_entity_save(changeset, found.c_str(), GDEFCORE_PUBLIC_ID_LEN, "en",
-          2, staged, 6));
-  ASSERT_EQ(GDEFCORE_OK,
-      gdefcore_changeset_apply(changeset, "core.tenant", 11));
-  gdefcore_changeset_destroy(changeset);
-  gdefcore_ids_free(catalog, ids, count);
-  gdefcore_catalog_destroy(catalog);
   ASSERT_EQ(GDEFCORE_OK,
       gdefcore_inst_open(registry_, site_, root_, sizeof root_, "", 0, NULL,
           &inst_));
@@ -910,11 +893,14 @@ TEST_F(Edge, AdminUndo) {
 }
 
 /* The admin pages name a post by the revision it currently is, published or
- * not: a post that exists only as a draft has a title in the editor's list, and
- * the public front page does not show it. */
-TEST_F(Edge, AdminNamesAPostThatIsOnlyADraft) {
+ * not: a post that was saved and then unpublished has a title in the undo
+ * list, and the public front page does not show it. A post that exists only
+ * as a draft has no revision to undo (a draft is never one, story S6b), so the
+ * undo list does not offer it. */
+TEST_F(Edge, AdminNamesAnUnpublishedPostAndOffersNoUndoOfADraft) {
   char id[GDEFCORE_PUBLIC_ID_LEN + 1];
   char post[GDEFCORE_PUBLIC_ID_LEN + 1];
+  char draft[GDEFCORE_PUBLIC_ID_LEN + 1];
   GDEFCORE_Catalog * catalog = NULL;
   Site(id);
   std::string cookie = CookieLine(Login("ada", "secret"));
@@ -924,18 +910,34 @@ TEST_F(Edge, AdminNamesAPostThatIsOnlyADraft) {
     GDEFCORE_Value values[2];
     const char * slots[2];
     size_t lens[2];
-    OneValue(&values[0], "title", "Only A Draft", &slots[0], &lens[0]);
-    OneValue(&values[1], "body", "never published", &slots[1], &lens[1]);
+    OneValue(&values[0], "title", "Held Back", &slots[0], &lens[0]);
+    OneValue(&values[1], "body", "not public", &slots[1], &lens[1]);
     ASSERT_EQ(GDEFCORE_OK, gdefcore_entity_create(catalog, "site.post", 9, post, NULL));
     ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
     ASSERT_EQ(GDEFCORE_OK,
-        gdefcore_entity_save_draft(cs, post, GDEFCORE_PUBLIC_ID_LEN, "en", 2, values, 2));
+        gdefcore_entity_save(cs, post, GDEFCORE_PUBLIC_ID_LEN, "en", 2, values, 2));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, NULL, 0));
+    gdefcore_changeset_destroy(cs);
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_entity_unpublish(cs, post, GDEFCORE_PUBLIC_ID_LEN));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, NULL, 0));
+    gdefcore_changeset_destroy(cs);
+    OneValue(&values[0], "title", "Only A Draft", &slots[0], &lens[0]);
+    OneValue(&values[1], "body", "never published", &slots[1], &lens[1]);
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_entity_create(catalog, "site.post", 9, draft, NULL));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_entity_save_draft(cs, draft, GDEFCORE_PUBLIC_ID_LEN, "en", 2, values, 2));
     ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, NULL, 0));
     gdefcore_changeset_destroy(cs);
   }
   gdefcore_catalog_destroy(catalog);
-  EXPECT_FALSE(Has(Visit("/"), "Only A Draft"));
-  EXPECT_TRUE(Has(Get("/admin/undo", cookie).body, "Post Only A Draft"));
+  std::string front = Visit("/");
+  EXPECT_FALSE(Has(front, "Held Back"));
+  EXPECT_FALSE(Has(front, "Only A Draft"));
+  std::string undo = Get("/admin/undo", cookie).body;
+  EXPECT_TRUE(Has(undo, "Post Held Back"));
+  EXPECT_FALSE(Has(undo, "Only A Draft"));
 }
 
 TEST_F(Edge, AdminRedirects) {

@@ -448,8 +448,20 @@ int HexNibble(char c) {
 GDEFSTOR_Store * OpenSqlite(const std::string & dir) {
   GDEFSTOR_Store * store = NULL;
   mkdir(dir.c_str(), 0700);
-  Need(gdefssqlite_store_create(dir.c_str(), NULL, NULL, &store) == GDEFSSQLITE_OK,
+  /* The entity port's store (story S6b). */
+  Need(gdefssqlite_model_store_create(dir.c_str(), NULL, NULL, NULL, &store) ==
+          GDEFSSQLITE_OK,
       "could not open the store in " + dir);
+  return store;
+}
+
+/* The subjects' side store keeps its blind rows as the key/bytes rows of
+ * the SQLite store that serves them (the entity-port store does not). */
+GDEFSTOR_Store * OpenSideSqlite(const std::string & dir) {
+  GDEFSTOR_Store * store = NULL;
+  mkdir(dir.c_str(), 0700);
+  Need(gdefssqlite_store_create(dir.c_str(), NULL, NULL, &store) == GDEFSSQLITE_OK,
+      "could not open the side store in " + dir);
   return store;
 }
 
@@ -474,7 +486,7 @@ void OpenSite(Site * s, const std::string & data) {
   }
   s->registry = OpenSqlite(data + "/registry");
   s->site = OpenSqlite(data + "/site");
-  s->side = OpenSqlite(data + "/side");
+  s->side = OpenSideSqlite(data + "/side");
   s->keys = OpenKeys(data + "/keys");
   Need(gdefcore_inst_open_keys(s->registry, s->site, s->keys, s->root, sizeof s->root, "", 0,
            NULL, &s->inst) == GDEFCORE_OK &&

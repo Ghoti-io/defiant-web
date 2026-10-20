@@ -803,9 +803,12 @@ static int save_panes(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
   return rc == GDEFCORE_OK ? 0 : -1;
 }
 
+/* A signed form's base is the entity's version when it was signed
+ * (gdefcore_form_sign(), since story S6b), which every write moves, a draft
+ * included: the form is current only while the entity has not moved. */
 static int base_matches(GDEFCORE_Catalog * catalog, const char * id, uint64_t base) {
   uint64_t current = 0;
-  if (gdefcore_entity_revision(catalog, id, GDEFCORE_PUBLIC_ID_LEN, &current) !=
+  if (gdefcore_entity_version(catalog, id, GDEFCORE_PUBLIC_ID_LEN, &current) !=
       GDEFCORE_OK) {
     return 0;
   }

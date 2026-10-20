@@ -45,7 +45,6 @@
 #include <ghoti.io/defiant-core/subject.h>
 #include <ghoti.io/defiant-storage-memory/memory.h>
 #include <ghoti.io/defiant-storage-sqlite/model.h>
-#include <ghoti.io/defiant-storage-sqlite/sqlite.h>
 #include <ghoti.io/security/random.h>
 #include <ghoti.io/cutil/fiber.h>
 
@@ -121,7 +120,10 @@ static int open_store(const char * data, const char * name, GDEFSTOR_Store ** ou
         ensure_dir(path) != 0) {
       return -1;
     }
-    if (gdefssqlite_store_create(path, NULL, NULL, out) != GDEFSSQLITE_OK) {
+    /* The entity port's store (story S6b): the site's entities and the
+     * installation's records are the port's. */
+    if (gdefssqlite_model_store_create(path, NULL, NULL, NULL, out) !=
+        GDEFSSQLITE_OK) {
       fprintf(stderr, "defiant: cannot open the SQLite store in %s\n", path);
       return -1;
     }

@@ -248,7 +248,7 @@ edit src/admin.c '  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, G
 '  GDEFCORE_Result rc = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED,
       id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, field, strlen(field), &texts, &lens,
       &count);'
-caught testEdge Edge.AdminNamesAPostThatIsOnlyADraft 'Post Only A Draft'
+caught testEdge Edge.AdminNamesAnUnpublishedPostAndOffersNoUndoOfADraft 'Post Held Back'
 
 if [ "$fail" -ne 0 ]; then
   exit 1

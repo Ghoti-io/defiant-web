@@ -21,17 +21,19 @@
 /**
  * @file
  *
- * The entity record (access-conditions story A5b) on both backends. The core
- * suite runs it on the memory store; this one links the SQLite store too, so
- * the same sequence of writes (draft, publish, unpublish, save, activate,
- * revert to a named revision, clear, activate a cleared entity) is run on each
- * and the two transcripts of what the accessors answer must be identical, and
- * the SQLite one must survive closing the database and opening it again.
+ * The entity record (access-conditions story A5b, on the storage port since
+ * story S6b) on both backends. The core suite runs it on the memory store;
+ * this one links the SQLite store too, so the same sequence of writes (two
+ * drafts, publish, unpublish, save, revert to a named revision, clear, revert
+ * a cleared entity) is run on each and the two transcripts of what the
+ * accessors answer must be identical, and the SQLite one must survive closing
+ * the database and opening it again. (`activate` went with access SPEC
+ * decision 13; a revert is how an older revision becomes the content.)
  */
 
 #include <ghoti.io/defiant-core/defiant-core.h>
 #include <ghoti.io/defiant-storage-memory/memory.h>
-#include <ghoti.io/defiant-storage-sqlite/sqlite.h>
+#include <ghoti.io/defiant-storage-sqlite/model.h>
 
 #include <gtest/gtest.h>
 
@@ -173,10 +175,13 @@ struct Scenario {
     Step("unpublished");
     Write(e1, a, "three", false);
     Step("saved");
-    cs = Prepare(b);
-    ASSERT_EQ(GDEFCORE_OK, gdefcore_entity_activate(cs, e1.c_str(), e1.size(), 1));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_changeset_revert_to(cat, e1.c_str(), e1.size(), 1, b.c_str(),
+            b.size(), &cs));
     Apply(cs);
-    Step("activated 1");
+    Step("reverted to 1");
+    Write(e1, a, "draft over one", true);
+    Step("drafted");
     ASSERT_EQ(GDEFCORE_OK,
         gdefcore_changeset_revert_to(cat, e1.c_str(), e1.size(), 2, b.c_str(),
             b.size(), &cs));
@@ -187,8 +192,8 @@ struct Scenario {
         gdefcore_changeset_revert(cat, e2.c_str(), e2.size(), NULL, 0, &cs));
     Apply(cs);
     Step("cleared e2");
-    cs = Prepare("");
-    ASSERT_EQ(GDEFCORE_OK, gdefcore_entity_activate(cs, e2.c_str(), e2.size(), 1));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_changeset_revert_to(cat, e2.c_str(), e2.size(), 1, NULL, 0, &cs));
     Apply(cs);
     Step("restored e2");
   }
@@ -223,7 +228,8 @@ TEST(RevisionsBackends, MemoryAndSqliteAgreeAndSqliteSurvivesReopening) {
   {
     GDEFSTOR_Store * store = NULL;
     GDEFCORE_Catalog * cat = NULL;
-    ASSERT_EQ(GDEFSSQLITE_OK, gdefssqlite_store_create(path.data(), NULL, NULL, &store));
+    ASSERT_EQ(GDEFSSQLITE_OK,
+        gdefssqlite_model_store_create(path.data(), NULL, NULL, NULL, &store));
     ASSERT_EQ(GDEFCORE_OK, gdefcore_catalog_open(store, kTenant, 1, NULL, NULL, &cat));
     Scenario run;
     run.cat = cat;
@@ -242,7 +248,8 @@ TEST(RevisionsBackends, MemoryAndSqliteAgreeAndSqliteSurvivesReopening) {
   {
     GDEFSTOR_Store * store = NULL;
     GDEFCORE_Catalog * cat = NULL;
-    ASSERT_EQ(GDEFSSQLITE_OK, gdefssqlite_store_create(path.data(), NULL, NULL, &store));
+    ASSERT_EQ(GDEFSSQLITE_OK,
+        gdefssqlite_model_store_create(path.data(), NULL, NULL, NULL, &store));
     ASSERT_EQ(GDEFCORE_OK, gdefcore_catalog_open(store, kTenant, 1, NULL, NULL, &cat));
     std::string last1 = Describe(cat, e1);
     std::string last2 = Describe(cat, e2);
