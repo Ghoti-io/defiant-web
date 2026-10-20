@@ -427,8 +427,7 @@ int Web3(uint16_t port, const std::string &) {
 
 struct Site {
   GDEFSTOR_Store * registry = NULL;
-  GDEFSTOR_Store * site = NULL;
-  GDEFSTOR_Store * side = NULL; /* the blind store */
+  GDEFSTOR_Store * site = NULL; /* the tenant's data store, its blind table too */
   GDEFSTOR_KeyStore * keys = NULL;
   GDEFCORE_Inst * inst = NULL;
   GDEFCORE_Subjects * subjects = NULL;
@@ -455,16 +454,6 @@ GDEFSTOR_Store * OpenSqlite(const std::string & dir) {
   return store;
 }
 
-/* The subjects' side store keeps its blind rows as the key/bytes rows of
- * the SQLite store that serves them (the entity-port store does not). */
-GDEFSTOR_Store * OpenSideSqlite(const std::string & dir) {
-  GDEFSTOR_Store * store = NULL;
-  mkdir(dir.c_str(), 0700);
-  Need(gdefssqlite_store_create(dir.c_str(), NULL, NULL, &store) == GDEFSSQLITE_OK,
-      "could not open the side store in " + dir);
-  return store;
-}
-
 /* The installation's key store (AD-19): keyrings, subject keys and the
  * ledger, in a directory of key files apart from every data store. */
 GDEFSTOR_KeyStore * OpenKeys(const std::string & dir) {
@@ -486,7 +475,6 @@ void OpenSite(Site * s, const std::string & data) {
   }
   s->registry = OpenSqlite(data + "/registry");
   s->site = OpenSqlite(data + "/site");
-  s->side = OpenSideSqlite(data + "/side");
   s->keys = OpenKeys(data + "/keys");
   Need(gdefcore_inst_open_keys(s->registry, s->site, s->keys, s->root, sizeof s->root, "", 0,
            NULL, &s->inst) == GDEFCORE_OK &&
@@ -495,10 +483,13 @@ void OpenSite(Site * s, const std::string & data) {
                GDEFCORE_OK &&
            gdefcore_inst_catalog_open(s->inst, s->tenant, strlen(s->tenant), &s->catalog) ==
                GDEFCORE_OK &&
-           gdefcore_subject_open(s->keys, s->side, s->storage, sizeof s->storage, s->root,
+           gdefcore_subject_open(s->keys, s->site, s->storage, sizeof s->storage, s->root,
                sizeof s->root, gdefcore_inst_tenant_keyring(s->inst, s->tenant, strlen(s->tenant)),
                NULL, &s->subjects) == GDEFCORE_OK,
       "could not open the installation");
+  /* The keys that index a personal value the site's changesets write (story
+   * S6c: the blind rows are in the site store's blind table). */
+  gdefcore_catalog_bind_subjects(s->catalog, s->subjects);
 }
 
 void CloseSite(Site * s) {
@@ -506,7 +497,6 @@ void CloseSite(Site * s) {
   gdefcore_catalog_destroy(s->catalog);
   gdefcore_inst_destroy(s->inst);
   gdefstor_keystore_destroy(s->keys);
-  gdefstor_store_destroy(s->side);
   gdefstor_store_destroy(s->site);
   gdefstor_store_destroy(s->registry);
 }
@@ -611,11 +601,12 @@ int Operator2(const std::string & data, const std::string & scratch) {
     s.subjects = NULL;
     gdefstor_keystore_destroy(s.keys);
     s.keys = fresh;
-    Need(gdefcore_subject_open(s.keys, s.side, s.storage, sizeof s.storage, s.root,
+    Need(gdefcore_subject_open(s.keys, s.site, s.storage, sizeof s.storage, s.root,
              sizeof s.root, NULL, NULL, &s.subjects) == GDEFCORE_OK &&
              gdefstor_snapshot_import(empty, (const char *)s.storage, sizeof s.storage,
                  (const uint8_t *)zip.data(), zip.size(), NULL) == GDEFSTOR_OK,
         "the planted restore failed to import");
+    gdefcore_catalog_bind_subjects(s.catalog, s.subjects);
   } else {
     Need(gdefcore_subject_restore(s.subjects, empty, (const uint8_t *)zip.data(), zip.size(),
              (const uint8_t *)set.data(), set.size()) == GDEFCORE_OK,
