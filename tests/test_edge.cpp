@@ -327,7 +327,7 @@ TEST_F(Edge, Inactive) {
       size_t rkn = 0;
       const uint8_t * rb = NULL;
       size_t rbn = 0;
-      ASSERT_EQ(GDEFSTOR_OK, gdefstor_record_list_item(list, k, &rk, &rkn, &rb, &rbn));
+      ASSERT_EQ(GDEFSTOR_OK, gdefstor_record_list_item(list, k, &rk, &rkn, &rb, &rbn, NULL, NULL));
       std::string text((const char *)rb, rbn);
       if (text.find("\nresolution " + Hex("quiet.example") + "\n") !=
           std::string::npos) {
@@ -346,6 +346,7 @@ TEST_F(Edge, Inactive) {
         gdefstor_write_begin(registry_, tenant, sizeof kRegistry, NULL, &write));
     ASSERT_EQ(GDEFSTOR_OK,
         gdefstor_record_put(write, "core.tenant", 11, key.data(), key.size(),
+            "core/1", 6,
             (const uint8_t *)body.data(), body.size()));
     ASSERT_EQ(GDEFSTOR_OK, gdefstor_write_commit(write));
   }
@@ -1011,4 +1012,75 @@ TEST_F(Edge, LoginPage) {
   /* Signing in with the page's own form lands on the admin. */
   std::string cookie = CookieLine(admin);
   EXPECT_TRUE(Has(Get("/admin", cookie).body, "href=\"/admin/post\""));
+}
+
+namespace {
+
+#define EDGE_STR2(x) #x
+#define EDGE_STR(x) EDGE_STR2(x)
+const char kEdgeCoreToken[] = EDGE_STR(GHOTIIO_DEFCORE_NAME);
+
+GDEFCORE_Result NothingToBringForward(GDEFCORE_Migration *, void *) {
+  return GDEFCORE_OK;
+}
+
+/* The module `news` at version 2, with its step from 1 (core story S11). */
+const GDEFCORE_Module_Manifest * NewsAtTwo(void) {
+  static GDEFCORE_Module_Manifest m;
+  static GDEFCORE_Module_Step step;
+  memset(&m, 0, sizeof m);
+  memset(&step, 0, sizeof step);
+  step.size = sizeof step;
+  step.from = 1;
+  step.fn = NothingToBringForward;
+  m.size = sizeof m;
+  m.core_token = kEdgeCoreToken;
+  m.core_token_len = strlen(kEdgeCoreToken);
+  m.name = "news";
+  m.name_len = 4;
+  m.schema_version = 2;
+  m.steps = &step;
+  m.nsteps = 1;
+  return &m;
+}
+
+}  // namespace
+
+/* A tenant whose stored data waits for its forward migration (a module the
+ * process runs at a version above the one the tenant's data is at) gets a
+ * maintenance response and nothing else; once migrated it is served again
+ * (AD-15). */
+TEST_F(Edge, ATenantAwaitingItsMigrationAnswersMaintenance) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  ASSERT_EQ(GDEFCORE_OK,
+      gdefcore_inst_tenant_create(inst_, "site.example", 12, "", 0, id));
+  InstallKit(id);
+  Publish(id, "hello-title", "Hello Title");
+  Listen(NULL);
+  UseHost();
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_module_install_guest(host_, NewsAtTwo));
+  Reply before = Get("/hello-title", std::string());
+  ASSERT_EQ(200, before.status);
+  /* The tenant holds news's data at version 1. */
+  uint8_t key[16];
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_storage_key(inst_, id, strlen(id), key));
+  GDEFSTOR_Write * w = NULL;
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_write_begin(site_, (const char *)key,
+      sizeof key, NULL, &w));
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_record_put(w, GDEFCORE_SCHEMA_TYPE,
+      strlen(GDEFCORE_SCHEMA_TYPE), "news", 4, GDEFCORE_SCHEMA_CORE_STAMP,
+      strlen(GDEFCORE_SCHEMA_CORE_STAMP), (const uint8_t *)"1", 1));
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_write_commit(w));
+  Reply waiting = Get("/hello-title", std::string());
+  EXPECT_EQ(503, waiting.status);
+  EXPECT_TRUE(Has(waiting.body, "under maintenance"));
+  EXPECT_FALSE(Has(waiting.body, "Hello Title"));
+  ExpectSecurity(waiting);
+  size_t moved = 0;
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_schema_migrate(host_, site_, key,
+      sizeof key, 1000, &moved, NULL, NULL));
+  EXPECT_EQ(1u, moved);
+  Reply after = Get("/hello-title", std::string());
+  EXPECT_EQ(200, after.status);
+  EXPECT_TRUE(Has(after.body, "Hello Title"));
 }

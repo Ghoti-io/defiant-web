@@ -296,6 +296,7 @@ class TplAdmin : public Edge {
     g_man.size = sizeof g_man;
     g_man.core_token = kCoreToken;
     g_man.core_token_len = strlen(kCoreToken);
+    g_man.schema_version = 1;
     g_man.name = "judge";
     g_man.name_len = 5;
     g_man.label = "judge";

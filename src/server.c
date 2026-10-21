@@ -29,6 +29,7 @@
 
 #include <ghoti.io/defiant-web/server.h>
 #include <ghoti.io/defiant-core/account.h>
+#include <ghoti.io/defiant-core/module.h>
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/request.h>
 #include "admin.h"
@@ -1216,6 +1217,28 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
   /* The modules the process runs are asked about template writes, and the
    * contracts they extend are the ones templates are validated against. */
   gdefcore_catalog_bind_host(catalog, server->host);
+  {
+    /* A tenant whose stored data waits for its forward migration, or is
+     * newer than a module this process runs, is not served: a maintenance
+     * response (AD-15), and nothing of it is read or written. */
+    size_t tenant_n = 0;
+    const uint8_t * tenant = gdefcore_catalog_tenant(catalog, &tenant_n);
+    GDEFCORE_Result st = gdefcore_schema_status(server->host,
+        gdefcore_catalog_store(catalog), tenant, tenant_n, NULL, NULL);
+    if (st == GDEFCORE_ERR_MAINTENANCE || st == GDEFCORE_ERR_UNSUPPORTED) {
+      static const char kBody[] =
+          "This site is under maintenance. Please try again shortly.\n";
+      reply(server, sock, 503, "Service Unavailable", kBody,
+          sizeof kBody - 1, NULL, "text/plain; charset=utf-8", in.method,
+          in.path, client);
+      goto out;
+    }
+    if (st != GDEFCORE_OK) {
+      reply(server, sock, 500, "Internal Server Error", "", 0, NULL, NULL,
+          in.method, in.path, client);
+      goto out;
+    }
+  }
   keyring = gdefcore_inst_tenant_keyring(server->inst, id, strlen(id));
   if (keyring == NULL ||
       gdefcore_request_create(storage, sizeof storage, 0, 0, NULL, &request) !=

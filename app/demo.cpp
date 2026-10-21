@@ -611,6 +611,8 @@ int Operator2(const std::string & data, const std::string & scratch) {
     GDEFCORE_Restore * report = NULL;
     GDEFCORE_Result restored_rc = gdefcore_subject_restore(s.subjects, NULL, empty,
         (const uint8_t *)zip.data(), zip.size(), (const uint8_t *)set.data(), set.size(),
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count(),
         &report);
     if (restored_rc != GDEFCORE_OK && gdefcore_restore_reason(report, NULL) != NULL) {
       fprintf(stderr, "%s\n", gdefcore_restore_reason(report, NULL));
