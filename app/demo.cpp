@@ -518,7 +518,9 @@ bool ReadIs(Site * s, GDEFCORE_Catalog * catalog, const std::string & subject,
 int Operator1(const std::string & data, const std::string & scratch) {
   Site s;
   OpenSite(&s, data);
-  /* A person whose email is personal data, and the snapshot taken that day. */
+  /* A person whose email is personal data, and the snapshot taken that day.
+   * A person is a subject: the type says so, and core makes each one's
+   * subject with it, under which their email is stored (core story S7). */
   GDEFCORE_Field field;
   memset(&field, 0, sizeof field);
   field.size = sizeof field;
@@ -528,13 +530,12 @@ int Operator1(const std::string & data, const std::string & scratch) {
   field.personal = 1;
   char subject[GDEFCORE_PUBLIC_ID_LEN + 1];
   char entity[GDEFCORE_PUBLIC_ID_LEN + 1];
-  Need(gdefcore_type_define(s.catalog, "site.person", 11, GDEFCORE_TYPE_CONTENT, &field, 1) ==
-               GDEFCORE_OK &&
-           gdefcore_subject_create(s.subjects, subject) == GDEFCORE_OK &&
+  Need(gdefcore_type_define(s.catalog, "site.person", 11,
+           GDEFCORE_TYPE_CONTENT | GDEFCORE_TYPE_SUBJECTS, &field, 1) == GDEFCORE_OK &&
            gdefcore_entity_create(s.catalog, "site.person", 11, entity, NULL) == GDEFCORE_OK &&
-           gdefcore_subject_save(s.subjects, s.catalog, subject, strlen(subject), entity,
-               strlen(entity), kField, strlen(kField), "en", 2, kPlain, strlen(kPlain)) ==
-               GDEFCORE_OK,
+           gdefcore_entity_subject(s.catalog, entity, strlen(entity), subject) == GDEFCORE_OK &&
+           gdefcore_subject_save(s.subjects, s.catalog, NULL, 0, entity, strlen(entity), kField,
+               strlen(kField), "en", 2, kPlain, strlen(kPlain)) == GDEFCORE_OK,
       "could not record the person");
   Need(ReadIs(&s, s.catalog, subject, entity, kPlain), "the person is not readable");
   uint8_t * zip = NULL;
