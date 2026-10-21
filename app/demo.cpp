@@ -45,7 +45,6 @@
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/subject.h>
 #include <ghoti.io/defiant-storage-sqlite/model.h>
-#include <ghoti.io/defiant-storage-sqlite/sqlite.h>
 #include <ghoti.io/defiant-storage/defiant-storage.h>
 #include <ghoti.io/defiant-storage/snapshot.h>
 
