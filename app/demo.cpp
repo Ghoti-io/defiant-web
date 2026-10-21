@@ -540,7 +540,7 @@ int Operator1(const std::string & data, const std::string & scratch) {
   Need(ReadIs(&s, s.catalog, subject, entity, kPlain), "the person is not readable");
   uint8_t * zip = NULL;
   size_t zip_n = 0;
-  Need(gdefcore_subject_snapshot(s.subjects, s.site, &zip, &zip_n) == GDEFCORE_OK,
+  Need(gdefcore_subject_snapshot(s.subjects, s.site, NULL, 0, &zip, &zip_n) == GDEFCORE_OK,
       "could not take the snapshot");
   WriteFile(scratch + "/snapshot.zip", std::string((const char *)zip, zip_n));
   gdefstor_bytes_free(NULL, zip);
@@ -608,9 +608,15 @@ int Operator2(const std::string & data, const std::string & scratch) {
         "the planted restore failed to import");
     gdefcore_catalog_bind_subjects(s.catalog, s.subjects);
   } else {
-    Need(gdefcore_subject_restore(s.subjects, empty, (const uint8_t *)zip.data(), zip.size(),
-             (const uint8_t *)set.data(), set.size()) == GDEFCORE_OK,
-        "the restore failed to import");
+    GDEFCORE_Restore * report = NULL;
+    GDEFCORE_Result restored_rc = gdefcore_subject_restore(s.subjects, NULL, empty,
+        (const uint8_t *)zip.data(), zip.size(), (const uint8_t *)set.data(), set.size(),
+        &report);
+    if (restored_rc != GDEFCORE_OK && gdefcore_restore_reason(report, NULL) != NULL) {
+      fprintf(stderr, "%s\n", gdefcore_restore_reason(report, NULL));
+    }
+    gdefcore_restore_free(report);
+    Need(restored_rc == GDEFCORE_OK, "the restore failed to import");
   }
   GDEFCORE_Catalog * restored = NULL;
   Need(gdefcore_catalog_open(empty, s.storage, sizeof s.storage, NULL, NULL, &restored) ==
