@@ -247,6 +247,118 @@ TEST_F(AccessAdmin, ReadOnly) {
   EXPECT_FALSE(Has(posted.body, "Granted by"));
 }
 
+namespace {
+
+/* A module whose access callback decides a field (access story A6). */
+GDEFCORE_Module_Manifest g_cb_man;
+GDEFCORE_Module_Perm g_cb_perm;
+GDEFCORE_Module_Callback g_cb;
+GDEFCORE_Module_Service g_cb_service;
+GDEFCORE_Module_Access_Callback g_cb_table;
+
+extern "C" GDEFCORE_Result AccPaid(GDEFCORE_Callback_Call * call,
+    GDEFCORE_Request * request, const GDEFCORE_Callback_Question * q,
+    GDEFCORE_Callback_Answer * a, void * user) {
+  (void)call;
+  (void)request;
+  (void)q;
+  (void)a;
+  (void)user;
+  return GDEFCORE_OK;
+}
+
+extern "C" const GDEFCORE_Module_Manifest * AccCbEntry(void) {
+  return &g_cb_man;
+}
+
+}  // namespace
+
+/* An access callback is a row of its module, said to be decided per entity
+ * and rated high; the module's plain grant beside it keeps its own rating. */
+TEST_F(AccessAdmin, ACallbackIsShownAsDecidedPerEntityAndRatedHigh) {
+  Open();
+  GDEFCORE_Catalog * catalog = Catalog();
+  GDEFCORE_Changeset * cs = NULL;
+  memset(&g_cb_perm, 0, sizeof g_cb_perm);
+  g_cb_perm.size = sizeof g_cb_perm;
+  g_cb_perm.label = "Read paid body";
+  g_cb_perm.label_len = 14;
+  g_cb_perm.action = "read";
+  g_cb_perm.action_len = 4;
+  g_cb_perm.condition = GDEFCORE_ACCESS_ANY;
+  g_cb_perm.type_name = "site.post";
+  g_cb_perm.type_name_len = 9;
+  g_cb_perm.field = "body";
+  g_cb_perm.field_len = 4;
+  memset(&g_cb_table, 0, sizeof g_cb_table);
+  g_cb_table.size = sizeof g_cb_table;
+  g_cb_table.fn = AccPaid;
+  memset(&g_cb_service, 0, sizeof g_cb_service);
+  g_cb_service.size = sizeof g_cb_service;
+  g_cb_service.name = "paywall.paid";
+  g_cb_service.name_len = 12;
+  g_cb_service.version = GDEFCORE_MODULE_ACCESS_CALLBACK_VERSION;
+  g_cb_service.table = &g_cb_table;
+  memset(&g_cb, 0, sizeof g_cb);
+  g_cb.size = sizeof g_cb;
+  g_cb.name = "paid";
+  g_cb.name_len = 4;
+  g_cb.scope = GDEFCORE_CALLBACK_FIELD;
+  g_cb.permission = "Read paid body";
+  g_cb.permission_len = 14;
+  g_cb.type_name = "site.post";
+  g_cb.type_name_len = 9;
+  g_cb.field = "body";
+  g_cb.field_len = 4;
+  g_cb.service = "paywall.paid";
+  g_cb.service_len = 12;
+  g_cb.fuel = 10;
+  g_cb.timeout_ms = 50;
+  g_cb.cache = GDEFCORE_CALLBACK_CACHE_TOKEN;
+  g_cb.flags = GDEFCORE_CALLBACK_LOCKED;
+  memset(&g_cb_man, 0, sizeof g_cb_man);
+  g_cb_man.size = sizeof g_cb_man;
+  g_cb_man.core_token = kCoreToken;
+  g_cb_man.core_token_len = strlen(kCoreToken);
+  g_cb_man.schema_version = 1;
+  g_cb_man.name = "paywall";
+  g_cb_man.name_len = 7;
+  g_cb_man.label = "paywall";
+  g_cb_man.label_len = 7;
+  g_cb_man.perms = &g_cb_perm;
+  g_cb_man.nperms = 1;
+  g_cb_man.services = &g_cb_service;
+  g_cb_man.nservices = 1;
+  g_cb_man.callbacks = &g_cb;
+  g_cb_man.ncallbacks = 1;
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_module_install_guest(host_, AccCbEntry));
+  const std::string confirm =
+      "paywall\nModule paywall decides Read paid body per entity with its "
+      "callback paid (field scope, high risk): its breadth cannot be judged.\n"
+      "Read paid body";
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_module_enable(host_, cs, "paywall", 7));
+  ASSERT_EQ(GDEFCORE_OK,
+      gdefcore_changeset_apply(cs, confirm.data(), confirm.size()));
+  gdefcore_changeset_destroy(cs);
+  gdefcore_catalog_destroy(catalog);
+  Reply page = Get("/admin/access", admin_);
+  ASSERT_EQ(200, page.status);
+  size_t at = page.body.find("<td>module paywall</td>");
+  ASSERT_NE(std::string::npos, at) << page.body;
+  std::string row = page.body.substr(at, page.body.find("</tr>", at) - at);
+  EXPECT_TRUE(Has(row, "<td>site.post, field body</td>")) << row;
+  EXPECT_TRUE(Has(row, "evaluated per entity by its callback paid")) << row;
+  EXPECT_TRUE(Has(row, "<td class=\"risk-high\">high</td>")) << row;
+  /* Control: the plain module grant beside it keeps its low rating. */
+  at = page.body.find("<td>module acc</td>");
+  ASSERT_NE(std::string::npos, at) << page.body;
+  row = page.body.substr(at, page.body.find("</tr>", at) - at);
+  EXPECT_TRUE(Has(row, "<td class=\"risk-low\">low</td>")) << row;
+  Reply none = Get("/admin/access", bob_);
+  EXPECT_FALSE(Has(none.body, "paywall"));
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
