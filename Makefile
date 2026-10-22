@@ -528,6 +528,16 @@ EXAMPLES := $(patsubst examples/%.c,$(APP_DIR)/examples/%$(EXE_EXTENSION),$(EXAM
 MODEL_ROOT := $(CURDIR)
 TEST_DATA := $(CURDIR)/tests/data
 
+# The plant gates build in a scratch copy of this tree that starts from the
+# finished build, so the copy has to compile with the flags this tree did or
+# every object is stale and the library is compiled again for every plant. The
+# path that is baked into the objects of every test is handed to the copy as a
+# make argument. The helpers are defiant-storage's, installed with its
+# conformance suites (plant-lib.sh).
+STOR_CONFORMANCE := $(strip $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --variable=conformance_dir $(STOR_PC) 2>/dev/null))
+PLANT_PATHS = TEST_DATA=$(TEST_DATA)
+PLANT_LIB = $(STOR_CONFORMANCE)/plant-lib.sh
+
 all: $(APP_DIR)/$(TARGET) $(APP_DIR)/$(STATIC_TARGET) $(APP_DIR)/defiant$(EXE_EXTENSION) ## Build shared + static libraries and the defiant program
 
 ####################################################################
@@ -991,11 +1001,11 @@ $(APP_DIR)/readzip: tests/read_zip.c
 	$(CC) $(CFLAGS) $(ARCHIVE_CFLAGS) -o $@ $< $(ARCHIVE_LIBS)
 
 check-plants: ## Plants in scratch copies of the server turn the scanner and cross-tenant tests red, by name
-	@tools/check-plants.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX))
+	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-plants.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 check-tpladmin: ## Plants in scratch copies of the template editor turn its named tests red
-	@tools/check-tpladmin.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX))
+	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-tpladmin.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 check-access: ## Plants in scratch copies of the access matrix page turn its named tests red
-	@tools/check-access.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX))
+	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-access.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 
 check-defiant: $(APP_DIR)/defiant$(EXE_EXTENSION) ## The defiant program starts, restarts, refuses and stops
 	@LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/check-defiant.sh "$(APP_DIR)/defiant$(EXE_EXTENSION)"
@@ -1010,6 +1020,11 @@ check-demo: $(APP_DIR)/defiant$(EXE_EXTENSION) $(APP_DIR)/defiant-demo$(EXE_EXTE
 
 check-gates: $(APP_DIR)/testHarness$(EXE_EXTENSION) ## Plants turn the milestone gates red
 	@LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/check-gates.sh "$(APP_DIR)/testHarness$(EXE_EXTENSION)"
+
+# A gate copies the finished build into its scratch tree (plant-lib.sh), so
+# under make -j no gate may start before the library and every test
+# executable are linked.
+$(TEST_GATES): | $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 
 test: ## Make and run the unit tests
 test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
