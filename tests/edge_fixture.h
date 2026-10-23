@@ -448,7 +448,8 @@ class Edge : public ::testing::Test {
   }
 
   /*
-   * Grant the admin role the permission to edit templates of each kind, by
+   * Grant the admin role the permission to edit templates of each kind (the
+   * permission is one, and the grant's condition names the kind), by
    * changeset, as an operator would. Nothing grants it before this.
    */
   void GrantTemplateKinds(const char * id, const std::vector<std::string> & kinds) {
@@ -456,14 +457,11 @@ class Edge : public ::testing::Test {
     ASSERT_EQ(GDEFCORE_OK,
         gdefcore_inst_catalog_open(inst_, id, strlen(id), &catalog));
     for (const std::string & kind : kinds) {
-      char * label = NULL;
-      size_t label_len = 0;
+      const std::string condition = "(= field.kind \"" + kind + "\")";
       ASSERT_EQ(GDEFCORE_OK,
-          gdefcore_template_edit_label(catalog, kind.c_str(), kind.size(), &label,
-              &label_len));
-      ASSERT_EQ(GDEFCORE_OK,
-          gdefcore_access_grant(catalog, "admin", 5, label, label_len, "core.role", 9));
-      gdefcore_text_free(catalog, label);
+          gdefcore_access_grant_when(catalog, "admin", 5,
+              GDEFCORE_TEMPLATE_EDIT_LABEL, strlen(GDEFCORE_TEMPLATE_EDIT_LABEL),
+              condition.data(), condition.size(), "core.role", 9));
     }
     gdefcore_catalog_destroy(catalog);
   }

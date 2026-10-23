@@ -14,15 +14,17 @@ The library is LGPL-3.0-only. Public headers are `@stability free`.
 `admin` role. Every action is a signed form that answers with a 303, and none
 needs JavaScript.
 
-`/admin/templates` is the template editor. It lists the templates whose kind
-the principal may edit (the permission `core.template.edit.<kind>`, which
-nobody holds until a changeset grants it), `/admin/templates/<name>` edits one
+`/admin/templates` is the template editor. It lists the templates the principal
+may edit (the permission `core.template.edit`, which nobody holds until a
+changeset grants it, with a condition that names the templates it covers: a
+kind, or a classification), `/admin/templates/<name>` edits one
 (Validate, Preview, Save with the template's name typed), and
 `/admin/templates/<name>/history` lists its revisions and reverts the latest.
 A template the principal may not edit is answered like one that does not
-exist. A module that subscribes to the `template-write` decision hook is asked
-about every save, once `gdefweb_server_set_host()` has given the server the
-process's module host. The rules are in defiant-core's `documentation/templates.md`.
+exist. Nothing denies: a module can add a grant (the pages of one classification,
+for its people), once `gdefweb_server_set_host()` has given the server the
+process's module host, and cannot take one away. The rules are in defiant-core's
+`documentation/templates.md`.
 
 `/admin/access` is the access matrix: a read-only table of what each role and
 each enabled module grants (who grants it, the permission, the action, the
@@ -35,7 +37,8 @@ is escaped. The rows and their order are defiant-core's
 ## Tests and gates
 
 `make test PREFIX=...` also runs `check-seams` (no private header is included
-across a seam), `check-plants` (the response scanner and the two-tenant tests
+across a seam), `check-noveto` (nothing here names the veto on template edits that
+defiant-core retired), `check-plants` (the response scanner and the two-tenant tests
 are shown to fail, by name, when a defect is planted in a scratch copy of the
 server), `check-tpladmin` (the same for the template editor), `check-access` (the same
 for the access matrix page), and on Linux

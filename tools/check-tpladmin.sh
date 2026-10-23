@@ -52,18 +52,25 @@ plant preview-shared src/admin.c testTpladmin TplAdmin.PreviewRendersSampleDataA
   '    static const char kOverlay[] = "preview";' \
   '    static const char kOverlay[] = "live";'
 
-# A template's body is shown to a principal who may not edit its kind: the
-# permission is not asked when a template is opened.
+# A template's body is shown to a principal who may not edit it: the core is
+# not asked when a template is opened.
 PLANT_NEED_TEXT='missing.body'
 plant body-without-permission src/admin.c testTpladmin TplAdmin.AnotherKindsTemplateIsLikeAMissingOne \
-  '  if (field_copy(catalog, id, "kind", kind, kind_cap) != 0 || kind[0] == '"'"'\0'"'"' ||
-      !gdefcore_template_may_edit(catalog, request, kind, strlen(kind))) {
-    return 1;
-  }' \
-  '  if (field_copy(catalog, id, "kind", kind, kind_cap) != 0 || kind[0] == '"'"'\0'"'"' ||
-      (0 && !gdefcore_template_may_edit(catalog, request, kind, strlen(kind)))) {
-    return 1;
-  }'
+  '  return may ? 0 : 1;' \
+  '  (void)may;
+  return 0;'
+
+# The editor and the write disagree: a template is opened for the
+# principal when some template of its kind may be edited (the question the
+# list of kinds asks), where the write asks about this template.
+PLANT_NEED_TEXT='notes opened'
+plant editor-asks-another-question-than-the-write src/admin.c testTpladmin TplAdmin.TheListThePageAndTheSaveAgreeForEveryGrant \
+  '  if (gdefcore_template_can_edit(catalog, request, id, NULL, 0, &may) != GDEFCORE_OK) {
+    return -1;
+  }
+  return may ? 0 : 1;' \
+  '  may = gdefcore_template_may_edit(catalog, request, kind, strlen(kind));
+  return may ? 0 : 1;'
 
 # The save no longer asks for the template's name to be typed.
 PLANT_NEED_TEXT='name typed does not match'
@@ -85,17 +92,30 @@ plant revert-confirmation-not-required src/admin.c testTpladmin TplAdmin.History
   '  } else if (form_field_alloc(post, post_n, "confirm", 0, &confirm, &confirm_n) != 0 && 0) {
     notice = N_WRONG_CONFIRM;'
 
-# The list names a kind the principal may not edit, and its templates.
+# The kind selector offers a kind this template may not be left as, and names
+# it. (The list needs no plant of its own for the kind: a heading is printed
+# only over a template that may be edited.)
 PLANT_NEED_TEXT='Page layout'
-plant list-names-unpermitted-kind src/admin.c testTpladmin TplAdmin.ListShowsOnlyKindsThePrincipalMayEdit \
-  '        field_copy(catalog, ids[i], "name", name, sizeof name) != 0 ||
-        !gdefcore_template_may_edit(catalog, request, name, strlen(name))) {
+plant kind-selector-offers-unpermitted-kinds src/admin.c testTpladmin TplAdmin.MovingToAnotherKindNeedsBothKindsAndTheNewContract \
+  '    if (!ok) {
       continue;
-    }' \
-  '        field_copy(catalog, ids[i], "name", name, sizeof name) != 0 ||
-        (0 && !gdefcore_template_may_edit(catalog, request, name, strlen(name)))) {
+    }
+    if (field_copy(catalog, ids[i], "label", label, sizeof label) != 0 ||' \
+  '    if (0 && !ok) {
       continue;
-    }'
+    }
+    if (field_copy(catalog, ids[i], "label", label, sizeof label) != 0 ||'
+
+# The list names every template of a kind it lists, though the principal may
+# edit only some of them (a classification grant covers some pages).
+PLANT_NEED_TEXT='notes listed'
+plant list-names-a-template-the-principal-may-not-edit src/admin.c testTpladmin TplAdmin.TheListThePageAndTheSaveAgreeForEveryGrant \
+  '      if (gdefcore_template_can_edit(catalog, request, ids[i], NULL, 0, &ok) !=
+              GDEFCORE_OK ||
+          !ok) {
+        continue;
+      }' \
+  '      (void)ok;'
 
 # A stale form is not noticed: the template is overwritten.
 PLANT_NEED_TEXT='this template changed while you were editing it'
@@ -123,10 +143,8 @@ plant flash-not-session-bound src/admin.c testTpladmin TplAdmin.WhatARedirectCar
 # A kind the principal may not edit is accepted from a posted form.
 PLANT_NEED_TEXT='choose one of the kinds listed'
 plant kind-not-checked src/admin.c testTpladmin TplAdmin.MovingToAnotherKindNeedsBothKindsAndTheNewContract \
-  '  if (!gdefcore_template_may_edit(catalog, request, kind, strlen(kind))) {
-    rc = tpl_flash_redirect(alloc, catalog, session, session_len, id, name, "", N_BAD_KIND,' \
-  '  if (0 && !gdefcore_template_may_edit(catalog, request, kind, strlen(kind))) {
-    rc = tpl_flash_redirect(alloc, catalog, session, session_len, id, name, "", N_BAD_KIND,'
+  '    if (!may_leave) {' \
+  '    if (0 && !may_leave) {'
 
 # The check token is taken for the save token.
 PLANT_NEED_TEXT='out of date'

@@ -479,7 +479,7 @@ TEST_COMPILE_FLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cf
 # coverage target does, because --coverage links the gcov runtime, whose
 # mangle_path check-symbols is right to reject in a shipping library and
 # wrong to reject in an instrumented one. Spelled as text's TEST_GATES is.
-TEST_GATES ?= check-symbols check-aliasing check-seams check-plants check-tpladmin check-access $(if $(filter Linux,$(OS_NAME)),check-defiant check-demo) check-sizes
+TEST_GATES ?= check-symbols check-aliasing check-seams check-noveto check-plants check-tpladmin check-access $(if $(filter Linux,$(OS_NAME)),check-defiant check-demo) check-sizes
 
 # Valgrind flags (exclude "still reachable" as it's not a leak)
 # --suppressions: see tests/valgrind.supp. It holds allocations that are
@@ -729,7 +729,7 @@ demo: $(APP_DIR)/defiant$(EXE_EXTENSION) $(APP_DIR)/defiant-demo$(EXE_EXTENSION)
 ####################################################################
 
 # General commands
-.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-seams check-plants check-tpladmin check-access check-gates check-defiant check-demo demo check-sizes
+.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-seams check-noveto check-plants check-tpladmin check-access check-gates check-defiant check-demo demo check-sizes
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-valgrind test-valgrind-quiet test-watch uninstall watch
 # Debug build commands
@@ -1007,6 +1007,8 @@ $(APP_DIR)/readzip: tests/read_zip.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(ARCHIVE_CFLAGS) -o $@ $< $(ARCHIVE_LIBS)
 
+check-noveto: ## Fail if the template veto, or the per-kind edit permission, is named anywhere; with a plant
+	@tools/check-noveto.sh .
 check-plants: ## Plants in scratch copies of the server turn the scanner and cross-tenant tests red, by name
 	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-plants.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 check-tpladmin: ## Plants in scratch copies of the template editor turn its named tests red

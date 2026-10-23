@@ -1701,9 +1701,12 @@ static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
  * and its history. Every action is a signed form that answers with a 303.
  * Nothing here needs a script.
  *
- * A principal who may not edit a template's kind gets, for that template, the
- * answer a template that does not exist gets (AD-11). The permission is asked
- * of the core (gdefcore_template_may_edit()); the reads below are the
+ * A principal who may not edit a template gets, for that template, the answer
+ * a template that does not exist gets (AD-11). The permission is
+ * `core.template.edit`, granted with a condition on the template's kind or
+ * classification, and the question is the core's one decision about this
+ * template (gdefcore_template_can_edit()), which the write asks too, so the
+ * list, the page and the save cannot disagree. The reads below are the
  * unfiltered admin reads and are made only after it said yes.
  *
  * A page that must show the editor's own text after a redirect (a validation,
@@ -2126,11 +2129,13 @@ struct KindRow {
 };
 
 /*
- * The kinds this principal may edit, by label. Only a kind the principal holds
- * the permission of is read at all: the others are not named anywhere.
+ * The kinds this principal may edit, by label. With @p template_id, the kinds
+ * that template may be left as (its own among them, when it may be edited at
+ * all); without, the kinds of which some template may be edited. Only such a
+ * kind is read at all: the others are not named anywhere.
  */
 static int editable_kinds(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
-    struct KindRow * rows, size_t cap, size_t * out_n) {
+    const char * template_id, struct KindRow * rows, size_t cap, size_t * out_n) {
   char ** ids = NULL;
   size_t count = 0;
   size_t i;
@@ -2144,9 +2149,21 @@ static int editable_kinds(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request
     char name[TPL_KIND_MAX];
     char label[TPL_KIND_MAX];
     size_t j;
+    int ok = 0;
     if (strlen(ids[i]) != GDEFCORE_PUBLIC_ID_LEN ||
-        field_copy(catalog, ids[i], "name", name, sizeof name) != 0 ||
-        !gdefcore_template_may_edit(catalog, request, name, strlen(name))) {
+        field_copy(catalog, ids[i], "name", name, sizeof name) != 0) {
+      continue;
+    }
+    if (template_id != NULL) {
+      if (gdefcore_template_can_edit(catalog, request, template_id, name,
+              strlen(name), &ok) != GDEFCORE_OK) {
+        gdefcore_ids_free(catalog, ids, count);
+        return -1;
+      }
+    } else {
+      ok = gdefcore_template_may_edit(catalog, request, name, strlen(name));
+    }
+    if (!ok) {
       continue;
     }
     if (field_copy(catalog, ids[i], "label", label, sizeof label) != 0 ||
@@ -2378,7 +2395,7 @@ static int tpl_list_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cat
   size_t shown = 0;
   memset(&page, 0, sizeof page);
   page.alloc = alloc;
-  if (editable_kinds(catalog, request, kinds, TPL_KINDS_MAX, &nkinds) != 0 ||
+  if (editable_kinds(catalog, request, NULL, kinds, TPL_KINDS_MAX, &nkinds) != 0 ||
       gdefcore_entity_ids(catalog, GDEFCORE_TEMPLATE_TYPE,
           sizeof GDEFCORE_TEMPLATE_TYPE - 1, &ids, &count) != GDEFCORE_OK) {
     return -1;
@@ -2394,10 +2411,18 @@ static int tpl_list_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cat
     for (i = 0; i < count && nn < TPL_LIST_MAX; i++) {
       char name[TPL_NAME_MAX];
       char kind[TPL_KIND_MAX];
+      int ok = 0;
       if (strlen(ids[i]) != GDEFCORE_PUBLIC_ID_LEN ||
           field_copy(catalog, ids[i], "kind", kind, sizeof kind) != 0 ||
           strcmp(kind, kinds[k].name) != 0 ||
           field_copy(catalog, ids[i], "name", name, sizeof name) != 0) {
+        continue;
+      }
+      /* A kind is listed when some template of it may be edited; each
+       * template is listed when this one may. */
+      if (gdefcore_template_can_edit(catalog, request, ids[i], NULL, 0, &ok) !=
+              GDEFCORE_OK ||
+          !ok) {
         continue;
       }
       j = nn;
@@ -2534,7 +2559,7 @@ static int tpl_edit_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cat
   size_t stored_n = 0;
   memset(&page, 0, sizeof page);
   page.alloc = alloc;
-  if (editable_kinds(catalog, request, kinds, TPL_KINDS_MAX, &nkinds) != 0 ||
+  if (editable_kinds(catalog, request, id, kinds, TPL_KINDS_MAX, &nkinds) != 0 ||
       tpl_sign(alloc, catalog, request, keyring, root, root_len, session, session_len,
           "tpl-check", id, name, kind, &check) != 0 ||
       tpl_sign(alloc, catalog, request, keyring, root, root_len, session, session_len,
@@ -2653,13 +2678,14 @@ static int issues_text_html(const GDEFWEB_Allocator * alloc, const char * text, 
 }
 
 /*
- * The template @p name, if this principal may edit its kind. 0 yes, with
- * @p id and the stored @p kind; 1 for anything else: it does not exist, it has
- * no kind, or the principal may not edit that kind. The three are one answer.
+ * The template @p name, if this principal may edit it. 0 yes, with @p id and
+ * the stored @p kind; 1 for anything else: it does not exist, it has no kind,
+ * or the principal may not edit it. The three are one answer.
  */
 static int tpl_open(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
     const char * name, size_t name_len, char id[GDEFCORE_PUBLIC_ID_LEN + 1], char * kind,
     size_t kind_cap) {
+  int may = 0;
   int found = find_by_name(catalog, GDEFCORE_TEMPLATE_TYPE, name, name_len, id);
   if (found < 0) {
     return -1;
@@ -2667,11 +2693,13 @@ static int tpl_open(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
   if (found != 0) {
     return 1;
   }
-  if (field_copy(catalog, id, "kind", kind, kind_cap) != 0 || kind[0] == '\0' ||
-      !gdefcore_template_may_edit(catalog, request, kind, strlen(kind))) {
+  if (field_copy(catalog, id, "kind", kind, kind_cap) != 0 || kind[0] == '\0') {
     return 1;
   }
-  return 0;
+  if (gdefcore_template_can_edit(catalog, request, id, NULL, 0, &may) != GDEFCORE_OK) {
+    return -1;
+  }
+  return may ? 0 : 1;
 }
 
 static int tpl_edit_get(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
@@ -2706,9 +2734,13 @@ static int tpl_edit_get(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
     show_body = flash->body;
     show_n = flash->body_len;
   }
-  if (flash != NULL && flash->kind[0] != '\0' &&
-      gdefcore_template_may_edit(catalog, request, flash->kind, strlen(flash->kind))) {
-    show_kind = flash->kind;
+  if (flash != NULL && flash->kind[0] != '\0') {
+    int may_move = 0;
+    if (gdefcore_template_can_edit(catalog, request, id, flash->kind,
+            strlen(flash->kind), &may_move) == GDEFCORE_OK &&
+        may_move) {
+      show_kind = flash->kind;
+    }
   }
   rc = tpl_edit_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
       id, name, show_body, show_n, show_kind, flash, out);
@@ -2937,11 +2969,20 @@ static int tpl_edit_post(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cat
         kind, body, body_n, NULL, 0, NULL, 0, 0, out);
     goto done;
   }
-  /* A kind the principal may not edit is a kind that is not there. */
-  if (!gdefcore_template_may_edit(catalog, request, kind, strlen(kind))) {
-    rc = tpl_flash_redirect(alloc, catalog, session, session_len, id, name, "", N_BAD_KIND,
-        stored_kind, body, body_n, NULL, 0, NULL, 0, 0, out);
-    goto done;
+  /* A kind this template may not be left as, by this principal, is a kind
+   * that is not there: the core's decision about the template, which the
+   * save asks again. */
+  {
+    int may_leave = 0;
+    if (gdefcore_template_can_edit(catalog, request, id, kind, strlen(kind),
+            &may_leave) != GDEFCORE_OK) {
+      goto done;
+    }
+    if (!may_leave) {
+      rc = tpl_flash_redirect(alloc, catalog, session, session_len, id, name, "", N_BAD_KIND,
+          stored_kind, body, body_n, NULL, 0, NULL, 0, 0, out);
+      goto done;
+    }
   }
   if (act == A_SAVE) {
     if (form_field_alloc(post, post_n, "confirm", 0, &confirm, &confirm_n) != 0 ||

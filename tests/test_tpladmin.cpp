@@ -42,37 +42,14 @@ namespace {
 
 const char kCoreToken[] = TA_STR(GHOTIIO_DEFCORE_NAME);
 
-/* A module that refines template edits, as the story's example does. */
+/* A module that grants the permission to edit templates for the pages
+ * classified internal: the access story's example. It is a grant, so it can
+ * add to who edits and cannot take away from anyone. */
 GDEFCORE_Module_Manifest g_man;
-GDEFCORE_Module_Sub g_sub;
-extern "C" const GDEFCORE_Module_Manifest * JudgeEntry(void) { return &g_man; }
-
-struct Judge {
-  int calls = 0;
-  std::string allowed;
-  std::string kind;
-  std::string classification;
-};
-
-/* Deny edits of core.page templates unless the classification is the one
- * granted; no opinion about anything else. */
-extern "C" GDEFCORE_Result JudgeFn(GDEFCORE_Request * request, const void * args,
-    GDEFCORE_Alter * alter, GDEFCORE_Hook_Out * out, void * user) {
-  Judge * j = (Judge *)user;
-  const GDEFCORE_Template_Write_Hook * a =
-      (const GDEFCORE_Template_Write_Hook *)args;
-  (void)request;
-  (void)alter;
-  j->calls += 1;
-  j->kind.assign(a->kind, a->kind_len);
-  j->classification.assign(a->classification, a->classification_len);
-  out->decision = GDEFCORE_DECISION_NONE;
-  if (j->kind == "core.page") {
-    out->decision = j->classification == j->allowed ? GDEFCORE_DECISION_ALLOW
-                                                    : GDEFCORE_DECISION_DENY;
-  }
-  return GDEFCORE_OK;
-}
+GDEFCORE_Module_Grant g_grant;
+const char kDeskCondition[] =
+    "(and (= field.kind \"core.page\") (= field.classification \"internal\"))";
+extern "C" const GDEFCORE_Module_Manifest * DeskEntry(void) { return &g_man; }
 
 /* A value whose single text is already in @p slot. */
 void Val(GDEFCORE_Value * value, const char * field, const char ** slot, size_t * len) {
@@ -122,7 +99,7 @@ class TplAdmin : public Edge {
  protected:
   char id_[GDEFCORE_PUBLIC_ID_LEN + 1];
   std::string cookie_;
-  Judge judge_;
+  bool desk_installed_ = false;
 
   /* A site with the kit, the host given to the server, the admin role granted
    * the permissions of @p kinds, and ada signed in. */
@@ -280,33 +257,90 @@ class TplAdmin : public Edge {
     gdefcore_catalog_destroy(catalog);
   }
 
-  /* Install and enable the judge for this tenant. */
-  void EnableJudge(const std::string & allowed) {
+  /* A template made by the operator (no request, so no one is asked). */
+  void OperatorNew(const char * name, const std::string & body, const char * kind,
+      const char * classification) {
+    GDEFCORE_Catalog * catalog = Catalog();
+    char tid[GDEFCORE_PUBLIC_ID_LEN + 1];
+    GDEFCORE_Changeset * cs = NULL;
+    GDEFCORE_Value values[4];
+    const char * slots[4] = {name, body.c_str(), kind, classification};
+    size_t lens[4] = {strlen(name), body.size(), strlen(kind), strlen(classification)};
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_entity_create(catalog, "core.template", 13, tid, NULL));
+    Val(&values[0], "name", &slots[0], &lens[0]);
+    Val(&values[1], "body", &slots[1], &lens[1]);
+    Val(&values[2], "kind", &slots[2], &lens[2]);
+    Val(&values[3], "classification", &slots[3], &lens[3]);
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_entity_save(cs, tid, GDEFCORE_PUBLIC_ID_LEN, "en", 2, values, 4));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, "core.template", 13));
+    gdefcore_changeset_destroy(cs);
+    gdefcore_catalog_destroy(catalog);
+  }
+
+  /* The line the enable shows for the module's grant, as the core words it. */
+  std::string DeskLine() {
+    GDEFCORE_Condition * c = NULL;
+    char * words = NULL;
+    size_t n = 0;
+    std::string out;
+    EXPECT_EQ(GDEFCORE_OK,
+        gdefcore_condition_parse(kDeskCondition, strlen(kDeskCondition), &c, NULL));
+    EXPECT_EQ(GDEFCORE_OK, gdefcore_condition_explain(c, &words, &n));
+    int risk = gdefcore_access_grant_risk_on(GDEFCORE_TEMPLATE_EDIT,
+        strlen(GDEFCORE_TEMPLATE_EDIT), "", 0, kDeskCondition, strlen(kDeskCondition),
+        (gdefcore_condition_uses(c) & GDEFCORE_CONDITION_USES_PRINCIPAL) == 0);
+    out = std::string("Module desk grants ") + GDEFCORE_TEMPLATE_EDIT_LABEL + " (" +
+          gdefcore_access_risk_name(risk) + " risk): " + std::string(words, n);
+    gdefcore_condition_text_free(words);
+    gdefcore_condition_free(c);
+    return out;
+  }
+
+  /* Install the module once and enable it for this tenant, typing what the
+   * enable asks to be typed: the module's name and the line for its grant. */
+  void EnableDesk() {
     GDEFCORE_Catalog * catalog = Catalog();
     GDEFCORE_Changeset * cs = NULL;
-    judge_.allowed = allowed;
-    memset(&g_man, 0, sizeof g_man);
-    memset(&g_sub, 0, sizeof g_sub);
-    g_sub.size = sizeof g_sub;
-    g_sub.hook = GDEFCORE_HOOK_TEMPLATE_WRITE;
-    g_sub.hook_len = strlen(GDEFCORE_HOOK_TEMPLATE_WRITE);
-    g_sub.kind = GDEFCORE_HOOK_DECISION;
-    g_sub.fn = JudgeFn;
-    g_sub.user = &judge_;
-    g_man.size = sizeof g_man;
-    g_man.core_token = kCoreToken;
-    g_man.core_token_len = strlen(kCoreToken);
-    g_man.schema_version = 1;
-    g_man.name = "judge";
-    g_man.name_len = 5;
-    g_man.label = "judge";
-    g_man.label_len = 5;
-    g_man.subs = &g_sub;
-    g_man.nsubs = 1;
-    ASSERT_EQ(GDEFCORE_OK, gdefcore_module_install_guest(host_, JudgeEntry));
+    if (!desk_installed_) {
+      memset(&g_man, 0, sizeof g_man);
+      memset(&g_grant, 0, sizeof g_grant);
+      g_grant.size = sizeof g_grant;
+      g_grant.permission = GDEFCORE_TEMPLATE_EDIT_LABEL;
+      g_grant.permission_len = strlen(GDEFCORE_TEMPLATE_EDIT_LABEL);
+      g_grant.type_name = GDEFCORE_TEMPLATE_TYPE;
+      g_grant.type_name_len = strlen(GDEFCORE_TEMPLATE_TYPE);
+      g_grant.condition = kDeskCondition;
+      g_grant.condition_len = strlen(kDeskCondition);
+      g_man.size = sizeof g_man;
+      g_man.core_token = kCoreToken;
+      g_man.core_token_len = strlen(kCoreToken);
+      g_man.schema_version = 1;
+      g_man.name = "desk";
+      g_man.name_len = 4;
+      g_man.label = "desk";
+      g_man.label_len = 4;
+      g_man.grants = &g_grant;
+      g_man.ngrants = 1;
+      ASSERT_EQ(GDEFCORE_OK, gdefcore_module_install_guest(host_, DeskEntry));
+      desk_installed_ = true;
+    }
+    const std::string confirmation = "desk\n" + DeskLine();
     ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
-    ASSERT_EQ(GDEFCORE_OK, gdefcore_module_enable(host_, cs, "judge", 5));
-    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, "judge", 5));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_module_enable(host_, cs, "desk", 4));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_changeset_apply(cs, confirmation.data(), confirmation.size()));
+    gdefcore_changeset_destroy(cs);
+    gdefcore_catalog_destroy(catalog);
+  }
+
+  void DisableDesk() {
+    GDEFCORE_Catalog * catalog = Catalog();
+    GDEFCORE_Changeset * cs = NULL;
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_module_disable(host_, cs, "desk", 4));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, "desk", 4));
     gdefcore_changeset_destroy(cs);
     gdefcore_catalog_destroy(catalog);
   }
@@ -606,31 +640,100 @@ TEST_F(TplAdmin, SaveOfAnInvalidBodyIsRefusedWithTheLine) {
   EXPECT_TRUE(Has(fixed.body, "Saved."));
 }
 
-TEST_F(TplAdmin, AModuleDenyRefusesTheSaveWithAFixedSentence) {
-  Open({"core.pane", "core.page"});
+TEST_F(TplAdmin, AModulesGrantEditsOnlyThePagesOfOneClassificationAndGoesWithTheModule) {
+  Open({"core.pane"});
   Operator("layout", Stored("layout", "body"), "core.page", "internal");
-  EnableJudge("public");
   const std::string before = Stored("layout", "body");
   const std::string edited = before + "<!-- edit -->";
-  /* The classification does not match the grant: refused, nothing stored. */
-  Reply shown = Act("layout", Fresh("layout"), "save", edited, "core.page", "layout");
-  EXPECT_TRUE(Has(shown.body, "That edit was refused. Nothing was saved."));
-  EXPECT_FALSE(Has(shown.body, "judge"));
-  EXPECT_FALSE(Has(shown.body, "classification"));
-  EXPECT_EQ(before, Stored("layout", "body"));
-  EXPECT_GE(judge_.calls, 1) << "the hook was never asked";
-  EXPECT_EQ("core.page", judge_.kind);
-  EXPECT_EQ("internal", judge_.classification);
-  /* Control: the same save, once the classification matches the grant. */
-  judge_.allowed = "internal";
-  Reply allowed = Act("layout", Fresh("layout"), "save", edited, "core.page", "layout");
-  EXPECT_TRUE(Has(allowed.body, "Saved."));
+  const std::string link = "href=\"/admin/templates/layout\"";
+  Reply missing = EditPage("no-such-template");
+  /* Control: with no grant for pages, a page is a missing one. */
+  EXPECT_EQ(missing.body, EditPage("layout").body);
+  EXPECT_FALSE(Has(Get("/admin/templates", cookie_).body, link.c_str()));
+  /* The module's grant lets the admin edit the page classified internal:
+   * it is listed, it opens, and a save writes. */
+  EnableDesk();
+  Reply list = Get("/admin/templates", cookie_);
+  EXPECT_TRUE(Has(list.body, link.c_str()));
+  EXPECT_TRUE(Has(list.body, "Page layout"));
+  EXPECT_TRUE(Has(EditPage("layout").body, "<textarea"));
+  Reply saved = Act("layout", Fresh("layout"), "save", edited, "core.page", "layout");
+  EXPECT_TRUE(Has(saved.body, "Saved."));
   EXPECT_EQ(edited, Stored("layout", "body"));
-  /* Control: the module has no opinion about a pane. */
-  judge_.allowed = "public";
-  Reply pane = Act("recent", Fresh("recent"), "save", kPaneBody, "core.pane", "recent");
-  EXPECT_TRUE(Has(pane.body, "Saved."));
-  EXPECT_EQ(kPaneBody, Stored("recent", "body"));
+  /* The grant covers the classification and nothing else: a page classified
+   * otherwise is a missing one again. */
+  Operator("layout", edited, "core.page", "public");
+  EXPECT_EQ(missing.body, EditPage("layout").body);
+  EXPECT_FALSE(Has(Get("/admin/templates", cookie_).body, link.c_str()));
+  /* What a refused principal is told names no module, no classification. */
+  EXPECT_FALSE(Has(missing.body, "desk"));
+  EXPECT_FALSE(Has(missing.body, "internal"));
+  /* The module goes away, and so does the grant. */
+  Operator("layout", edited, "core.page", "internal");
+  EXPECT_TRUE(Has(EditPage("layout").body, "<textarea"));
+  DisableDesk();
+  EXPECT_EQ(missing.body, EditPage("layout").body);
+  EXPECT_FALSE(Has(Get("/admin/templates", cookie_).body, link.c_str()));
+  EXPECT_EQ(edited, Stored("layout", "body"));
+}
+
+/* The list's link, the page, and the save are one answer for every state of
+ * the admin's grants: a kind granted by the role, the module's grant of one
+ * classification, both. A save is judged by the core's decision about that
+ * template, so a template the page opened for is a template the save writes. */
+TEST_F(TplAdmin, TheListThePageAndTheSaveAgreeForEveryGrant) {
+  Open({});
+  const std::string layout_body = Stored("layout", "body");
+  Operator("layout", layout_body, "core.page", "internal");
+  OperatorNew("notes", layout_body, "core.page", "public");
+  struct Tpl {
+    const char * name;
+    const char * kind;
+    const char * classification;
+  };
+  const Tpl templates[] = {{"entity", "core.pane", ""}, {"recent", "core.pane", ""},
+      {"field", "core.pane", ""}, {"layout", "core.page", "internal"},
+      {"notes", "core.page", "public"}};
+  bool pane = false;
+  bool page = false;
+  bool desk = false;
+  int yes = 0;
+  int no = 0;
+  auto check = [&](const char * state) {
+    Reply list = Get("/admin/templates", cookie_);
+    for (const Tpl & t : templates) {
+      const bool want = (pane && std::string(t.kind) == "core.pane") ||
+                        (page && std::string(t.kind) == "core.page") ||
+                        (desk && std::string(t.kind) == "core.page" &&
+                            std::string(t.classification) == "internal");
+      const bool listed = Has(list.body,
+          (std::string("href=\"/admin/templates/") + t.name + "\"").c_str());
+      Reply opened = EditPage(t.name);
+      const bool shown = Has(opened.body, "<textarea");
+      Reply wrote = Act(t.name, opened.body, "save", Stored(t.name, "body"), t.kind, t.name);
+      const bool written = Has(wrote.body, "Saved.");
+      EXPECT_EQ(want, listed) << state << " " << t.name << " listed";
+      EXPECT_EQ(want, shown) << state << " " << t.name << " opened";
+      EXPECT_EQ(want, written) << state << " " << t.name << " saved";
+      yes += want;
+      no += !want;
+    }
+  };
+  check("no grant");
+  GrantTemplateKinds(id_, {"core.pane"});
+  pane = true;
+  check("panes");
+  EnableDesk();
+  desk = true;
+  check("panes and the module's pages");
+  GrantTemplateKinds(id_, {"core.page"});
+  page = true;
+  check("both kinds and the module");
+  DisableDesk();
+  desk = false;
+  check("both kinds, the module gone");
+  EXPECT_GT(yes, 10);
+  EXPECT_GT(no, 5);
 }
 
 TEST_F(TplAdmin, AStaleFormIsAConflictAndNothingIsOverwritten) {

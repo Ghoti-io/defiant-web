@@ -74,11 +74,11 @@ GDEFWEB_API GDEFWEB_Result gdefweb_server_set_inst(GDEFWEB_Server * server,
 /**
  * @brief Give every request the module host of this process, or clear it.
  *
- * The host is bound to the catalog each request opens, so the template
- * editor's writes run the `template-write` decision hook and the contracts
- * it validates against include the modules' contributions. The host is
- * borrowed and must outlive the server. A server with none runs no module
- * code.
+ * The host is bound to the catalog each request opens, so the grants of the
+ * enabled modules are among those the template editor's decisions weigh and
+ * the contracts it validates against include the modules' contributions. The
+ * host is borrowed and must outlive the server. A server with none runs no
+ * module code.
  */
 GDEFWEB_API GDEFWEB_Result gdefweb_server_set_host(GDEFWEB_Server * server,
     GDEFCORE_Host * host);
