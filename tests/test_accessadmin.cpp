@@ -273,12 +273,9 @@ extern "C" const GDEFCORE_Module_Manifest * AccCbEntry(void) {
 
 }  // namespace
 
-/* An access callback is a row of its module, said to be decided per entity
- * and rated high; the module's plain grant beside it keeps its own rating. */
-TEST_F(AccessAdmin, ACallbackIsShownAsDecidedPerEntityAndRatedHigh) {
-  Open();
-  GDEFCORE_Catalog * catalog = Catalog();
-  GDEFCORE_Changeset * cs = NULL;
+/* The module `paywall`: a permission on the body of a post and an access
+ * callback that decides it per entity. */
+void PaywallManifest() {
   memset(&g_cb_perm, 0, sizeof g_cb_perm);
   g_cb_perm.size = sizeof g_cb_perm;
   g_cb_perm.label = "Read paid body";
@@ -331,6 +328,15 @@ TEST_F(AccessAdmin, ACallbackIsShownAsDecidedPerEntityAndRatedHigh) {
   g_cb_man.nservices = 1;
   g_cb_man.callbacks = &g_cb;
   g_cb_man.ncallbacks = 1;
+}
+
+/* An access callback is a row of its module, said to be decided per entity
+ * and rated high; the module's plain grant beside it keeps its own rating. */
+TEST_F(AccessAdmin, ACallbackIsShownAsDecidedPerEntityAndRatedHigh) {
+  Open();
+  GDEFCORE_Catalog * catalog = Catalog();
+  GDEFCORE_Changeset * cs = NULL;
+  PaywallManifest();
   ASSERT_EQ(GDEFCORE_OK, gdefcore_module_install_guest(host_, AccCbEntry));
   const std::string confirm =
       "paywall\nModule paywall decides Read paid body per entity with its "
@@ -357,6 +363,74 @@ TEST_F(AccessAdmin, ACallbackIsShownAsDecidedPerEntityAndRatedHigh) {
   EXPECT_TRUE(Has(row, "<td class=\"risk-low\">low</td>")) << row;
   Reply none = Get("/admin/access", bob_);
   EXPECT_FALSE(Has(none.body, "paywall"));
+}
+
+/* A grant whose condition names a field a module decides per entity is shown
+ * as suspended by that module (access-conditions story A7), with the module's
+ * name escaped, and the grants that name no such field are shown as active. A
+ * control: before the module the same grant is active. */
+TEST_F(AccessAdmin, ASuspendedGrantIsShownAsSuspendedByTheModule) {
+  Open();
+  GDEFCORE_Catalog * catalog = Catalog();
+  GDEFCORE_Changeset * cs = NULL;
+  static const char kCond[] = "(= field.body \"open\")";
+  char * base = NULL;
+  size_t base_len = 0;
+  GDEFCORE_Condition * parsed = NULL;
+  char * words = NULL;
+  size_t words_len = 0;
+  ASSERT_EQ(GDEFCORE_OK,
+      gdefcore_access_grant_when(catalog, kHostileRole, strlen(kHostileRole),
+          kHostilePermission, strlen(kHostilePermission), kCond, strlen(kCond),
+          "core.role", 9));
+  /* The grant's own words: the permission's condition and the one it was
+   * given, held together. */
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_condition_builtin(
+                             GDEFCORE_CONDITION_BUILTIN_ANY, "site.post", 9,
+                             &base, &base_len));
+  const std::string composite =
+      "(and " + std::string(base, base_len) + " " + kCond + ")";
+  gdefcore_condition_text_free(base);
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_condition_parse(composite.data(),
+                             composite.size(), &parsed, NULL));
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_condition_explain(parsed, &words, &words_len));
+  const std::string explain(words, words_len);
+  gdefcore_condition_text_free(words);
+  gdefcore_condition_free(parsed);
+  /* Control: nothing is suspended yet. */
+  {
+    Reply page = Get("/admin/access", admin_);
+    ASSERT_EQ(200, page.status);
+    EXPECT_TRUE(Has(page.body, "<th>Status</th>")) << page.body;
+    EXPECT_TRUE(Has(page.body, "<td class=\"status-active\">active</td>"));
+    EXPECT_FALSE(Has(page.body, "suspended"));
+  }
+  PaywallManifest();
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_module_install_guest(host_, AccCbEntry));
+  const std::string confirm =
+      "paywall\nModule paywall decides Read paid body per entity with its "
+      "callback paid (field scope, high risk): its breadth cannot be judged.\n"
+      "Module paywall suspends role " + std::string(kHostileRole) + "'s grant " +
+      kHostilePermission + " (" + explain + "): its condition names field "
+      "body of site.post, which that module decides per entity with its "
+      "callback paid, so the grant holds nothing until no enabled module "
+      "decides that field.\nRead paid body";
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_module_enable(host_, cs, "paywall", 7));
+  ASSERT_EQ(GDEFCORE_OK,
+      gdefcore_changeset_apply(cs, confirm.data(), confirm.size()));
+  gdefcore_changeset_destroy(cs);
+  gdefcore_catalog_destroy(catalog);
+  Reply page = Get("/admin/access", admin_);
+  ASSERT_EQ(200, page.status);
+  EXPECT_TRUE(Has(page.body, "<td class=\"status-suspended\">suspended by paywall</td>"))
+      << page.body;
+  EXPECT_TRUE(Has(page.body, "<td class=\"status-active\">active</td>"));
+  EXPECT_TRUE(Has(page.body, "is suspended by paywall")) << page.body;
+  /* One row only: the role's other grant is still active. */
+  size_t at = page.body.find("status-suspended");
+  EXPECT_EQ(std::string::npos, page.body.find("status-suspended", at + 1));
+  ExpectSecurity(page);
 }
 
 int main(int argc, char ** argv) {

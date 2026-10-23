@@ -884,6 +884,19 @@ static int access_cell(struct Page * page, const char * open_tag,
          page_str(page, "</td>") != 0;
 }
 
+/* Whether the grant holds anything now. A grant whose condition names a field
+ * an enabled module decides per entity holds nothing, and says which modules
+ * (access-conditions story A7): the names are a module author's, so escaped. */
+static int access_status(struct Page * page,
+    const GDEFCORE_Access_Matrix_Row * r) {
+  if (!r->suspended) {
+    return page_str(page, "<td class=\"status-active\">active</td>");
+  }
+  return page_str(page, "<td class=\"status-suspended\">suspended by ") != 0 ||
+         page_esc(page, r->suspended_by, r->suspended_by_len) != 0 ||
+         page_str(page, "</td>");
+}
+
 static int access_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, struct GDEFWEB_Admin_Reply * out) {
   struct Page page;
@@ -913,8 +926,8 @@ static int access_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
     return take_page(&page, out);
   }
   if (page_str(&page, "<table><thead><tr><th>Granted by</th><th>Permission</th>"
-                      "<th>Action</th><th>On</th><th>When</th><th>Risk</th></tr>"
-                      "</thead><tbody>") != 0) {
+                      "<th>Action</th><th>On</th><th>When</th><th>Risk</th>"
+                      "<th>Status</th></tr></thead><tbody>") != 0) {
     goto fail;
   }
   for (i = 0; i < n; i++) {
@@ -934,7 +947,8 @@ static int access_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
         page_str(&page, "<td class=\"risk-") != 0 ||
         page_esc(&page, risk, strlen(risk)) != 0 || page_str(&page, "\">") != 0 ||
         page_esc(&page, risk, strlen(risk)) != 0 ||
-        page_str(&page, "</td></tr>") != 0) {
+        page_str(&page, "</td>") != 0 ||
+        access_status(&page, r) != 0 || page_str(&page, "</tr>") != 0) {
       goto fail;
     }
   }
