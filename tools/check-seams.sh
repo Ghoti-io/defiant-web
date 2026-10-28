@@ -6,8 +6,11 @@
 #
 # admin (src/admin.c, src/admin.h) is the server-rendered admin pages. Its
 # header is private: only admin.c and server.c, which routes to it, may include
-# it. core.c (results and the default allocator), the public headers, the
-# defiant program and demo under app/ and the tests use the public API only.
+# it. nav (src/nav.c, src/nav.h) is the admin area's navigation: its routes,
+# links and the widgets that draw them. Its header is private to nav.c and the
+# admin pages that splice it in. core.c (results and the default allocator),
+# the public headers, the defiant program and demo under app/ and the tests use
+# the public API only.
 #
 # Two rules, both read from the include lines:
 #
@@ -30,6 +33,7 @@ ROOT="${1:?usage: check-seams.sh <root>}"
 owners_of() {
   case "$1" in
     admin.h) printf '%s\n' 'admin.c server.c' ;;
+    nav.h) printf '%s\n' 'admin.c nav.c' ;;
     *) printf '\n' ;;
   esac
 }
@@ -85,6 +89,7 @@ scan() {
 
 # Guard: the pieces this check reads must exist, or it measures nothing.
 if [ ! -f "$ROOT/src/admin.h" ] || [ ! -f "$ROOT/src/admin.c" ] ||
+   [ ! -f "$ROOT/src/nav.h" ] || [ ! -f "$ROOT/src/nav.c" ] ||
    [ ! -f "$ROOT/src/server.c" ] || [ ! -f "$ROOT/src/core.c" ] ||
    [ ! -d "$ROOT/include/ghoti.io/defiant-web" ]; then
   printf 'check-seams: private headers are missing; this gate is measuring nothing\n' >&2
@@ -107,7 +112,10 @@ plant=$(mktemp -d)
 trap 'rm -rf "$plant"' EXIT
 mkdir -p "$plant/src" "$plant/include/ghoti.io/defiant-web" "$plant/app" "$plant/tests"
 printf '%s\n' '/* private */' > "$plant/src/admin.h"
-printf '%s\n' '#include "admin.h"' > "$plant/src/admin.c"
+printf '%s\n' '/* private */' > "$plant/src/nav.h"
+printf '%s\n' '#include "nav.h"' > "$plant/src/nav.c"
+printf '%s\n' '#include "admin.h"
+#include "nav.h"' > "$plant/src/admin.c"
 printf '%s\n' '#include "admin.h"' > "$plant/src/server.c"
 printf '%s\n' '#include <ghoti.io/defiant-web/macros.h>' > "$plant/src/core.c"
 printf '%s\n' '#include <ghoti.io/defiant-core/account.h>' > "$plant/app/demo.cpp"
@@ -131,6 +139,14 @@ refused() {
 mkdir -p "$plant/src"
 printf '%s\n' '#include "admin.h"' > "$plant/src/core.c"
 refused "core.c include of admin.h"
+rm -f "$plant/src/core.c"
+
+printf '%s\n' '#include "nav.h"' > "$plant/src/server.c"
+refused "server.c include of nav.h"
+printf '%s\n' '#include "admin.h"' > "$plant/src/server.c"
+
+printf '%s\n' '#include "nav.h"' > "$plant/src/core.c"
+refused "core.c include of nav.h"
 rm -f "$plant/src/core.c"
 
 mkdir -p "$plant/include/ghoti.io/defiant-web"

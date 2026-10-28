@@ -1,0 +1,294 @@
+/*
+ * SPDX-License-Identifier: LGPL-3.0-only
+ *
+ * Copyright (C) 2026 Corey Pennycuff
+ *
+ * This file is part of Ghoti.io Defiant Web.
+ *
+ * Ghoti.io Defiant Web is free software: you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public License version
+ * 3 as published by the Free Software Foundation.
+ *
+ * Ghoti.io Defiant Web is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * @file
+ *
+ * The admin pages as routes, links and the widgets that draw them.
+ */
+
+#include "nav.h"
+
+#include <ghoti.io/cutil/allocator.h>
+#include <ghoti.io/defiant-core/access.h>
+#include <ghoti.io/defiant-core/menu.h>
+#include <ghoti.io/defiant-core/render.h>
+#include <ghoti.io/defiant-core/template.h>
+
+#include <string.h>
+
+/* The permissions the pages already depend on. A page with none is one every
+ * admin session reaches (the session itself is the admin area's gate). */
+#define PERM_TEMPLATES GDEFCORE_TEMPLATE_EDIT
+#define PERM_MENUS "core.menu.edit"
+
+struct PageRoute {
+  const char * name;
+  const char * path;
+  const char * title;
+  const char * permission;
+  int kind;
+  const char * parent;
+  int is_default;
+  int weight;
+};
+
+static const struct PageRoute kPages[] = {
+    {"core.admin", "/admin", "Admin", NULL, GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-post", "/admin/post", "Write a post", NULL, GDEFCORE_ROUTE_PAGE,
+        NULL, 0, 0},
+    {"core.admin-front", "/admin/front", "Change the front page", NULL,
+        GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-undo", "/admin/undo", "Undo", NULL, GDEFCORE_ROUTE_PAGE, NULL, 0,
+        0},
+    {"core.admin-templates", "/admin/templates", "Edit templates", PERM_TEMPLATES,
+        GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-template", "/admin/templates/:name", "Template", PERM_TEMPLATES,
+        GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-template-edit", "/admin/templates/:name/edit", "Edit",
+        PERM_TEMPLATES, GDEFCORE_ROUTE_TAB, "core.admin-template", 1, 0},
+    {"core.admin-template-history", "/admin/templates/:name/history", "History",
+        PERM_TEMPLATES, GDEFCORE_ROUTE_TAB, "core.admin-template", 0, 1},
+    {"core.admin-menus", "/admin/menus", "Menus", PERM_MENUS, GDEFCORE_ROUTE_PAGE,
+        NULL, 0, 0},
+    {"core.admin-more", "/admin/more", "More", NULL, GDEFCORE_ROUTE_PAGE, NULL, 0,
+        0},
+    {"core.admin-access", "/admin/access", "What is granted", NULL,
+        GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+};
+
+struct PageLink {
+  const char * name;
+  const char * label;
+  const char * route;
+  const char * parent;
+  int weight;
+};
+
+static const struct PageLink kLinks[] = {
+    {"core.l-admin", "Admin", "core.admin", NULL, -100},
+    {"core.l-admin-post", "Write a post", "core.admin-post", "core.l-admin", 0},
+    {"core.l-admin-front", "Change the front page", "core.admin-front",
+        "core.l-admin", 1},
+    {"core.l-admin-undo", "Undo", "core.admin-undo", "core.l-admin", 2},
+    {"core.l-admin-templates", "Edit templates", "core.admin-templates",
+        "core.l-admin", 3},
+    /* Has a path only on the page of one template, which is where it shows. */
+    {"core.l-admin-template", "Template", "core.admin-template",
+        "core.l-admin-templates", 0},
+    {"core.l-admin-menus", "Menus", "core.admin-menus", "core.l-admin", 4},
+    {"core.l-admin-more", "More", "core.admin-more", "core.l-admin", 9},
+    {"core.l-admin-access", "What is granted", "core.admin-access",
+        "core.l-admin-more", 0},
+};
+
+/* A page needs no handler of its own here: the server serves it. */
+static void page_call(const GDEFCORE_Route_Call * call) {
+  (void)call;
+}
+
+GDEFCORE_Routes * gdefweb_nav_open(GDEFCORE_Catalog * catalog) {
+  GDEFCORE_Routes * routes = NULL;
+  size_t i;
+  if (catalog == NULL || gdefcore_routes_create(NULL, &routes) != GDEFCORE_OK) {
+    return NULL;
+  }
+  if (gdefcore_routes_set_check(routes, gdefcore_access_route_check, catalog) !=
+      GDEFCORE_OK) {
+    gdefcore_routes_destroy(routes);
+    return NULL;
+  }
+  for (i = 0; i < sizeof kPages / sizeof kPages[0]; i++) {
+    GDEFCORE_Route_Spec spec;
+    memset(&spec, 0, sizeof spec);
+    spec.size = sizeof spec;
+    spec.machine = kPages[i].name;
+    spec.machine_len = strlen(kPages[i].name);
+    spec.path = kPages[i].path;
+    spec.path_len = strlen(kPages[i].path);
+    spec.call_fn = page_call;
+    spec.title = kPages[i].title;
+    spec.title_len = strlen(kPages[i].title);
+    spec.permission = kPages[i].permission;
+    spec.permission_len =
+        kPages[i].permission == NULL ? 0 : strlen(kPages[i].permission);
+    spec.kind = kPages[i].kind;
+    spec.parent = kPages[i].parent;
+    spec.parent_len = kPages[i].parent == NULL ? 0 : strlen(kPages[i].parent);
+    spec.is_default = kPages[i].is_default;
+    spec.weight = kPages[i].weight;
+    if (gdefcore_route_add_spec(routes, &spec, NULL, NULL) != GDEFCORE_OK) {
+      gdefcore_routes_destroy(routes);
+      return NULL;
+    }
+  }
+  for (i = 0; i < sizeof kLinks / sizeof kLinks[0]; i++) {
+    GDEFCORE_Route_Link link;
+    memset(&link, 0, sizeof link);
+    link.size = sizeof link;
+    link.name = kLinks[i].name;
+    link.name_len = strlen(kLinks[i].name);
+    link.menu = "admin";
+    link.menu_len = 5;
+    link.label = kLinks[i].label;
+    link.label_len = strlen(kLinks[i].label);
+    link.route = kLinks[i].route;
+    link.route_len = strlen(kLinks[i].route);
+    link.weight = kLinks[i].weight;
+    link.parent = kLinks[i].parent;
+    link.parent_len = kLinks[i].parent == NULL ? 0 : strlen(kLinks[i].parent);
+    link.kind = GDEFCORE_ROUTE_PAGE;
+    if (gdefcore_routes_add_link(routes, &link) != GDEFCORE_OK) {
+      gdefcore_routes_destroy(routes);
+      return NULL;
+    }
+  }
+  return routes;
+}
+
+void gdefweb_nav_close(GDEFCORE_Routes * routes) {
+  gdefcore_routes_destroy(routes);
+}
+
+int gdefweb_nav_follows(GDEFCORE_Routes * routes, GDEFCORE_Request * request,
+    const char * path, const char * machine) {
+  GDEFCORE_Route_Match * match = NULL;
+  int allowed = 0;
+  if (routes == NULL || request == NULL || path == NULL || machine == NULL ||
+      gdefcore_routes_match(routes, request, path, strlen(path), &match) !=
+          GDEFCORE_OK) {
+    return 0;
+  }
+  /* The route's own check, for the page's values. A route the match left out
+   * was refused by the same check, and the question asked again is the same. */
+  if (gdefcore_routes_permits(routes, request, machine, strlen(machine), match,
+          &allowed) != GDEFCORE_OK) {
+    allowed = 0;
+  }
+  gdefcore_route_match_free(match);
+  return allowed;
+}
+
+/* Append @p s to the result, growing it. */
+static int grow_add(const GDEFWEB_Allocator * alloc, char ** p, size_t * n,
+    size_t * cap, const char * s, size_t len) {
+  if (*n + len + 1 > *cap) {
+    size_t next = *cap == 0 ? 512 : *cap * 2;
+    char * grown;
+    while (next < *n + len + 1) {
+      next *= 2;
+    }
+    grown = (char *)gcu_allocator_realloc(alloc, *p, next);
+    if (grown == NULL) {
+      return -1;
+    }
+    *p = grown;
+    *cap = next;
+  }
+  memcpy(*p + *n, s, len);
+  *n += len;
+  (*p)[*n] = '\0';
+  return 0;
+}
+
+/* One widget drawn into the result, in a nav element of the class @p cls, if
+ * it has anything to show. A failure to draw adds nothing. */
+static int add_widget(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Routes * routes, GDEFCORE_Request * request, const char * kind,
+    const char * target, const char * path, const char * cls, char ** p,
+    size_t * n, size_t * cap) {
+  char * html = NULL;
+  size_t html_len = 0;
+  int rc = 0;
+  if (gdefcore_render_widget(catalog, routes, request, NULL, kind, strlen(kind),
+          target, strlen(target), path, strlen(path), GDEFCORE_RENDER_PAGE_FUEL,
+          &html, &html_len) != GDEFCORE_OK) {
+    return 0;
+  }
+  if (grow_add(alloc, p, n, cap, "<nav class=\"", 12) != 0 ||
+      grow_add(alloc, p, n, cap, cls, strlen(cls)) != 0 ||
+      grow_add(alloc, p, n, cap, "\">", 2) != 0 ||
+      grow_add(alloc, p, n, cap, html, html_len) != 0 ||
+      grow_add(alloc, p, n, cap, "</nav>", 6) != 0) {
+    rc = -1;
+  }
+  gdefcore_text_free(catalog, html);
+  return rc;
+}
+
+/* How many items the core would put in a tab strip or a trail for this page. */
+static size_t count_items(GDEFCORE_Catalog * catalog, GDEFCORE_Routes * routes,
+    GDEFCORE_Request * request, const char * path, int tabs) {
+  GDEFCORE_Route_Match * match = NULL;
+  GDEFCORE_Menu * menu = NULL;
+  size_t n = 0;
+  if (gdefcore_routes_match(routes, request, path, strlen(path), &match) !=
+      GDEFCORE_OK) {
+    return 0;
+  }
+  if ((tabs ? gdefcore_menu_tabs(catalog, routes, request, match, &menu)
+            : gdefcore_menu_breadcrumbs(catalog, routes, request, match, "admin", 5,
+                  &menu)) == GDEFCORE_OK) {
+    n = gdefcore_menu_count(menu);
+  }
+  gdefcore_menu_free(menu);
+  gdefcore_route_match_free(match);
+  return n;
+}
+
+char * gdefweb_nav_html(const GDEFWEB_Allocator * alloc,
+    GDEFCORE_Catalog * catalog, GDEFCORE_Routes * routes,
+    GDEFCORE_Request * request, const char * path, size_t * out_len) {
+  char * p = NULL;
+  size_t n = 0;
+  size_t cap = 0;
+  if (alloc == NULL || catalog == NULL || routes == NULL || request == NULL ||
+      path == NULL || out_len == NULL) {
+    return NULL;
+  }
+  if (add_widget(alloc, catalog, routes, request, GDEFCORE_WIDGET_MENU, "admin",
+          path, "admin-menu", &p, &n, &cap) != 0) {
+    gcu_allocator_free(alloc, p);
+    return NULL;
+  }
+  if (n > 0 &&
+      count_items(catalog, routes, request, path, 0) > 1 &&
+      add_widget(alloc, catalog, routes, request, GDEFCORE_WIDGET_BREADCRUMBS, "",
+          path, "admin-crumbs", &p, &n, &cap) != 0) {
+    gcu_allocator_free(alloc, p);
+    return NULL;
+  }
+  if (n > 0 && count_items(catalog, routes, request, path, 1) > 0 &&
+      add_widget(alloc, catalog, routes, request, GDEFCORE_WIDGET_TABS, "", path,
+          "admin-tabs", &p, &n, &cap) != 0) {
+    gcu_allocator_free(alloc, p);
+    return NULL;
+  }
+  if (n == 0) {
+    /* No templates to draw with: the one way home every page had. */
+    static const char kHome[] = "<p><a href=\"/admin\">Home</a></p>";
+    if (grow_add(alloc, &p, &n, &cap, kHome, sizeof kHome - 1) != 0) {
+      gcu_allocator_free(alloc, p);
+      return NULL;
+    }
+  }
+  *out_len = n;
+  return p;
+}

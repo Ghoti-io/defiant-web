@@ -26,11 +26,13 @@
  */
 
 #include "admin.h"
+#include "nav.h"
 
 #include <ghoti.io/cutil/allocator.h>
 #include <ghoti.io/defiant-core/access.h>
 #include <ghoti.io/defiant-core/entity.h>
 #include <ghoti.io/defiant-core/form.h>
+#include <ghoti.io/defiant-core/menu.h>
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/template.h>
 #include <ghoti.io/security/random.h>
@@ -551,8 +553,7 @@ static int page_begin(struct Page * page, const char * title) {
       page_str(page, "</title><link rel=\"stylesheet\" href=\"/defiant.css\">"
                      "<script defer src=\"/defiant.js\" integrity=\"") != 0 ||
       page_str(page, kHash) != 0 ||
-      page_str(page, "\"></script></head><body><p><a href=\"/admin\">Home</a></p>") !=
-          0) {
+      page_str(page, "\"></script></head><body>" GDEFWEB_NAV_MARK) != 0) {
     return -1;
   }
   return 0;
@@ -836,14 +837,9 @@ static int home_page(const GDEFWEB_Allocator * alloc, struct GDEFWEB_Admin_Reply
     return -1;
   }
   ensure_assets();
+  /* The way to every page is the menu, drawn where the marker is. */
   if (page_str(&page, kHash) != 0 ||
-      page_str(&page, "\"></script></head><body>"
-                      "<p><a href=\"/admin/post\">Write a post</a></p>"
-                      "<p><a href=\"/admin/front\">Change the front page</a></p>"
-                      "<p><a href=\"/admin/undo\">Undo</a></p>"
-                      "<p><a href=\"/admin/templates\">Edit templates</a></p>"
-                      "<p><a href=\"/admin/more\">More</a></p>"
-                      "</body></html>") != 0) {
+      page_str(&page, "\"></script></head><body>" GDEFWEB_NAV_MARK "</body></html>") != 0) {
     page_free(&page);
     return -1;
   }
@@ -860,9 +856,7 @@ static int more_page(const GDEFWEB_Allocator * alloc, struct GDEFWEB_Admin_Reply
   memset(&page, 0, sizeof page);
   page.alloc = alloc;
   if (page_begin(&page, "More") != 0 ||
-      page_str(&page, "<h2>Server</h2><p>This server is running.</p>") != 0 ||
-      page_str(&page, "<h2>Access</h2><p><a href=\"/admin/access\">What is "
-                      "granted</a></p>") != 0) {
+      page_str(&page, "<h2>Server</h2><p>This server is running.</p>") != 0) {
     page_free(&page);
     return -1;
   }
@@ -2566,10 +2560,9 @@ static int tpl_edit_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cat
           "tpl-save", id, name, kind, &save) != 0) {
     goto fail;
   }
+  /* The way to all templates and to the history is the breadcrumbs and the tabs. */
   if (page_begin(&page, "Template") != 0 || page_str(&page, "<h1>Template ") != 0 ||
-      page_esc(&page, name, strlen(name)) != 0 || page_str(&page, "</h1><p><a href=\"/admin/templates\">All templates</a> "
-                                  "<a href=\"/admin/templates/") != 0 ||
-      page_seg(&page, name, strlen(name)) != 0 || page_str(&page, "/history\">History</a></p>") != 0) {
+      page_esc(&page, name, strlen(name)) != 0 || page_str(&page, "</h1>") != 0) {
     goto fail;
   }
   if (flash != NULL) {
@@ -3085,10 +3078,7 @@ static int tpl_history_get(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * c
     return -1;
   }
   if (page_begin(&page, "History") != 0 || page_str(&page, "<h1>History of ") != 0 ||
-      page_esc(&page, name, name_len) != 0 ||
-      page_str(&page, "</h1><p><a href=\"/admin/templates\">All templates</a> <a "
-                      "href=\"/admin/templates/") != 0 ||
-      page_seg(&page, name, name_len) != 0 || page_str(&page, "\">Edit</a></p>") != 0) {
+      page_esc(&page, name, name_len) != 0 || page_str(&page, "</h1>") != 0) {
     goto fail;
   }
   if (flash != NULL && page_notice(&page, flash->notice) != 0) {
@@ -3295,6 +3285,552 @@ static int tpl_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog
   return unknown_admin(method, out);
 }
 
+/*
+ * /admin/menus: every entry of every menu and every tab, with whether the site
+ * hid it, changed it, and whether this administrator would see it; and the
+ * forms to change them. Only who may edit menus is shown the page at all
+ * (the route's own check, asked by the caller), and a write is decided again,
+ * entry by entry, when its changeset is applied (gdefcore_menu_authorize()).
+ *
+ * A generated entry is changed with an override that stores only what is set,
+ * so the forms leave a field blank to leave it alone; Reset takes the override
+ * away. A site entry is edited as it is. Every text in a row was written by
+ * someone, so every one is escaped.
+ */
+
+enum { MENU_SAVED = 1, MENU_REFUSED = 2 };
+
+static const char kTypeEntry[] = GDEFCORE_MENU_ENTRY_TYPE;
+static const char kTypeOverride[] = GDEFCORE_MENU_OVERRIDE_TYPE;
+
+static const char * menu_source_word(int source) {
+  switch (source) {
+  case GDEFCORE_MENU_SOURCE_KERNEL:
+    return "kernel";
+  case GDEFCORE_MENU_SOURCE_MODULE:
+    return "module";
+  case GDEFCORE_MENU_SOURCE_TAB:
+    return "tab";
+  case GDEFCORE_MENU_SOURCE_SITE:
+    return "site";
+  default:
+    return "page";
+  }
+}
+
+/* A hidden field, with the value escaped. */
+static int menu_hidden(struct Page * page, const char * name, const char * value,
+    size_t n) {
+  return page_str(page, "<input type=\"hidden\" name=\"") != 0 ||
+         page_str(page, name) != 0 || page_str(page, "\" value=\"") != 0 ||
+         page_esc(page, value, n) != 0 || page_str(page, "\">") != 0;
+}
+
+/* A labelled text field, with the value escaped. */
+static int menu_field(struct Page * page, const char * label, const char * name,
+    const char * value, size_t n) {
+  /* Digits are written as character references, as every number in these pages
+   * is, so that a weight is not mistaken for an internal id in a response. */
+  return page_str(page, "<label>") != 0 || page_str(page, label) != 0 ||
+         page_str(page, " <input type=\"text\" name=\"") != 0 ||
+         page_str(page, name) != 0 || page_str(page, "\" value=\"") != 0 ||
+         page_esc_digits(page, value, n) != 0 || page_str(page, "\"></label> ");
+}
+
+static int menu_form_open(struct Page * page, const char * token) {
+  return page_str(page, "<form method=\"post\" action=\"/admin/menus\">"
+                        "<input type=\"hidden\" name=\"token\" value=\"") != 0 ||
+         page_esc(page, token, strlen(token)) != 0 || page_str(page, "\">") != 0;
+}
+
+struct MenuTokens {
+  char * override;
+  char * reset;
+  char * entry;
+  char * forget;
+  char * add;
+};
+
+static void menu_tokens_free(const GDEFWEB_Allocator * alloc, struct MenuTokens * t) {
+  gcu_allocator_free(alloc, t->override);
+  gcu_allocator_free(alloc, t->reset);
+  gcu_allocator_free(alloc, t->entry);
+  gcu_allocator_free(alloc, t->forget);
+  gcu_allocator_free(alloc, t->add);
+  memset(t, 0, sizeof *t);
+}
+
+/* A token for each form: the form's name is what the token says it is for. The
+ * target is the administrator, who exists; the token is bound to the session
+ * as every form's is. */
+static int menu_tokens(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, struct MenuTokens * t) {
+  size_t who_n = 0;
+  const char * principal = gdefcore_request_principal(request, &who_n);
+  char who[GDEFCORE_PUBLIC_ID_LEN + 1];
+  memset(t, 0, sizeof *t);
+  if (principal == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN) {
+    return -1;
+  }
+  /* A copy: signing checks the session again, which sets the request's
+   * principal afresh, and the id it was is not kept where it was. */
+  memcpy(who, principal, GDEFCORE_PUBLIC_ID_LEN);
+  who[GDEFCORE_PUBLIC_ID_LEN] = '\0';
+  if (sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          "menu-override", who, NULL, 0, &t->override) != 0 ||
+      sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          "menu-reset", who, NULL, 0, &t->reset) != 0 ||
+      sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          "menu-entry", who, NULL, 0, &t->entry) != 0 ||
+      sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          "menu-forget", who, NULL, 0, &t->forget) != 0 ||
+      sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          "menu-add", who, NULL, 0, &t->add) != 0) {
+    menu_tokens_free(alloc, t);
+    return -1;
+  }
+  return 0;
+}
+
+static int menus_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len,
+    GDEFCORE_Routes * routes, int notice, struct GDEFWEB_Admin_Reply * out) {
+  struct Page page;
+  struct MenuTokens tokens;
+  GDEFCORE_Route_Match * match = NULL;
+  GDEFCORE_Menu * menu = NULL;
+  size_t i;
+  int rc = -1;
+  memset(&page, 0, sizeof page);
+  memset(&tokens, 0, sizeof tokens);
+  page.alloc = alloc;
+  if (gdefcore_routes_match(routes, request, "/admin/menus", 12, &match) !=
+          GDEFCORE_OK ||
+      gdefcore_menu_entries(catalog, routes, request, match, &menu) != GDEFCORE_OK ||
+      menu_tokens(alloc, catalog, request, keyring, root, root_len, session,
+          session_len, &tokens) != 0) {
+    goto done;
+  }
+  if (page_begin(&page, "Menus") != 0 || page_str(&page, "<h1>Menus</h1>") != 0) {
+    goto done;
+  }
+  if (notice == MENU_SAVED && page_str(&page, "<p class=\"notice\">Saved.</p>") != 0) {
+    goto done;
+  }
+  if (notice == MENU_REFUSED &&
+      page_str(&page, "<p class=\"notice\">That change was not made.</p>") != 0) {
+    goto done;
+  }
+  if (page_str(&page, "<table class=\"menus\"><tr><th>Entry</th><th>Name</th>"
+                      "<th>Menu</th><th>Goes to</th><th>State</th><th>Change</th></tr>") != 0) {
+    goto done;
+  }
+  for (i = 0; i < gdefcore_menu_count(menu); i++) {
+    GDEFCORE_Menu_Item it;
+    int site;
+    int d;
+    memset(&it, 0, sizeof it);
+    it.size = sizeof it;
+    if (gdefcore_menu_item(menu, i, &it) != GDEFCORE_OK) {
+      goto done;
+    }
+    site = it.source == GDEFCORE_MENU_SOURCE_SITE;
+    if (page_str(&page, "<tr><td>") != 0) {
+      goto done;
+    }
+    for (d = 0; d < it.depth; d++) {
+      if (page_str(&page, "&ndash; ") != 0) {
+        goto done;
+      }
+    }
+    if (page_esc(&page, it.label, it.label_len) != 0 ||
+        page_str(&page, "</td><td>") != 0 || page_esc(&page, it.name, it.name_len) != 0 ||
+        page_str(&page, "</td><td>") != 0 || page_esc(&page, it.menu, it.menu_len) != 0 ||
+        page_str(&page, it.menu_len == 0 ? "(tab)" : "") != 0 ||
+        page_str(&page, "</td><td>") != 0 || page_esc(&page, it.route, it.route_len) != 0 ||
+        page_str(&page, "</td><td>") != 0 ||
+        page_str(&page, menu_source_word(it.source)) != 0 ||
+        page_str(&page, it.hidden ? ", hidden" : "") != 0 ||
+        page_str(&page, it.overridden ? ", changed" : "") != 0 ||
+        page_str(&page, it.visible ? "" : ", not shown to you") != 0 ||
+        page_str(&page, "</td><td>") != 0) {
+      goto done;
+    }
+    if (site) {
+      char weight[16];
+      snprintf(weight, sizeof weight, "%d", it.weight);
+      if (menu_form_open(&page, tokens.entry) != 0 ||
+          menu_hidden(&page, "name", it.name, it.name_len) != 0 ||
+          menu_field(&page, "Label", "label", it.label, it.label_len) != 0 ||
+          menu_field(&page, "Menu", "menu", it.menu, it.menu_len) != 0 ||
+          menu_field(&page, "Route", "route", it.route, it.route_len) != 0 ||
+          menu_field(&page, "Under", "parent", it.parent, it.parent_len) != 0 ||
+          menu_field(&page, "Weight", "weight", weight, strlen(weight)) != 0 ||
+          page_str(&page, "<button type=\"submit\">Save</button></form>") != 0 ||
+          menu_form_open(&page, tokens.forget) != 0 ||
+          menu_hidden(&page, "name", it.name, it.name_len) != 0 ||
+          page_str(&page, "<button type=\"submit\">Remove</button></form>") != 0) {
+        goto done;
+      }
+    } else {
+      if (menu_form_open(&page, tokens.override) != 0 ||
+          menu_hidden(&page, "name", it.name, it.name_len) != 0 ||
+          menu_field(&page, "Label", "label", "", 0) != 0 ||
+          menu_field(&page, "Weight", "weight", "", 0) != 0 ||
+          menu_field(&page, "Under", "parent", "", 0) != 0 ||
+          menu_field(&page, "Menu", "menu", "", 0) != 0 ||
+          page_str(&page, "<label>Visibility <select name=\"hidden\">"
+                          "<option value=\"\">as it is</option>"
+                          "<option value=\"hide\">hide</option>"
+                          "<option value=\"show\">show</option></select></label> "
+                          "<button type=\"submit\">Change</button></form>") != 0) {
+        goto done;
+      }
+      if (it.overridden &&
+          (menu_form_open(&page, tokens.reset) != 0 ||
+              menu_hidden(&page, "name", it.name, it.name_len) != 0 ||
+              page_str(&page, "<button type=\"submit\">Reset</button></form>") != 0)) {
+        goto done;
+      }
+    }
+    if (page_str(&page, "</td></tr>") != 0) {
+      goto done;
+    }
+  }
+  if (page_str(&page, "</table><h2>Add an entry</h2>") != 0 ||
+      menu_form_open(&page, tokens.add) != 0 ||
+      menu_field(&page, "Name (after site.)", "suffix", "", 0) != 0 ||
+      menu_field(&page, "Menu", "menu", "main", 4) != 0 ||
+      menu_field(&page, "Label", "label", "", 0) != 0 ||
+      menu_field(&page, "Route", "route", "", 0) != 0 ||
+      menu_field(&page, "Under", "parent", "", 0) != 0 ||
+      menu_field(&page, "Weight", "weight", "0", 1) != 0 ||
+      page_str(&page, "<button type=\"submit\">Add</button></form>") != 0) {
+    goto done;
+  }
+  rc = take_page(&page, out);
+  if (rc == 0) {
+    memset(&page, 0, sizeof page);
+  }
+done:
+  if (rc != 0) {
+    page_free(&page);
+  }
+  menu_tokens_free(alloc, &tokens);
+  gdefcore_menu_free(menu);
+  gdefcore_route_match_free(match);
+  return rc;
+}
+
+/* One posted field, trimmed of nothing: what the person typed. Empty when it
+ * was not posted. */
+static size_t menu_post(const char * body, size_t body_len, const char * name,
+    char * out, size_t cap) {
+  size_t n = 0;
+  if (form_pair(body, body_len, name, out, cap, &n) != 0) {
+    out[0] = '\0';
+    return 0;
+  }
+  return n;
+}
+
+/* The override already stored for @p name, or none: each field as stored, empty
+ * when the override does not set it. 0 on success, -1 on a failure to read. */
+static int menu_override_stored(GDEFCORE_Catalog * catalog, const char * name,
+    size_t name_len, char * label, char * weight, char * hidden, char * parent,
+    char * menu, size_t cap) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  struct { const char * field; char * to; } want[] = {
+      {"label", label}, {"weight", weight}, {"hidden", hidden}, {"parent", parent},
+      {"menu", menu}};
+  size_t k;
+  int found;
+  label[0] = weight[0] = hidden[0] = parent[0] = menu[0] = '\0';
+  found = find_by_name(catalog, kTypeOverride, name, name_len, id);
+  if (found < 0) {
+    return -1;
+  }
+  if (found == 1) {
+    return 0;
+  }
+  for (k = 0; k < sizeof want / sizeof want[0]; k++) {
+    char * text = NULL;
+    size_t n = 0;
+    if (stored_text(catalog, id, want[k].field, &text, &n) != 0) {
+      return -1;
+    }
+    if (n < cap) {
+      memcpy(want[k].to, text, n);
+      want[k].to[n] = '\0';
+    }
+    free(text);
+  }
+  return 0;
+}
+
+/* Copy @p from into @p to, or leave @p to empty if it does not fit. */
+static void menu_copy(char * to, size_t cap, const char * from) {
+  size_t n = strlen(from);
+  if (n + 1 > cap) {
+    n = 0;
+  }
+  memcpy(to, from, n);
+  to[n] = '\0';
+}
+
+static int menu_int(const char * s, int * out) {
+  size_t i = 0;
+  long v = 0;
+  int neg = 0;
+  if (s[0] == '-') {
+    neg = 1;
+    i = 1;
+  }
+  if (s[i] == '\0' || strlen(s + i) > 9) {
+    return -1;
+  }
+  for (; s[i] != '\0'; i++) {
+    if (s[i] < '0' || s[i] > '9') {
+      return -1;
+    }
+    v = v * 10 + (s[i] - '0');
+  }
+  *out = (int)(neg ? -v : v);
+  return 0;
+}
+
+/* Apply a changeset staged by @p stage as the administrator, with the request
+ * (so the core asks who may edit menus) and the types it writes as the typed
+ * confirmation. */
+static int menu_apply(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    int (*stage)(GDEFCORE_Changeset *, void *), void * ctx, const char * confirm) {
+  GDEFCORE_Changeset * cs = NULL;
+  const char * who;
+  size_t who_n = 0;
+  GDEFCORE_Result rc;
+  who = gdefcore_request_principal(request, &who_n);
+  if (gdefcore_changeset_prepare(catalog, who, who_n, &cs) != GDEFCORE_OK) {
+    return -1;
+  }
+  gdefcore_changeset_set_request(cs, request);
+  rc = stage(cs, ctx) == 0 ? gdefcore_changeset_apply(cs, confirm, strlen(confirm))
+                           : GDEFCORE_ERR_INVALID;
+  gdefcore_changeset_destroy(cs);
+  return rc == GDEFCORE_OK ? 0 : -1;
+}
+
+struct MenuWrite {
+  char name[160];
+  char label[512];
+  char weight[16];
+  char hidden[8];
+  char parent[160];
+  char menu[80];
+  char route[160];
+  int has_weight_value;
+  int weight_value;
+};
+
+static int menu_stage_override(GDEFCORE_Changeset * cs, void * ctx) {
+  struct MenuWrite * w = (struct MenuWrite *)ctx;
+  GDEFCORE_Menu_Override o;
+  memset(&o, 0, sizeof o);
+  o.size = sizeof o;
+  o.label = w->label[0] != '\0' ? w->label : NULL;
+  o.label_len = strlen(w->label);
+  o.has_weight = w->has_weight_value;
+  o.weight = w->weight_value;
+  o.hidden = w->hidden[0] == '1' ? 1 : (w->hidden[0] == '0' ? 0 : -1);
+  o.parent = w->parent[0] != '\0' ? w->parent : NULL;
+  o.parent_len = strlen(w->parent);
+  o.menu = w->menu[0] != '\0' ? w->menu : NULL;
+  o.menu_len = strlen(w->menu);
+  return gdefcore_menu_stage_override(cs, w->name, strlen(w->name), &o) ==
+                 GDEFCORE_OK
+             ? 0
+             : -1;
+}
+
+static int menu_stage_entry(GDEFCORE_Changeset * cs, void * ctx) {
+  struct MenuWrite * w = (struct MenuWrite *)ctx;
+  return gdefcore_menu_stage_entry(cs, w->name, strlen(w->name), w->menu,
+             strlen(w->menu), w->label, strlen(w->label), w->route,
+             strlen(w->route), w->parent, strlen(w->parent), w->weight_value) ==
+                 GDEFCORE_OK
+             ? 0
+             : -1;
+}
+
+static int menu_stage_forget(GDEFCORE_Changeset * cs, void * ctx) {
+  struct MenuWrite * w = (struct MenuWrite *)ctx;
+  return gdefcore_menu_stage_forget(cs, w->name, strlen(w->name)) == GDEFCORE_OK
+             ? 0
+             : -1;
+}
+
+static int menus_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len,
+    GDEFCORE_Routes * routes, const char * body, size_t body_len,
+    struct GDEFWEB_Admin_Reply * out) {
+  char token[4096];
+  size_t token_n = 0;
+  unsigned char raw[3072];
+  size_t raw_n = 0;
+  char form_id[32];
+  size_t form_len = 0;
+  char target[GDEFCORE_PUBLIC_ID_LEN + 1];
+  uint64_t base = 0;
+  const char * who;
+  size_t who_n = 0;
+  struct MenuWrite w;
+  int done = -1;
+  int has_weight;
+  memset(&w, 0, sizeof w);
+  /* A form that was not signed for this session, this administrator and this
+   * purpose writes nothing. */
+  if (form_pair(body, body_len, "token", token, sizeof token, &token_n) != 0 ||
+      b64_decode(token, raw, sizeof raw, &raw_n) != 0 ||
+      gdefcore_form_check(catalog, request, keyring, root, root_len, session,
+          session_len, (const char *)raw, raw_n, NULL) != GDEFCORE_OK ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0) {
+    wipe(token, sizeof token);
+    wipe(raw, sizeof raw);
+    return redirect(out, "/admin/menus");
+  }
+  wipe(token, sizeof token);
+  wipe(raw, sizeof raw);
+  who = gdefcore_request_principal(request, &who_n);
+  if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN ||
+      memcmp(target, who, GDEFCORE_PUBLIC_ID_LEN) != 0) {
+    return redirect(out, "/admin/menus");
+  }
+  menu_post(body, body_len, "name", w.name, sizeof w.name);
+  menu_post(body, body_len, "label", w.label, sizeof w.label);
+  menu_post(body, body_len, "weight", w.weight, sizeof w.weight);
+  menu_post(body, body_len, "hidden", w.hidden, sizeof w.hidden);
+  /* The page says hide or show; the core says 1 or 0. */
+  if (strcmp(w.hidden, "hide") == 0) {
+    menu_copy(w.hidden, sizeof w.hidden, "1");
+  } else if (strcmp(w.hidden, "show") == 0) {
+    menu_copy(w.hidden, sizeof w.hidden, "0");
+  } else {
+    w.hidden[0] = '\0';
+  }
+  menu_post(body, body_len, "parent", w.parent, sizeof w.parent);
+  menu_post(body, body_len, "menu", w.menu, sizeof w.menu);
+  menu_post(body, body_len, "route", w.route, sizeof w.route);
+  has_weight = w.weight[0] != '\0';
+  if (has_weight && menu_int(w.weight, &w.weight_value) != 0) {
+    return menus_page(alloc, catalog, request, keyring, root, root_len, session,
+        session_len, routes, MENU_REFUSED, out);
+  }
+  w.has_weight_value = has_weight;
+  if (form_len == 13 && memcmp(form_id, "menu-override", 13) == 0) {
+    /* What is set stays set: a field left blank keeps the stored override's. */
+    char label[512];
+    char weight[16];
+    char hidden[8];
+    char parent[160];
+    char menu[80];
+    if (menu_override_stored(catalog, w.name, strlen(w.name), label, weight, hidden,
+            parent, menu, sizeof label) != 0) {
+      return -1;
+    }
+    if (w.label[0] == '\0') {
+      menu_copy(w.label, sizeof w.label, label);
+    }
+    if (!has_weight && weight[0] != '\0' && menu_int(weight, &w.weight_value) == 0) {
+      w.has_weight_value = 1;
+    }
+    if (w.hidden[0] == '\0') {
+      menu_copy(w.hidden, sizeof w.hidden, hidden);
+    }
+    if (w.parent[0] == '\0') {
+      menu_copy(w.parent, sizeof w.parent, parent);
+    }
+    if (w.menu[0] == '\0') {
+      menu_copy(w.menu, sizeof w.menu, menu);
+    }
+    done = menu_apply(catalog, request, menu_stage_override, &w, kTypeOverride);
+  } else if (form_len == 10 && memcmp(form_id, "menu-reset", 10) == 0) {
+    done = menu_apply(catalog, request, menu_stage_forget, &w, kTypeOverride);
+  } else if (form_len == 10 && memcmp(form_id, "menu-entry", 10) == 0) {
+    done = menu_apply(catalog, request, menu_stage_entry, &w, kTypeEntry);
+  } else if (form_len == 11 && memcmp(form_id, "menu-forget", 11) == 0) {
+    done = menu_apply(catalog, request, menu_stage_forget, &w, kTypeEntry);
+  } else if (form_len == 8 && memcmp(form_id, "menu-add", 8) == 0) {
+    char suffix[140];
+    menu_post(body, body_len, "suffix", suffix, sizeof suffix);
+    if (snprintf(w.name, sizeof w.name, "%s%s", GDEFCORE_MENU_SITE_PREFIX, suffix) >=
+        (int)sizeof w.name) {
+      done = -1;
+    } else {
+      done = menu_apply(catalog, request, menu_stage_entry, &w, kTypeEntry);
+    }
+  } else {
+    return redirect(out, "/admin/menus");
+  }
+  if (done != 0) {
+    return menus_page(alloc, catalog, request, keyring, root, root_len, session,
+        session_len, routes, MENU_REFUSED, out);
+  }
+  return redirect(out, "/admin/menus");
+}
+
+/*
+ * The navigation goes where the page left its marker: the admin menu, and the
+ * breadcrumbs and tabs where the page has them, drawn by the core's widgets
+ * (nav.c). A page with no marker (the sign-in page, a redirect) is as it was.
+ */
+static int nav_splice(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Routes * routes, GDEFCORE_Request * request, const char * path,
+    struct GDEFWEB_Admin_Reply * out) {
+  static const char kMark[] = GDEFWEB_NAV_MARK;
+  char * html;
+  size_t html_len = 0;
+  char * at;
+  char * joined;
+  size_t head;
+  size_t tail;
+  if (out->status != 200 || out->body == NULL || out->type == NULL ||
+      strncmp(out->type, "text/html", 9) != 0) {
+    return 0;
+  }
+  at = strstr(out->body, kMark);
+  if (at == NULL) {
+    return 0;
+  }
+  html = gdefweb_nav_html(alloc, catalog, routes, request, path, &html_len);
+  if (html == NULL) {
+    static const char kHome[] = "<p><a href=\"/admin\">Home</a></p>";
+    html = (char *)gcu_allocator_malloc(alloc, sizeof kHome);
+    if (html == NULL) {
+      return -1;
+    }
+    memcpy(html, kHome, sizeof kHome);
+    html_len = sizeof kHome - 1;
+  }
+  head = (size_t)(at - out->body);
+  tail = out->len - head - (sizeof kMark - 1);
+  joined = (char *)gcu_allocator_malloc(alloc, head + html_len + tail + 1);
+  if (joined == NULL) {
+    gcu_allocator_free(alloc, html);
+    return -1;
+  }
+  memcpy(joined, out->body, head);
+  memcpy(joined + head, html, html_len);
+  memcpy(joined + head + html_len, at + sizeof kMark - 1, tail);
+  joined[head + html_len + tail] = '\0';
+  gcu_allocator_free(alloc, html);
+  gcu_allocator_free(alloc, out->body);
+  out->body = joined;
+  out->len = head + html_len + tail;
+  return 0;
+}
+
 static int unknown_admin(const char * method, struct GDEFWEB_Admin_Reply * out) {
   if (strcmp(method, "GET") == 0) {
     out->status = 200;
@@ -3320,6 +3856,7 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
   int is_get;
   int is_post;
   int rc;
+  GDEFCORE_Routes * routes;
   if (alloc == NULL || catalog == NULL || request == NULL || out == NULL ||
       method == NULL || path == NULL) {
     return -1;
@@ -3342,6 +3879,7 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
   if (session_raw(cookie, raw, sizeof raw, &raw_n) != 0) {
     return -1;
   }
+  routes = gdefweb_nav_open(catalog);
   if (strcmp(path, "/admin") == 0) {
     rc = is_get ? home_page(alloc, out) : unknown_admin(method, out);
   } else if (strcmp(path, "/admin/more") == 0) {
@@ -3368,6 +3906,17 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
                             (const char *)raw, raw_n, out)
                 : undo_write(alloc, catalog, request, keyring, root, root_len,
                       (const char *)raw, raw_n, body, body_len, out);
+  } else if (strcmp(path, "/admin/menus") == 0) {
+    /* The page is there for whoever the route's own check lets follow it. */
+    if (!gdefweb_nav_follows(routes, request, path, "core.admin-menus")) {
+      rc = unknown_admin(method, out);
+    } else if (is_get) {
+      rc = menus_page(alloc, catalog, request, keyring, root, root_len,
+          (const char *)raw, raw_n, routes, 0, out);
+    } else {
+      rc = menus_write(alloc, catalog, request, keyring, root, root_len,
+          (const char *)raw, raw_n, routes, body, body_len, out);
+    }
   } else if (strcmp(path, "/admin/templates") == 0 ||
              starts_with(path, "/admin/templates/")) {
     rc = tpl_route(alloc, catalog, request, keyring, root, root_len, (const char *)raw, raw_n,
@@ -3375,6 +3924,13 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
   } else {
     rc = unknown_admin(method, out);
   }
+  if (rc == 0 && routes != NULL) {
+    rc = nav_splice(alloc, catalog, routes, request, path, out);
+  } else if (rc == 0) {
+    /* No table: the pages still have their one way home. */
+    rc = nav_splice(alloc, catalog, NULL, request, path, out);
+  }
+  gdefweb_nav_close(routes);
   wipe(raw, sizeof raw);
   return rc;
 }

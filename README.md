@@ -34,13 +34,35 @@ exist. Every text in it was written by someone, a module's author included, and
 is escaped. The rows and their order are defiant-core's
 (`gdefcore_access_matrix()`, `documentation/access.md`).
 
+Every admin page carries its navigation: the admin menu, the breadcrumbs and,
+where a page has them, tabs (a template's Edit and History). They are the
+core's widgets (`documentation/menus.md` there), drawn from the admin pages as
+routes in a route table of their own, each with the permission its page already
+depends on. An entry is shown when its route's own check passes for the page's
+values, so the Templates entry is there for someone who may edit a template and
+the Menus entry for someone who may edit menus (`core.menu.edit`, which nobody
+holds until a changeset grants it); the other pages need only the administrator's
+session, which is what gates the whole area. The widgets are drawn with stored
+templates (`menu`, `tabs`, `breadcrumbs`), so a site restyles them like any
+other.
+
+`/admin/menus` lists every entry of every menu and tab, with whether the site
+hid it, changed it, and whether the administrator would see it. A generated entry
+is changed with an override that stores only what is filled in (a label, a
+weight, a parent, a menu, hide or show), and Reset takes it away; an entry the
+site made is added, edited and removed. The page is there for whoever may follow
+its route (`core.menu.edit`); to anyone else it is a page that does not exist.
+Each change is a signed form and a changeset that carries the request, so the
+core decides again, entry by entry, when it is applied.
+
 ## Tests and gates
 
 `make test PREFIX=...` also runs `check-seams` (no private header is included
 across a seam), `check-noveto` (nothing here names the veto on template edits that
 defiant-core retired), `check-plants` (the response scanner and the two-tenant tests
 are shown to fail, by name, when a defect is planted in a scratch copy of the
-server), `check-tpladmin` (the same for the template editor), `check-access` (the same
+server), `check-tpladmin` (the same for the template editor), `check-nav` (the same for the
+admin navigation and the menus page), `check-access` (the same
 for the access matrix page), and on Linux
 `check-defiant` and `check-demo`. The scanner uses
 `defiant-test`, which has to be installed in the same prefix.
