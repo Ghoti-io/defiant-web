@@ -55,6 +55,20 @@ its route (`core.menu.edit`); to anyone else it is a page that does not exist.
 Each change is a signed form and a changeset that carries the request, so the
 core decides again, entry by entry, when it is applied.
 
+`/admin/settings` is the settings pages. The core generates the form of a group
+(`documentation/settings.md` there); this library draws the page around it, signs
+it for the session and the administrator, and reads the post: a value is checked
+before anything is written and a bad one refuses the whole form with a sentence
+that names the setting, a form drawn before another save is refused as stale, and
+a save that changes nothing says so and writes nothing. A page exists where a route
+placed one in the admin menu: the kernel's (`/admin/settings/core`, with a tab for
+its group) or a route an enabled module declares at `/admin/settings/<module>`
+with tabs `/admin/settings/<module>/<group>`; a group no route placed has none.
+The routes ask `core.settings.edit`, which nobody holds until a changeset grants
+it, and the write is decided again by the core for each setting
+(`core.settings.edit` may carry a condition on the setting's group). An
+environment-local secret is shown as Set or Not set and never again.
+
 ## Tests and gates
 
 `make test PREFIX=...` also runs `check-seams` (no private header is included
@@ -62,7 +76,7 @@ across a seam), `check-noveto` (nothing here names the veto on template edits th
 defiant-core retired), `check-plants` (the response scanner and the two-tenant tests
 are shown to fail, by name, when a defect is planted in a scratch copy of the
 server), `check-tpladmin` (the same for the template editor), `check-nav` (the same for the
-admin navigation and the menus page), `check-access` (the same
+admin navigation and the menus page), `check-settingsadmin` (the same for the settings pages), `check-access` (the same
 for the access matrix page), and on Linux
 `check-defiant` and `check-demo`. The scanner uses
 `defiant-test`, which has to be installed in the same prefix.

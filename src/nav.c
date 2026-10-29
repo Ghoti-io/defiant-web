@@ -29,6 +29,7 @@
 #include <ghoti.io/cutil/allocator.h>
 #include <ghoti.io/defiant-core/access.h>
 #include <ghoti.io/defiant-core/menu.h>
+#include <ghoti.io/defiant-core/module.h>
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/template.h>
 
@@ -38,6 +39,7 @@
  * admin session reaches (the session itself is the admin area's gate). */
 #define PERM_TEMPLATES GDEFCORE_TEMPLATE_EDIT
 #define PERM_MENUS "core.menu.edit"
+#define PERM_SETTINGS "core.settings.edit"
 
 struct PageRoute {
   const char * name;
@@ -68,6 +70,12 @@ static const struct PageRoute kPages[] = {
         PERM_TEMPLATES, GDEFCORE_ROUTE_TAB, "core.admin-template", 0, 1},
     {"core.admin-menus", "/admin/menus", "Menus", PERM_MENUS, GDEFCORE_ROUTE_PAGE,
         NULL, 0, 0},
+    {"core.admin-settings", "/admin/settings", "Settings", PERM_SETTINGS,
+        GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-settings-core", "/admin/settings/core", "Site settings",
+        PERM_SETTINGS, GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-settings-core-site", "/admin/settings/core/site", "Site",
+        PERM_SETTINGS, GDEFCORE_ROUTE_TAB, "core.admin-settings-core", 1, 0},
     {"core.admin-more", "/admin/more", "More", NULL, GDEFCORE_ROUTE_PAGE, NULL, 0,
         0},
     {"core.admin-access", "/admin/access", "What is granted", NULL,
@@ -94,6 +102,9 @@ static const struct PageLink kLinks[] = {
     {"core.l-admin-template", "Template", "core.admin-template",
         "core.l-admin-templates", 0},
     {"core.l-admin-menus", "Menus", "core.admin-menus", "core.l-admin", 4},
+    {"core.l-admin-settings", "Settings", "core.admin-settings", "core.l-admin", 5},
+    {"core.l-admin-settings-core", "Site settings", "core.admin-settings-core",
+        "core.l-admin-settings", 0},
     {"core.l-admin-more", "More", "core.admin-more", "core.l-admin", 9},
     {"core.l-admin-access", "What is granted", "core.admin-access",
         "core.l-admin-more", 0},
@@ -158,6 +169,21 @@ GDEFCORE_Routes * gdefweb_nav_open(GDEFCORE_Catalog * catalog) {
     if (gdefcore_routes_add_link(routes, &link) != GDEFCORE_OK) {
       gdefcore_routes_destroy(routes);
       return NULL;
+    }
+  }
+  /* What the enabled modules placed in the admin area: their routes (a settings
+   * page and its tabs among them); their links come with them. A module whose
+   * routes cannot be added changes nothing of the kernel's pages. */
+  {
+    GDEFCORE_Host * host = gdefcore_catalog_host(catalog);
+    size_t tenant_len = 0;
+    const uint8_t * tenant = gdefcore_catalog_tenant(catalog, &tenant_len);
+    char * err = NULL;
+    size_t err_len = 0;
+    if (host != NULL && tenant != NULL) {
+      (void)gdefcore_module_add_routes(host, tenant, tenant_len, NULL, routes, &err,
+          &err_len);
+      gdefcore_routes_free(routes, err);
     }
   }
   return routes;

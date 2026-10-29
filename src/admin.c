@@ -34,6 +34,7 @@
 #include <ghoti.io/defiant-core/form.h>
 #include <ghoti.io/defiant-core/menu.h>
 #include <ghoti.io/defiant-core/render.h>
+#include <ghoti.io/defiant-core/settings.h>
 #include <ghoti.io/defiant-core/template.h>
 #include <ghoti.io/security/random.h>
 #include <ghoti.io/security/sha256.h>
@@ -3785,6 +3786,419 @@ static int menus_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
   return redirect(out, "/admin/menus");
 }
 
+
+/*
+ * /admin/settings: the settings of the kernel and of the enabled modules.
+ *
+ * The core generates the form of a group (gdefcore_settings_form_html()); this
+ * file draws the page around it, signs it, and reads the post. A group has a
+ * page here only where something placed one in the admin menu: the kernel's
+ * (/admin/settings/core), or a route an enabled module declares at
+ * /admin/settings/<module>[/<group>], with tabs for its groups. A path no route
+ * matches, or one the route's own check refuses the administrator, is a page
+ * that does not exist. A write is decided by the core entry by entry, when the
+ * changeset is applied (gdefcore_settings_authorize()).
+ */
+
+enum { SETTINGS_NONE = 0, SETTINGS_SAVED, SETTINGS_UNCHANGED, SETTINGS_FAILED };
+
+static int settings_name_ok(const char * s, size_t n) {
+  size_t i;
+  if (n == 0 || n > 128) {
+    return 0;
+  }
+  for (i = 0; i < n; i++) {
+    char c = s[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+            c == '-')) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+/* The module and the group a path names; group[0] == 0 when it names none. */
+static int settings_parse(const char * path, char * module, size_t mcap, char * group,
+    size_t gcap) {
+  static const char kBase[] = "/admin/settings/";
+  const char * rest;
+  const char * slash;
+  size_t mn;
+  size_t gn = 0;
+  if (strncmp(path, kBase, sizeof kBase - 1) != 0) {
+    return -1;
+  }
+  rest = path + sizeof kBase - 1;
+  slash = strchr(rest, '/');
+  mn = slash == NULL ? strlen(rest) : (size_t)(slash - rest);
+  if (!settings_name_ok(rest, mn) || mn + 1 > mcap) {
+    return -1;
+  }
+  memcpy(module, rest, mn);
+  module[mn] = '\0';
+  group[0] = '\0';
+  if (slash != NULL) {
+    gn = strlen(slash + 1);
+    if (!settings_name_ok(slash + 1, gn) || gn + 1 > gcap) {
+      return -1;
+    }
+    memcpy(group, slash + 1, gn);
+    group[gn] = '\0';
+  }
+  return 0;
+}
+
+/* The key (`<module>.<group>`) of the group a path names: the group it says, or
+ * the module's first. 0 when the tenant has no such group. */
+static int settings_key(GDEFCORE_Catalog * catalog, const char * module,
+    const char * group, char * key, size_t cap) {
+  size_t n = gdefcore_settings_group_count(catalog);
+  size_t i;
+  for (i = 0; i < n; i++) {
+    GDEFCORE_Settings_Group g;
+    memset(&g, 0, sizeof g);
+    g.size = sizeof g;
+    if (gdefcore_settings_group_at(catalog, i, &g) != GDEFCORE_OK ||
+        strcmp(g.module, module) != 0) {
+      continue;
+    }
+    if (group[0] == '\0' || strcmp(g.name, group) == 0) {
+      if (g.key_len + 1 > cap) {
+        return 0;
+      }
+      memcpy(key, g.key, g.key_len + 1);
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/*
+ * The routes of the table that answer @p path itself: the match also holds the
+ * routes that only pass through it (a page under /admin/settings/shop is below
+ * the page at /admin/settings/shop), and a default tab answers its parent's
+ * path. A route answers the path when its pattern is the path, or it is the
+ * default tab of the route whose pattern is. @p group, if not NULL, receives
+ * the group the default tab shows (the path's own last segment), when there is
+ * one.
+ */
+static int settings_routed(GDEFCORE_Routes * routes, GDEFCORE_Request * request,
+    const char * path, char * group, size_t gcap) {
+  GDEFCORE_Route_Match * match = NULL;
+  size_t n;
+  size_t i;
+  int yes = 0;
+  size_t plen = strlen(path);
+  if (group != NULL) {
+    group[0] = '\0';
+  }
+  if (routes == NULL ||
+      gdefcore_routes_match(routes, request, path, plen, &match) != GDEFCORE_OK) {
+    return 0;
+  }
+  n = gdefcore_route_match_route_count(match);
+  for (i = 0; i < n; i++) {
+    const char * machine = NULL;
+    size_t machine_len = 0;
+    GDEFCORE_Route_Info info;
+    memset(&info, 0, sizeof info);
+    info.size = sizeof info;
+    if (gdefcore_route_match_route(match, i, &machine, &machine_len) != GDEFCORE_OK ||
+        gdefcore_routes_info(routes, machine, machine_len, &info) != GDEFCORE_OK) {
+      continue;
+    }
+    if (info.path_len == plen && memcmp(info.path, path, plen) == 0) {
+      yes = 1;
+    } else if (info.kind == GDEFCORE_ROUTE_TAB && info.is_default && group != NULL) {
+      /* /admin/settings/<module>/<group> */
+      char m[130];
+      char g[130];
+      char full[300];
+      if (info.path_len < sizeof full) {
+        memcpy(full, info.path, info.path_len);
+        full[info.path_len] = '\0';
+        if (settings_parse(full, m, sizeof m, g, sizeof g) == 0 && g[0] != '\0' &&
+            strlen(g) < gcap) {
+          memcpy(group, g, strlen(g) + 1);
+        }
+      }
+    }
+  }
+  gdefcore_route_match_free(match);
+  return yes;
+}
+
+static int settings_index(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Routes * routes,
+    struct GDEFWEB_Admin_Reply * out) {
+  struct Page page;
+  size_t n = gdefcore_settings_group_count(catalog);
+  size_t i;
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  if (page_begin(&page, "Settings") != 0 || page_str(&page, "<h1>Settings</h1><ul>") != 0) {
+    page_free(&page);
+    return -1;
+  }
+  for (i = 0; i < n; i++) {
+    GDEFCORE_Settings_Group g;
+    char path[400];
+    memset(&g, 0, sizeof g);
+    g.size = sizeof g;
+    if (gdefcore_settings_group_at(catalog, i, &g) != GDEFCORE_OK) {
+      continue;
+    }
+    snprintf(path, sizeof path, "/admin/settings/%s/%s", g.module, g.name);
+    if (page_str(&page, "<li>") != 0) {
+      page_free(&page);
+      return -1;
+    }
+    if (settings_routed(routes, request, path, NULL, 0)) {
+      if (page_str(&page, "<a href=\"") != 0 || page_esc(&page, path, strlen(path)) != 0 ||
+          page_str(&page, "\">") != 0 ||
+          page_esc_digits(&page, g.key, g.key_len) != 0 || page_str(&page, "</a>") != 0) {
+        page_free(&page);
+        return -1;
+      }
+    } else if (page_esc_digits(&page, g.key, g.key_len) != 0 ||
+               page_str(&page, " (no page in the admin menu)") != 0) {
+      page_free(&page);
+      return -1;
+    }
+    if (page_str(&page, "</li>") != 0) {
+      page_free(&page);
+      return -1;
+    }
+  }
+  if (page_str(&page, "</ul>") != 0) {
+    page_free(&page);
+    return -1;
+  }
+  return take_page(&page, out);
+}
+
+static int settings_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * path,
+    const char * key, int notice, const char * message, size_t message_len,
+    struct GDEFWEB_Admin_Reply * out) {
+  struct Page page;
+  char * token = NULL;
+  char * html = NULL;
+  size_t html_len = 0;
+  const char * who;
+  size_t who_n = 0;
+  char self[GDEFCORE_PUBLIC_ID_LEN + 1];
+  GDEFCORE_Result rc;
+  who = gdefcore_request_principal(request, &who_n);
+  if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN) {
+    return -1;
+  }
+  memcpy(self, who, GDEFCORE_PUBLIC_ID_LEN);
+  self[GDEFCORE_PUBLIC_ID_LEN] = '\0';
+  if (sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          "settings-save", self, NULL, 0, &token) != 0) {
+    return -1;
+  }
+  rc = gdefcore_settings_form_html(catalog, request, key, strlen(key), path, token,
+      &html, &html_len);
+  gcu_allocator_free(alloc, token);
+  if (rc != GDEFCORE_OK) {
+    return -2;
+  }
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  if (page_begin(&page, "Settings") != 0 || page_str(&page, "<h1>") != 0 ||
+      page_esc_digits(&page, key, strlen(key)) != 0 || page_str(&page, "</h1>") != 0) {
+    gdefcore_text_free(catalog, html);
+    page_free(&page);
+    return -1;
+  }
+  if (notice == SETTINGS_SAVED && page_str(&page, "<p class=\"notice\">Saved.</p>") != 0) {
+    gdefcore_text_free(catalog, html);
+    page_free(&page);
+    return -1;
+  }
+  if (notice == SETTINGS_UNCHANGED &&
+      page_str(&page, "<p class=\"notice\">Nothing changed.</p>") != 0) {
+    gdefcore_text_free(catalog, html);
+    page_free(&page);
+    return -1;
+  }
+  if (notice == SETTINGS_FAILED &&
+      (page_str(&page, "<p class=\"notice error\">") != 0 ||
+          page_esc_digits(&page, message == NULL ? "Not saved." : message,
+              message == NULL ? 10 : message_len) != 0 ||
+          page_str(&page, "</p>") != 0)) {
+    gdefcore_text_free(catalog, html);
+    page_free(&page);
+    return -1;
+  }
+  /* The core's own markup: every text in it is escaped there. */
+  if (page_add(&page, html, html_len) != 0) {
+    gdefcore_text_free(catalog, html);
+    page_free(&page);
+    return -1;
+  }
+  gdefcore_text_free(catalog, html);
+  return take_page(&page, out);
+}
+
+static int settings_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * path,
+    const char * key, const char * body, size_t body_len,
+    struct GDEFWEB_Admin_Reply * out) {
+  char token[4096];
+  size_t token_n = 0;
+  unsigned char raw[3072];
+  size_t raw_n = 0;
+  char form_id[32];
+  size_t form_len = 0;
+  char target[GDEFCORE_PUBLIC_ID_LEN + 1];
+  uint64_t base = 0;
+  const char * who;
+  size_t who_n = 0;
+  char version[64];
+  size_t version_n = 0;
+  GDEFCORE_Setting_Change changes[GDEFCORE_SETTINGS_SAVE_MAX];
+  char * owned[GDEFCORE_SETTINGS_SAVE_MAX];
+  char * names[GDEFCORE_SETTINGS_SAVE_MAX];
+  size_t count = 0;
+  size_t total;
+  size_t i;
+  size_t written = 0;
+  char * message = NULL;
+  size_t message_len = 0;
+  GDEFCORE_Result rc;
+  int notice;
+  int done;
+  /* A form that was not signed for this session, this administrator and this
+   * purpose writes nothing. */
+  if (form_pair(body, body_len, "token", token, sizeof token, &token_n) != 0 ||
+      b64_decode(token, raw, sizeof raw, &raw_n) != 0 ||
+      gdefcore_form_check(catalog, request, keyring, root, root_len, session,
+          session_len, (const char *)raw, raw_n, NULL) != GDEFCORE_OK ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+      form_len != 13 || memcmp(form_id, "settings-save", 13) != 0) {
+    wipe(token, sizeof token);
+    wipe(raw, sizeof raw);
+    return settings_page(alloc, catalog, request, keyring, root, root_len, session,
+        session_len, path, key, SETTINGS_FAILED,
+        "That form is out of date. Nothing was saved.", 44, out);
+  }
+  wipe(token, sizeof token);
+  wipe(raw, sizeof raw);
+  who = gdefcore_request_principal(request, &who_n);
+  if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN ||
+      memcmp(target, who, GDEFCORE_PUBLIC_ID_LEN) != 0) {
+    return settings_page(alloc, catalog, request, keyring, root, root_len, session,
+        session_len, path, key, SETTINGS_FAILED,
+        "That form is out of date. Nothing was saved.", 44, out);
+  }
+  version[0] = '\0';
+  (void)form_pair(body, body_len, "version", version, sizeof version, &version_n);
+  /* One change for each setting of the group the form posted. A secret that
+   * was left blank is left alone; one with Clear ticked goes back to its
+   * default. */
+  total = gdefcore_settings_count(catalog);
+  memset(owned, 0, sizeof owned);
+  memset(names, 0, sizeof names);
+  for (i = 0; i < total && count < GDEFCORE_SETTINGS_SAVE_MAX; i++) {
+    GDEFCORE_Setting s;
+    char field[200];
+    char * value = NULL;
+    size_t value_n = 0;
+    char * clear = NULL;
+    size_t clear_n = 0;
+    memset(&s, 0, sizeof s);
+    s.size = sizeof s;
+    if (gdefcore_settings_at(catalog, i, &s) != GDEFCORE_OK ||
+        strcmp(s.group, key) != 0 || s.name_len > 150) {
+      continue;
+    }
+    snprintf(field, sizeof field, "c.%.*s", (int)s.name_len, s.name);
+    if (form_field_alloc(body, body_len, field, 0, &clear, &clear_n) == 0) {
+      free(clear);
+      value = dup_bytes(s.default_value, s.default_len);
+      value_n = s.default_len;
+    } else {
+      snprintf(field, sizeof field, "s.%.*s", (int)s.name_len, s.name);
+      if (form_field_alloc(body, body_len, field, 0, &value, &value_n) != 0) {
+        continue;
+      }
+      value_n = normalize_newlines(value, value_n);
+      if (s.secret && value_n == 0) {
+        free(value);
+        continue;
+      }
+    }
+    if (value == NULL) {
+      continue;
+    }
+    names[count] = dup_bytes(s.name, s.name_len);
+    if (names[count] == NULL) {
+      free(value);
+      continue;
+    }
+    owned[count] = value;
+    changes[count].size = sizeof changes[count];
+    changes[count].name = names[count];
+    changes[count].name_len = s.name_len;
+    changes[count].value = value;
+    changes[count].value_len = value_n;
+    count += 1;
+  }
+  rc = gdefcore_settings_save(catalog, request, key, strlen(key),
+      version[0] != '\0' ? version : NULL, changes, count, &written, &message,
+      &message_len);
+  for (i = 0; i < count; i++) {
+    wipe(owned[i], changes[i].value_len);
+    free(owned[i]);
+    free(names[i]);
+  }
+  notice = rc == GDEFCORE_OK ? (written > 0 ? SETTINGS_SAVED : SETTINGS_UNCHANGED)
+                             : SETTINGS_FAILED;
+  done = settings_page(alloc, catalog, request, keyring, root, root_len, session,
+      session_len, path, key, notice, message, message_len, out);
+  gdefcore_text_free(catalog, message);
+  return done;
+}
+
+static int settings_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, GDEFCORE_Routes * routes,
+    const char * method, const char * path, const char * body, size_t body_len,
+    struct GDEFWEB_Admin_Reply * out) {
+  char module[130];
+  char group[130];
+  char key[GDEFCORE_SETTING_GROUP_MAX + 1];
+  int is_get = strcmp(method, "GET") == 0;
+  int rc;
+  if (strcmp(path, "/admin/settings") == 0) {
+    if (!is_get || !gdefweb_nav_follows(routes, request, path, "core.admin-settings")) {
+      return unknown_admin(method, out);
+    }
+    return settings_index(alloc, catalog, request, routes, out);
+  }
+  /* A page there is only where a route the administrator may follow answers. */
+  if (settings_parse(path, module, sizeof module, group, sizeof group) != 0 ||
+      !settings_routed(routes, request, path, group[0] == '\0' ? group : NULL,
+          sizeof group) ||
+      !settings_key(catalog, module, group, key, sizeof key)) {
+    return unknown_admin(method, out);
+  }
+  if (is_get) {
+    rc = settings_page(alloc, catalog, request, keyring, root, root_len, session,
+        session_len, path, key, SETTINGS_NONE, NULL, 0, out);
+  } else {
+    rc = settings_write(alloc, catalog, request, keyring, root, root_len, session,
+        session_len, path, key, body, body_len, out);
+  }
+  /* A principal who may not edit settings is told what an unknown page is. */
+  return rc == -2 ? unknown_admin(method, out) : rc;
+}
+
 /*
  * The navigation goes where the page left its marker: the admin menu, and the
  * breadcrumbs and tabs where the page has them, drawn by the core's widgets
@@ -3922,6 +4336,10 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
       rc = menus_write(alloc, catalog, request, keyring, root, root_len,
           (const char *)raw, raw_n, routes, body, body_len, out);
     }
+  } else if (strcmp(path, "/admin/settings") == 0 ||
+             starts_with(path, "/admin/settings/")) {
+    rc = settings_route(alloc, catalog, request, keyring, root, root_len,
+        (const char *)raw, raw_n, routes, method, path, body, body_len, out);
   } else if (strcmp(path, "/admin/templates") == 0 ||
              starts_with(path, "/admin/templates/")) {
     rc = tpl_route(alloc, catalog, request, keyring, root, root_len, (const char *)raw, raw_n,
