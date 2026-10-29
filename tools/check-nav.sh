@@ -98,7 +98,7 @@ plant request-not-carried src/admin.c testNavadmin NavAdmin.WhatThePermissionDoe
   '  rc = stage(cs, ctx) == 0'
 
 # A second change drops what the first set: the stored override is not read.
-PLANT_NEED_TEXT='Elsewhere'
+PLANT_NEED_TEXT='label is stored'
 plant override-merge-dropped src/admin.c testNavadmin NavAdmin.RenamingAndReweightingKeepsWhatWasSetBefore \
   '    if (menu_override_stored(catalog, w.name, strlen(w.name), label, weight, hidden,
             parent, menu, sizeof label) != 0) {

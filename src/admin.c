@@ -45,7 +45,9 @@
 #include <string.h>
 #include <time.h>
 
-static const char kJs[] =
+/* The scripts are kept in parts, each a string a compiler must accept, and
+ * served as one. */
+static const char kJsPanes[] =
     "(function () {\n"
     "  var root = document.getElementById(\"panes\");\n"
     "  if (!root) return;\n"
@@ -81,6 +83,171 @@ static const char kJs[] =
     "  });\n"
     "}());\n";
 
+static const char kJsMenuA[] =
+    /* The menu editor: drag and the keys make the post the move form makes. */
+    "(function () {\n"
+    "  var table = document.getElementById(\"menu-editor\");\n"
+    "  var form = document.getElementById(\"menu-move-form\");\n"
+    "  var live = document.getElementById(\"menu-live\");\n"
+    "  var KEYS = {\"ArrowUp\": \"up\", \"ArrowDown\": \"down\", \"ArrowRight\": \"indent\", \"ArrowLeft\": \"outdent\"};\n"
+    "  var WORDS = {\"up\": \"up\", \"down\": \"down\", \"indent\": \"under the entry above it\", \"outdent\": \"out from under its parent\"};\n"
+    "  var dragged = null;\n"
+    "  var marked = null;\n"
+    "  var notes;\n"
+    "  var hash;\n"
+    "  var here;\n"
+    "  var i;\n"
+    "  var said = [];\n"
+    "  if (!table || !form || !live) return;\n"
+    "  function rows() {\n"
+    "    return Array.prototype.slice.call(table.querySelectorAll(\"tr[data-entry]\"));\n"
+    "  }\n"
+    "  function field(name) {\n"
+    "    return form.querySelector(\"[name=\" + name + \"]\");\n"
+    "  }\n"
+    "  function say(text) {\n"
+    "    live.textContent = text;\n"
+    "  }\n"
+    "  function label(row) {\n"
+    "    return row.getAttribute(\"data-label\") || row.getAttribute(\"data-entry\");\n"
+    "  }\n"
+    "  function rowOf(node) {\n"
+    "    while (node && node !== table) {\n"
+    "      if (node.nodeType === 1 && node.hasAttribute(\"data-entry\")) return node;\n"
+    "      node = node.parentNode;\n"
+    "    }\n"
+    "    return null;\n"
+    "  }\n"
+    "  function send(action, row, parent, position) {\n"
+    "    field(\"action\").value = action;\n"
+    "    field(\"name\").value = row.getAttribute(\"data-entry\");\n"
+    "    if (parent !== null) {\n"
+    "      field(\"parent\").value = parent;\n"
+    "      field(\"position\").value = String(position);\n"
+    "    }\n"
+    "    form.submit();\n"
+    "  }\n"
+    "  function siblings(menu, parent, skip) {\n"
+    "    return rows().filter(function (r) {\n"
+    "      return r !== skip && r.getAttribute(\"data-menu\") === menu &&\n"
+    "        r.getAttribute(\"data-parent\") === parent;\n"
+    "    });\n"
+    "  }\n"
+    "  function inside(root, row) {\n"
+    "    var guard = 0;\n"
+    "    var parent;\n"
+    "    while (row && guard < 64) {\n"
+    "      if (row === root) return true;\n"
+    "      parent = row.getAttribute(\"data-parent\");\n"
+    "      row = parent ? document.getElementById(\"e-\" + parent) : null;\n"
+    "      guard += 1;\n"
+    "    }\n"
+    "    return false;\n"
+    "  }\n"
+    "  function zone(event, target) {\n"
+    "    var box = target.getBoundingClientRect();\n"
+    "    var y = (event.clientY - box.top) / box.height;\n"
+    "    return y < 0.33 ? \"before\" : (y > 0.67 ? \"after\" : \"into\");\n"
+    "  }\n"
+    "  function place(row, target, where) {\n"
+    "    var menu = row.getAttribute(\"data-menu\");\n"
+    "    var parent;\n"
+    "    var list;\n"
+    "    var position;\n"
+    "    if (where === \"into\") {\n"
+    "      parent = target.getAttribute(\"data-entry\");\n"
+    "      list = siblings(menu, parent, row);\n"
+    "      position = list.length;\n"
+    "    } else {\n"
+    "      parent = target.getAttribute(\"data-parent\");\n"
+    "      list = siblings(menu, parent, row);\n"
+    "      position = list.indexOf(target) + (where === \"after\" ? 1 : 0);\n"
+    "    }\n"
+    "    return {parent: parent, position: position};\n"
+    "  }\n"
+    "  function clear() {\n"
+    "    if (marked) {\n"
+    "      marked.classList.remove(\"drop-before\");\n"
+    "      marked.classList.remove(\"drop-after\");\n"
+    "      marked.classList.remove(\"drop-into\");\n"
+    "      marked = null;\n"
+    "    }\n"
+    "  }\n"
+    "  function usable(target) {\n"
+    "    return dragged && target && target !== dragged && !inside(dragged, target) &&\n"
+    "      target.getAttribute(\"data-menu\") === dragged.getAttribute(\"data-menu\");\n"
+    "  }\n";
+
+static const char kJsMenuB[] =
+    "  table.addEventListener(\"keydown\", function (event) {\n"
+    "    var row = event.target;\n"
+    "    var action = KEYS[event.key];\n"
+    "    var all;\n"
+    "    var at;\n"
+    "    var to;\n"
+    "    if (!row || !row.hasAttribute || !row.hasAttribute(\"data-entry\") || !action) return;\n"
+    "    if (event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey) {\n"
+    "      event.preventDefault();\n"
+    "      say(\"Moving \" + label(row) + \" \" + WORDS[action] + \".\");\n"
+    "      send(action, row, null, 0);\n"
+    "    } else if (!event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) {\n"
+    "      all = rows();\n"
+    "      at = all.indexOf(row);\n"
+    "      to = action === \"up\" ? at - 1 : (action === \"down\" ? at + 1 : -1);\n"
+    "      if (to >= 0 && to < all.length) {\n"
+    "        event.preventDefault();\n"
+    "        all[to].focus();\n"
+    "      }\n"
+    "    }\n"
+    "  });\n"
+    "  table.addEventListener(\"dragstart\", function (event) {\n"
+    "    var row = rowOf(event.target);\n"
+    "    if (!row) return;\n"
+    "    dragged = row;\n"
+    "    event.dataTransfer.effectAllowed = \"move\";\n"
+    "    event.dataTransfer.setData(\"text/plain\", row.getAttribute(\"data-entry\"));\n"
+    "  });\n"
+    "  table.addEventListener(\"dragover\", function (event) {\n"
+    "    var target = rowOf(event.target);\n"
+    "    clear();\n"
+    "    if (!usable(target)) return;\n"
+    "    event.preventDefault();\n"
+    "    marked = target;\n"
+    "    marked.classList.add(\"drop-\" + zone(event, target));\n"
+    "  });\n"
+    "  table.addEventListener(\"drop\", function (event) {\n"
+    "    var target = rowOf(event.target);\n"
+    "    var spot;\n"
+    "    var where;\n"
+    "    clear();\n"
+    "    if (!usable(target)) return;\n"
+    "    event.preventDefault();\n"
+    "    where = zone(event, target);\n"
+    "    spot = place(dragged, target, where);\n"
+    "    say(\"Moving \" + label(dragged) + \".\");\n"
+    "    send(\"move\", dragged, spot.parent, spot.position);\n"
+    "    dragged = null;\n"
+    "  });\n"
+    "  table.addEventListener(\"dragend\", function () {\n"
+    "    clear();\n"
+    "    dragged = null;\n"
+    "  });\n"
+    "  notes = document.querySelectorAll(\".message\");\n"
+    "  for (i = 0; i < notes.length; i += 1) {\n"
+    "    said.push(notes[i].textContent);\n"
+    "  }\n"
+    "  if (said.length > 0) say(said.join(\" \"));\n"
+    "  hash = window.location.hash;\n"
+    "  if (hash.indexOf(\"#e-\") === 0) {\n"
+    "    here = document.getElementById(hash.slice(1));\n"
+    "    if (here && here.focus) here.focus();\n"
+    "  }\n"
+    "}());\n";
+
+static const char * const kJsParts[] = {kJsPanes, kJsMenuA, kJsMenuB};
+static char kJs[sizeof kJsPanes + sizeof kJsMenuA + sizeof kJsMenuB];
+static size_t kJsLen;
+
 static const char kCss[] =
     "html {\n"
     "  color-scheme: light dark;\n"
@@ -115,6 +282,26 @@ static const char kCss[] =
     ".message.error, .message.refusal {\n"
     "  border-style: double;\n"
     "  border-left-width: 0.5rem;\n"
+    "}\n"
+    "tr[data-entry] {\n"
+    "  cursor: grab;\n"
+    "}\n"
+    "tr[data-entry]:focus {\n"
+    "  outline: 2px solid Highlight;\n"
+    "  outline-offset: -2px;\n"
+    "}\n"
+    "tr.drop-before {\n"
+    "  box-shadow: inset 0 3px 0 Highlight;\n"
+    "}\n"
+    "tr.drop-after {\n"
+    "  box-shadow: inset 0 -3px 0 Highlight;\n"
+    "}\n"
+    "tr.drop-into {\n"
+    "  outline: 2px dashed Highlight;\n"
+    "  outline-offset: -2px;\n"
+    "}\n"
+    ".live {\n"
+    "  min-height: 1.5em;\n"
     "}\n";
 
 static char kHash[80];
@@ -139,7 +326,17 @@ static void ensure_assets(void) {
   if (kAssets) {
     return;
   }
-  if (gsec_sha256(kJs, sizeof kJs - 1, dig) != GSEC_OK) {
+  /* The same bytes whoever gets here first. */
+  for (i = 0, o = 0; i < sizeof kJsParts / sizeof kJsParts[0]; i++) {
+    size_t n = strlen(kJsParts[i]);
+    memcpy(kJs + o, kJsParts[i], n);
+    o += n;
+  }
+  kJs[o] = '\0';
+  kJsLen = o;
+  i = 0;
+  o = 0;
+  if (gsec_sha256(kJs, kJsLen, dig) != GSEC_OK) {
     snprintf(kPolicy, sizeof kPolicy,
         "default-src 'none'; script-src 'none'; style-src 'self'; "
         "frame-ancestors 'none'");
@@ -210,8 +407,9 @@ int gdefweb_admin_static(const char * path, const char ** body, size_t * len,
     return 0;
   }
   if (strcmp(path, "/defiant.js") == 0) {
+    ensure_assets();
     *body = kJs;
-    *len = sizeof kJs - 1;
+    *len = kJsLen;
     *type = "text/javascript; charset=utf-8";
     return 1;
   }
@@ -1426,6 +1624,116 @@ static int undo_form(const GDEFWEB_Allocator * alloc, struct Page * page,
   return 0;
 }
 
+static void menu_say_refused(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    const char * refusal);
+static size_t menu_confirm(GDEFCORE_Changeset * cs, char * buf, size_t cap);
+
+/*
+ * The undo of the last menu edit. A menu edit touches several entries at once,
+ * so the entity-by-entity undo below cannot take it back whole; the core keeps
+ * the record of the last edit (gdefcore_menu_stage_undo()) and puts every
+ * entry back in one changeset, or refuses if any was written since. Shown to
+ * who may edit menus, and decided again entry by entry when it is applied.
+ */
+static int undo_menu_section(const GDEFWEB_Allocator * alloc, struct Page * page,
+    GDEFCORE_Catalog * catalog, GDEFCORE_Request * request, GDEFCORE_Keyring * keyring,
+    const uint8_t * root, size_t root_len, const char * session, size_t session_len) {
+  char * token = NULL;
+  size_t who_n = 0;
+  const char * principal;
+  char who[GDEFCORE_PUBLIC_ID_LEN + 1];
+  if (!gdefcore_menu_may_edit(catalog, request)) {
+    return 0;
+  }
+  principal = gdefcore_request_principal(request, &who_n);
+  if (principal == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN) {
+    return 0;
+  }
+  memcpy(who, principal, GDEFCORE_PUBLIC_ID_LEN);
+  who[GDEFCORE_PUBLIC_ID_LEN] = '\0';
+  if (sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          "menu-undo", who, NULL, 0, &token) != 0) {
+    return -1;
+  }
+  if (page_str(page, "<h2>Menus</h2><form method=\"post\" action=\"/admin/undo\">"
+                     "<p>Take back the last change made to the menus, whatever it was "
+                     "(a move, a rename, an entry added or removed). Every entry it "
+                     "wrote is put back as it was. It cannot be taken back once the "
+                     "menus have been changed again.</p>"
+                     "<input type=\"hidden\" name=\"token\" value=\"") != 0 ||
+      page_esc(page, token, strlen(token)) != 0 ||
+      page_str(page, "\"><button type=\"submit\">Undo the last menu change</button>"
+                     "</form>") != 0) {
+    gcu_allocator_free(alloc, token);
+    return -1;
+  }
+  gcu_allocator_free(alloc, token);
+  return 0;
+}
+
+/* Handle a post of the menu undo form. @p handled is set when the token was
+ * this form's, whatever came of it; any other post is the caller's. */
+static int undo_menu_write(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    GDEFCORE_Keyring * keyring, const uint8_t * root, size_t root_len,
+    const char * session, size_t session_len, const char * body, size_t body_len,
+    struct GDEFWEB_Admin_Reply * out, int * handled) {
+  char token[4096];
+  size_t token_n = 0;
+  unsigned char raw[3072];
+  size_t raw_n = 0;
+  char form_id[32];
+  size_t form_len = 0;
+  char target[GDEFCORE_PUBLIC_ID_LEN + 1];
+  uint64_t base = 0;
+  const char * who;
+  size_t who_n = 0;
+  GDEFCORE_Changeset * cs = NULL;
+  char confirm[96];
+  size_t confirm_n;
+  GDEFCORE_Result rc;
+  *handled = 0;
+  if (form_pair(body, body_len, "token", token, sizeof token, &token_n) != 0 ||
+      b64_decode(token, raw, sizeof raw, &raw_n) != 0 ||
+      gdefcore_form_check(catalog, request, keyring, root, root_len, session,
+          session_len, (const char *)raw, raw_n, NULL) != GDEFCORE_OK ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+      form_len != 9 || memcmp(form_id, "menu-undo", 9) != 0) {
+    wipe(token, sizeof token);
+    wipe(raw, sizeof raw);
+    return 0;
+  }
+  wipe(token, sizeof token);
+  wipe(raw, sizeof raw);
+  *handled = 1;
+  who = gdefcore_request_principal(request, &who_n);
+  if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN ||
+      memcmp(target, who, GDEFCORE_PUBLIC_ID_LEN) != 0) {
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR,
+        "That form is out of date. Nothing was undone.");
+    return redirect(out, "/admin/undo");
+  }
+  if (gdefcore_changeset_prepare(catalog, who, who_n, &cs) != GDEFCORE_OK) {
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, "Nothing was undone.");
+    return redirect(out, "/admin/undo");
+  }
+  gdefcore_changeset_set_request(cs, request);
+  rc = gdefcore_menu_stage_undo(cs, request);
+  if (rc != GDEFCORE_OK) {
+    menu_say_refused(catalog, request, gdefcore_changeset_refusal(cs, NULL));
+  } else {
+    confirm_n = menu_confirm(cs, confirm, sizeof confirm);
+    rc = confirm_n > 0 ? gdefcore_changeset_apply(cs, confirm, confirm_n)
+                       : GDEFCORE_ERR_INVALID;
+    if (rc == GDEFCORE_OK) {
+      say(catalog, request, GDEFCORE_MESSAGE_STATUS, "The last menu change was undone.");
+    } else {
+      menu_say_refused(catalog, request, gdefcore_changeset_refusal(cs, NULL));
+    }
+  }
+  gdefcore_changeset_destroy(cs);
+  return redirect(out, "/admin/undo");
+}
+
 static int undo_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * session, size_t session_len,
@@ -1508,6 +1816,11 @@ static int undo_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog
     }
   }
   gdefcore_ids_free(catalog, ids, count);
+  if (undo_menu_section(alloc, &page, catalog, request, keyring, root, root_len,
+          session, session_len) != 0) {
+    page_free(&page);
+    return -1;
+  }
   return take_page(&page, out);
 }
 
@@ -1804,6 +2117,8 @@ static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   char form_id[32];
   size_t form_len = 0;
   char target[GDEFCORE_PUBLIC_ID_LEN + 1];
+  int menu_handled = 0;
+  int menu_rc;
   char * type = NULL;
   size_t type_n = 0;
   uint64_t base = 0;
@@ -1813,6 +2128,11 @@ static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   int risk = 0;
   int allowed = 0;
   GDEFCORE_Result rc;
+  menu_rc = undo_menu_write(catalog, request, keyring, root, root_len, session,
+      session_len, body, body_len, out, &menu_handled);
+  if (menu_handled) {
+    return menu_rc;
+  }
   if (form_pair(body, body_len, "token", token, sizeof token, &token_n) != 0 ||
       b64_decode(token, raw, sizeof raw, &raw_n) != 0 ||
       gdefcore_form_check(catalog, request, keyring, root, root_len, session,
@@ -3474,15 +3794,27 @@ static int tpl_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog
  * (the route's own check, asked by the caller), and a write is decided again,
  * entry by entry, when its changeset is applied (gdefcore_menu_authorize()).
  *
+ * Every action is a form: add, rename, hide or show, remove, move up or down,
+ * indent, outdent, and move to a parent and a position. Each posts, redirects
+ * to the page and leaves a message. A script (the one /defiant.js) makes the
+ * same posts from a drag and from the keys, by filling in the move form and
+ * submitting it, and announces them in a live region; it takes nothing from the
+ * server but the page, and it writes labels only as text.
+ *
+ * A form names the version of the menus the page showed. If the menus are not
+ * that when the form is posted, nothing is written, and the page the post
+ * redirects to is the menus as they are now.
+ *
  * A generated entry is changed with an override that stores only what is set,
- * so the forms leave a field blank to leave it alone; Reset takes the override
- * away. A site entry is edited as it is. Every text in a row was written by
- * someone, so every one is escaped.
+ * keyed by the entry's machine name (the core writes it); Reset takes the
+ * override away. A site entry is edited as it is. Every text in a row was
+ * written by someone, so every one is escaped.
  */
 
 
 static const char kTypeEntry[] = GDEFCORE_MENU_ENTRY_TYPE;
 static const char kTypeOverride[] = GDEFCORE_MENU_OVERRIDE_TYPE;
+static const char kTypeChange[] = GDEFCORE_MENU_CHANGE_TYPE;
 
 static const char * menu_source_word(int source) {
   switch (source) {
@@ -3518,38 +3850,56 @@ static int menu_field(struct Page * page, const char * label, const char * name,
          page_esc_digits(page, value, n) != 0 || page_str(page, "\"></label> ");
 }
 
-static int menu_form_open(struct Page * page, const char * token) {
-  return page_str(page, "<form method=\"post\" action=\"/admin/menus\">"
-                        "<input type=\"hidden\" name=\"token\" value=\"") != 0 ||
-         page_esc(page, token, strlen(token)) != 0 || page_str(page, "\">") != 0;
+/* The start of a form of this page: @p id may be NULL. */
+static int menu_form_start(struct Page * page, const char * id, const char * token) {
+  if (page_str(page, "<form method=\"post\" action=\"/admin/menus\"") != 0 ||
+      (id != NULL && (page_str(page, " id=\"") != 0 || page_str(page, id) != 0 ||
+                         page_str(page, "\"") != 0)) ||
+      page_str(page, "><input type=\"hidden\" name=\"token\" value=\"") != 0 ||
+      page_esc(page, token, strlen(token)) != 0 || page_str(page, "\">") != 0) {
+    return -1;
+  }
+  return 0;
 }
 
+static int menu_form_open(struct Page * page, const char * token) {
+  return menu_form_start(page, NULL, token);
+}
+
+/* A submit button that says which action it is. */
+static int menu_button(struct Page * page, const char * action, const char * text) {
+  return page_str(page, "<button type=\"submit\" name=\"action\" value=\"") != 0 ||
+         page_str(page, action) != 0 || page_str(page, "\">") != 0 ||
+         page_str(page, text) != 0 || page_str(page, "</button> ") != 0;
+}
+
+/* The purposes of the page's forms: the form's name is what its token says it
+ * is for. */
+enum { kTokOverride, kTokReset, kTokEntry, kTokForget, kTokEdit, kTokMove, kTokCount };
+static const char * const kMenuPurpose[kTokCount] = {"menu-override", "menu-reset",
+    "menu-entry", "menu-forget", "menu-edit", "menu-move"};
+
 struct MenuTokens {
-  char * override;
-  char * reset;
-  char * entry;
-  char * forget;
-  char * add;
+  char * t[kTokCount];
 };
 
 static void menu_tokens_free(const GDEFWEB_Allocator * alloc, struct MenuTokens * t) {
-  gcu_allocator_free(alloc, t->override);
-  gcu_allocator_free(alloc, t->reset);
-  gcu_allocator_free(alloc, t->entry);
-  gcu_allocator_free(alloc, t->forget);
-  gcu_allocator_free(alloc, t->add);
+  int i;
+  for (i = 0; i < kTokCount; i++) {
+    gcu_allocator_free(alloc, t->t[i]);
+  }
   memset(t, 0, sizeof *t);
 }
 
-/* A token for each form: the form's name is what the token says it is for. The
- * target is the administrator, who exists; the token is bound to the session
- * as every form's is. */
+/* A token for each form. The target is the administrator, who exists; the token
+ * is bound to the session as every form's is. */
 static int menu_tokens(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * session, size_t session_len, struct MenuTokens * t) {
   size_t who_n = 0;
   const char * principal = gdefcore_request_principal(request, &who_n);
   char who[GDEFCORE_PUBLIC_ID_LEN + 1];
+  int i;
   memset(t, 0, sizeof *t);
   if (principal == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN) {
     return -1;
@@ -3558,18 +3908,87 @@ static int menu_tokens(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
    * principal afresh, and the id it was is not kept where it was. */
   memcpy(who, principal, GDEFCORE_PUBLIC_ID_LEN);
   who[GDEFCORE_PUBLIC_ID_LEN] = '\0';
-  if (sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
-          "menu-override", who, NULL, 0, &t->override) != 0 ||
-      sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
-          "menu-reset", who, NULL, 0, &t->reset) != 0 ||
-      sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
-          "menu-entry", who, NULL, 0, &t->entry) != 0 ||
-      sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
-          "menu-forget", who, NULL, 0, &t->forget) != 0 ||
-      sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
-          "menu-add", who, NULL, 0, &t->add) != 0) {
-    menu_tokens_free(alloc, t);
+  for (i = 0; i < kTokCount; i++) {
+    if (sign_b64(alloc, catalog, request, keyring, root, root_len, session,
+            session_len, kMenuPurpose[i], who, NULL, 0, &t->t[i]) != 0) {
+      menu_tokens_free(alloc, t);
+      return -1;
+    }
+  }
+  return 0;
+}
+
+/* The name of the entry the item sits under in this list, or "". */
+static void menu_parent_name(const GDEFCORE_Menu * menu, const GDEFCORE_Menu_Item * it,
+    const char ** name, size_t * n) {
+  GDEFCORE_Menu_Item up;
+  *name = "";
+  *n = 0;
+  if (it->up == GDEFCORE_MENU_NO_PARENT) {
+    return;
+  }
+  memset(&up, 0, sizeof up);
+  up.size = sizeof up;
+  if (gdefcore_menu_item(menu, it->up, &up) == GDEFCORE_OK) {
+    *name = up.name;
+    *n = up.name_len;
+  }
+}
+
+/* The cell of a row with the forms that act on it. */
+static int menu_row_forms(struct Page * page, const struct MenuTokens * tokens,
+    const char * version, const GDEFCORE_Menu_Item * it) {
+  int site = it->source == GDEFCORE_MENU_SOURCE_SITE;
+  int tab = it->source == GDEFCORE_MENU_SOURCE_TAB;
+  if (!tab) {
+    /* Where it stands among its siblings: one form, four buttons. */
+    if (menu_form_start(page, NULL, tokens->t[kTokMove]) != 0 ||
+        menu_hidden(page, "version", version, strlen(version)) != 0 ||
+        menu_hidden(page, "name", it->name, it->name_len) != 0 ||
+        menu_button(page, "up", "Move up") != 0 ||
+        menu_button(page, "down", "Move down") != 0 ||
+        menu_button(page, "indent", "Indent") != 0 ||
+        menu_button(page, "outdent", "Outdent") != 0 ||
+        page_str(page, "</form>") != 0) {
+      return -1;
+    }
+  }
+  /* Its name, whether it is shown, and for a site entry that it goes. */
+  if (menu_form_start(page, NULL, tokens->t[kTokEdit]) != 0 ||
+      menu_hidden(page, "version", version, strlen(version)) != 0 ||
+      menu_hidden(page, "name", it->name, it->name_len) != 0 ||
+      menu_field(page, "Name", "label", it->label, it->label_len) != 0 ||
+      menu_button(page, "rename", "Rename") != 0 ||
+      menu_button(page, it->hidden ? "show" : "hide", it->hidden ? "Show" : "Hide") != 0 ||
+      (site && menu_button(page, "remove", "Remove") != 0) ||
+      page_str(page, "</form>") != 0) {
     return -1;
+  }
+  if (site) {
+    if (menu_form_open(page, tokens->t[kTokEntry]) != 0 ||
+        menu_hidden(page, "name", it->name, it->name_len) != 0 ||
+        menu_field(page, "Label", "label", it->label, it->label_len) != 0 ||
+        menu_field(page, "Menu", "menu", it->menu, it->menu_len) != 0 ||
+        menu_field(page, "Route", "route", it->route, it->route_len) != 0 ||
+        page_str(page, "<button type=\"submit\">Save</button></form>") != 0 ||
+        menu_form_open(page, tokens->t[kTokForget]) != 0 ||
+        menu_hidden(page, "name", it->name, it->name_len) != 0 ||
+        page_str(page, "<button type=\"submit\">Forget</button></form>") != 0) {
+      return -1;
+    }
+  } else {
+    if (menu_form_open(page, tokens->t[kTokOverride]) != 0 ||
+        menu_hidden(page, "name", it->name, it->name_len) != 0 ||
+        menu_field(page, "Menu", "menu", "", 0) != 0 ||
+        page_str(page, "<button type=\"submit\">Change the menu</button></form>") != 0) {
+      return -1;
+    }
+    if (it->overridden &&
+        (menu_form_open(page, tokens->t[kTokReset]) != 0 ||
+            menu_hidden(page, "name", it->name, it->name_len) != 0 ||
+            page_str(page, "<button type=\"submit\">Reset</button></form>") != 0)) {
+      return -1;
+    }
   }
   return 0;
 }
@@ -3582,6 +4001,7 @@ static int menus_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   struct MenuTokens tokens;
   GDEFCORE_Route_Match * match = NULL;
   GDEFCORE_Menu * menu = NULL;
+  char version[GDEFCORE_MENU_VERSION_LEN + 1];
   size_t i;
   int rc = -1;
   memset(&page, 0, sizeof page);
@@ -3590,6 +4010,7 @@ static int menus_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   if (gdefcore_routes_match(routes, request, "/admin/menus", 12, &match) !=
           GDEFCORE_OK ||
       gdefcore_menu_entries(catalog, routes, request, match, &menu) != GDEFCORE_OK ||
+      gdefcore_menu_version(menu, version, sizeof version) != GDEFCORE_OK ||
       menu_tokens(alloc, catalog, request, keyring, root, root_len, session,
           session_len, &tokens) != 0) {
     goto done;
@@ -3597,21 +4018,63 @@ static int menus_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   if (page_begin(&page, "Menus") != 0 || page_str(&page, "<h1>Menus</h1>") != 0) {
     goto done;
   }
-  if (page_str(&page, "<table class=\"menus\"><tr><th>Entry</th><th>Name</th>"
-                      "<th>Menu</th><th>Goes to</th><th>State</th><th>Change</th></tr>") != 0) {
+  /* How to move an entry, and the one place the script says what it did. */
+  if (page_str(&page,
+          "<p id=\"menu-help\">Each entry has buttons to move it up or down among "
+          "its siblings, to indent it under the entry above, and to take it out "
+          "from under its parent; the form below moves one to any parent and "
+          "position. With scripts on, drag a row onto another (above it, onto it "
+          "to go under it, or below it), or focus a row and press Alt and Shift "
+          "with an arrow key: Alt+Shift+Up and Alt+Shift+Down move it, "
+          "Alt+Shift+Right indents it, Alt+Shift+Left outdents it. Every move "
+          "is one change that Undo takes back.</p>"
+          "<p id=\"menu-live\" class=\"live\" role=\"status\" aria-live=\"polite\">"
+          "</p>") != 0 ||
+      menu_form_start(&page, "menu-move-form", tokens.t[kTokMove]) != 0 ||
+      menu_hidden(&page, "action", "move", 4) != 0 ||
+      menu_hidden(&page, "version", version, strlen(version)) != 0 ||
+      page_str(&page, "<h2>Move an entry</h2>") != 0 ||
+      menu_field(&page, "Entry (its machine name)", "name", "", 0) != 0 ||
+      menu_field(&page, "Under (a machine name, or nothing for the top)", "parent", "",
+          0) != 0 ||
+      menu_field(&page, "Position (counting from the first, which is zero)", "position", "0", 1) != 0 ||
+      page_str(&page, "<button type=\"submit\">Move</button></form>") != 0) {
+    goto done;
+  }
+  if (page_str(&page, "<table id=\"menu-editor\" class=\"menus\"><tr><th>Entry</th>"
+                      "<th>Name</th><th>Menu</th><th>Goes to</th><th>State</th>"
+                      "<th>Change</th></tr>") != 0) {
     goto done;
   }
   for (i = 0; i < gdefcore_menu_count(menu); i++) {
     GDEFCORE_Menu_Item it;
-    int site;
+    const char * parent;
+    size_t parent_n;
     int d;
     memset(&it, 0, sizeof it);
     it.size = sizeof it;
     if (gdefcore_menu_item(menu, i, &it) != GDEFCORE_OK) {
       goto done;
     }
-    site = it.source == GDEFCORE_MENU_SOURCE_SITE;
-    if (page_str(&page, "<tr><td>") != 0) {
+    menu_parent_name(menu, &it, &parent, &parent_n);
+    if (it.source == GDEFCORE_MENU_SOURCE_TAB) {
+      if (page_str(&page, "<tr>") != 0) {
+        goto done;
+      }
+    } else if (page_str(&page, "<tr id=\"e-") != 0 ||
+               page_esc(&page, it.name, it.name_len) != 0 ||
+               page_str(&page, "\" data-entry=\"") != 0 ||
+               page_esc(&page, it.name, it.name_len) != 0 ||
+               page_str(&page, "\" data-menu=\"") != 0 ||
+               page_esc(&page, it.menu, it.menu_len) != 0 ||
+               page_str(&page, "\" data-parent=\"") != 0 ||
+               page_esc(&page, parent, parent_n) != 0 ||
+               page_str(&page, "\" data-label=\"") != 0 ||
+               page_esc(&page, it.label, it.label_len) != 0 ||
+               page_str(&page, "\" tabindex=\"&#48;\" draggable=\"true\">") != 0) {
+      goto done;
+    }
+    if (page_str(&page, "<td>") != 0) {
       goto done;
     }
     for (d = 0; d < it.depth; d++) {
@@ -3629,59 +4092,21 @@ static int menus_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
         page_str(&page, it.hidden ? ", hidden" : "") != 0 ||
         page_str(&page, it.overridden ? ", changed" : "") != 0 ||
         page_str(&page, it.visible ? "" : ", not shown to you") != 0 ||
-        page_str(&page, "</td><td>") != 0) {
-      goto done;
-    }
-    if (site) {
-      char weight[16];
-      snprintf(weight, sizeof weight, "%d", it.weight);
-      if (menu_form_open(&page, tokens.entry) != 0 ||
-          menu_hidden(&page, "name", it.name, it.name_len) != 0 ||
-          menu_field(&page, "Label", "label", it.label, it.label_len) != 0 ||
-          menu_field(&page, "Menu", "menu", it.menu, it.menu_len) != 0 ||
-          menu_field(&page, "Route", "route", it.route, it.route_len) != 0 ||
-          menu_field(&page, "Under", "parent", it.parent, it.parent_len) != 0 ||
-          menu_field(&page, "Weight", "weight", weight, strlen(weight)) != 0 ||
-          page_str(&page, "<button type=\"submit\">Save</button></form>") != 0 ||
-          menu_form_open(&page, tokens.forget) != 0 ||
-          menu_hidden(&page, "name", it.name, it.name_len) != 0 ||
-          page_str(&page, "<button type=\"submit\">Remove</button></form>") != 0) {
-        goto done;
-      }
-    } else {
-      if (menu_form_open(&page, tokens.override) != 0 ||
-          menu_hidden(&page, "name", it.name, it.name_len) != 0 ||
-          menu_field(&page, "Label", "label", "", 0) != 0 ||
-          menu_field(&page, "Weight", "weight", "", 0) != 0 ||
-          menu_field(&page, "Under", "parent", "", 0) != 0 ||
-          menu_field(&page, "Menu", "menu", "", 0) != 0 ||
-          page_str(&page, "<label>Visibility <select name=\"hidden\">"
-                          "<option value=\"\">as it is</option>"
-                          "<option value=\"hide\">hide</option>"
-                          "<option value=\"show\">show</option></select></label> "
-                          "<button type=\"submit\">Change</button></form>") != 0) {
-        goto done;
-      }
-      if (it.overridden &&
-          (menu_form_open(&page, tokens.reset) != 0 ||
-              menu_hidden(&page, "name", it.name, it.name_len) != 0 ||
-              page_str(&page, "<button type=\"submit\">Reset</button></form>") != 0)) {
-        goto done;
-      }
-    }
-    if (page_str(&page, "</td></tr>") != 0) {
+        page_str(&page, "</td><td>") != 0 ||
+        menu_row_forms(&page, &tokens, version, &it) != 0 ||
+        page_str(&page, "</td></tr>") != 0) {
       goto done;
     }
   }
   if (page_str(&page, "</table><h2>Add an entry</h2>") != 0 ||
-      menu_form_open(&page, tokens.add) != 0 ||
+      menu_form_open(&page, tokens.t[kTokEdit]) != 0 ||
+      menu_hidden(&page, "version", version, strlen(version)) != 0 ||
       menu_field(&page, "Name (after site.)", "suffix", "", 0) != 0 ||
       menu_field(&page, "Menu", "menu", "main", 4) != 0 ||
       menu_field(&page, "Label", "label", "", 0) != 0 ||
       menu_field(&page, "Route", "route", "", 0) != 0 ||
       menu_field(&page, "Under", "parent", "", 0) != 0 ||
-      menu_field(&page, "Weight", "weight", "0", 1) != 0 ||
-      page_str(&page, "<button type=\"submit\">Add</button></form>") != 0) {
+      menu_button(&page, "add", "Add") != 0 || page_str(&page, "</form>") != 0) {
     goto done;
   }
   rc = take_page(&page, out);
@@ -3744,6 +4169,32 @@ static int menu_override_stored(GDEFCORE_Catalog * catalog, const char * name,
   return 0;
 }
 
+/* The field of the site entry called @p name as stored, empty when it has none
+ * or there is no such entry. 0 on success, -1 on a failure to read. */
+static int menu_entry_stored(GDEFCORE_Catalog * catalog, const char * name,
+    size_t name_len, const char * field, char * out, size_t cap) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  char * text = NULL;
+  size_t n = 0;
+  int found = find_by_name(catalog, kTypeEntry, name, name_len, id);
+  out[0] = '\0';
+  if (found < 0) {
+    return -1;
+  }
+  if (found == 1) {
+    return 0;
+  }
+  if (stored_text(catalog, id, field, &text, &n) != 0) {
+    return -1;
+  }
+  if (n < cap) {
+    memcpy(out, text, n);
+    out[n] = '\0';
+  }
+  free(text);
+  return 0;
+}
+
 /* Copy @p from into @p to, or leave @p to empty if it does not fit. */
 static void menu_copy(char * to, size_t cap, const char * from) {
   size_t n = strlen(from);
@@ -3775,22 +4226,68 @@ static int menu_int(const char * s, int * out) {
   return 0;
 }
 
+/* The typed confirmation of a write of menus: the names of the types the
+ * changeset writes, sorted, one to a line. 0 when it writes anything else. */
+static size_t menu_confirm(GDEFCORE_Changeset * cs, char * buf, size_t cap) {
+  int has_change = 0;
+  int has_entry = 0;
+  int has_override = 0;
+  size_t i;
+  size_t n = 0;
+  for (i = 0; i < gdefcore_changeset_touched_count(cs); i++) {
+    const char * type = NULL;
+    size_t type_n = 0;
+    if (gdefcore_changeset_touched_at(cs, i, NULL, NULL, &type, &type_n, NULL) !=
+            GDEFCORE_OK ||
+        type == NULL) {
+      return 0;
+    }
+    if (type_n == sizeof kTypeChange - 1 && memcmp(type, kTypeChange, type_n) == 0) {
+      has_change = 1;
+    } else if (type_n == sizeof kTypeEntry - 1 && memcmp(type, kTypeEntry, type_n) == 0) {
+      has_entry = 1;
+    } else if (type_n == sizeof kTypeOverride - 1 &&
+               memcmp(type, kTypeOverride, type_n) == 0) {
+      has_override = 1;
+    } else {
+      return 0;
+    }
+  }
+  buf[0] = '\0';
+  if (has_change) {
+    n += (size_t)snprintf(buf + n, cap - n, "%s%s", n > 0 ? "\n" : "", kTypeChange);
+  }
+  if (has_entry) {
+    n += (size_t)snprintf(buf + n, cap - n, "%s%s", n > 0 ? "\n" : "", kTypeEntry);
+  }
+  if (has_override) {
+    n += (size_t)snprintf(buf + n, cap - n, "%s%s", n > 0 ? "\n" : "", kTypeOverride);
+  }
+  return n;
+}
+
 /* Apply a changeset staged by @p stage as the administrator, with the request
- * (so the core asks who may edit menus) and the types it writes as the typed
- * confirmation. */
+ * (so the core asks who may edit menus), the record of what it wrote for Undo,
+ * and the types it writes as the typed confirmation. */
 static int menu_apply(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
-    int (*stage)(GDEFCORE_Changeset *, void *), void * ctx, const char * confirm) {
+    int (*stage)(GDEFCORE_Changeset *, void *), void * ctx) {
   GDEFCORE_Changeset * cs = NULL;
   const char * who;
   size_t who_n = 0;
+  char confirm[96];
+  size_t confirm_n;
   GDEFCORE_Result rc;
   who = gdefcore_request_principal(request, &who_n);
   if (gdefcore_changeset_prepare(catalog, who, who_n, &cs) != GDEFCORE_OK) {
     return -1;
   }
   gdefcore_changeset_set_request(cs, request);
-  rc = stage(cs, ctx) == 0 ? gdefcore_changeset_apply(cs, confirm, strlen(confirm))
-                           : GDEFCORE_ERR_INVALID;
+  rc = stage(cs, ctx) == 0 ? gdefcore_menu_stage_record(cs) : GDEFCORE_ERR_INVALID;
+  confirm_n = rc == GDEFCORE_OK ? menu_confirm(cs, confirm, sizeof confirm) : 0;
+  if (rc == GDEFCORE_OK) {
+    rc = confirm_n > 0 ? gdefcore_changeset_apply(cs, confirm, confirm_n)
+                       : GDEFCORE_ERR_INVALID;
+  }
   gdefcore_changeset_destroy(cs);
   return rc == GDEFCORE_OK ? 0 : -1;
 }
@@ -3844,10 +4341,193 @@ static int menu_stage_forget(GDEFCORE_Changeset * cs, void * ctx) {
              : -1;
 }
 
+/* What an editor action is, by the name the form's button gives it, and which
+ * form (purpose) carries it. 0 for none. */
+struct MenuAction {
+  const char * word;
+  int code;
+  int purpose;
+  const char * done;   /* "Moved <name> ..." and so on, before the name */
+  const char * after;  /* ... and after it */
+};
+
+static const struct MenuAction kMenuActions[] = {
+    {"add", GDEFCORE_MENU_ACT_ADD, kTokEdit, "Added ", "."},
+    {"rename", GDEFCORE_MENU_ACT_RENAME, kTokEdit, "Renamed ", "."},
+    {"hide", GDEFCORE_MENU_ACT_HIDE, kTokEdit, "Hid ", "."},
+    {"show", GDEFCORE_MENU_ACT_SHOW, kTokEdit, "Showed ", "."},
+    {"remove", GDEFCORE_MENU_ACT_REMOVE, kTokEdit, "Removed ", "."},
+    {"move", GDEFCORE_MENU_ACT_MOVE, kTokMove, "Moved ", "."},
+    {"up", GDEFCORE_MENU_ACT_UP, kTokMove, "Moved ", " up."},
+    {"down", GDEFCORE_MENU_ACT_DOWN, kTokMove, "Moved ", " down."},
+    {"indent", GDEFCORE_MENU_ACT_INDENT, kTokMove, "Moved ", " under the entry above."},
+    {"outdent", GDEFCORE_MENU_ACT_OUTDENT, kTokMove, "Moved ", " out from under its parent."},
+};
+
+/* The sentences the core refuses an edit with, which are fixed text and safe to
+ * say as they are. */
+static const char * menu_refusal_text(const char * refusal) {
+  static const char * const kKnown[] = {
+      GDEFCORE_MENU_REFUSED_STALE, GDEFCORE_MENU_REFUSED_CYCLE,
+      GDEFCORE_MENU_REFUSED_PARENT, GDEFCORE_MENU_REFUSED_ENTRY,
+      GDEFCORE_MENU_REFUSED_PLACE, GDEFCORE_MENU_REFUSED_REMOVE,
+      GDEFCORE_MENU_REFUSED_MANY, GDEFCORE_MENU_REFUSED_NOTHING,
+      GDEFCORE_MENU_REFUSED_UNDO, "That edit is not allowed."};
+  size_t i;
+  if (refusal == NULL) {
+    return NULL;
+  }
+  for (i = 0; i < sizeof kKnown / sizeof kKnown[0]; i++) {
+    if (strcmp(refusal, kKnown[i]) == 0) {
+      return kKnown[i];
+    }
+  }
+  return NULL;
+}
+
+/* Say what happened to the edit that was asked for. */
+static void menu_say_refused(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    const char * refusal) {
+  const char * text = menu_refusal_text(refusal);
+  if (text == NULL) {
+    say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, "That change was not made.");
+  } else {
+    say(catalog, request,
+        strcmp(text, GDEFCORE_MENU_REFUSED_STALE) == 0 ? GDEFCORE_MESSAGE_ERROR
+                                                       : GDEFCORE_MESSAGE_REFUSAL,
+        text);
+  }
+}
+
+/* A name that is safe to put after a # in a redirect: what a machine name is
+ * made of. */
+static int menu_name_safe(const char * s) {
+  size_t i;
+  if (s[0] == '\0' || strlen(s) > 128) {
+    return 0;
+  }
+  for (i = 0; s[i] != '\0'; i++) {
+    char c = s[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+            c == '-')) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+/*
+ * One editor action: stage it with the core, which refuses a stale version, a
+ * cycle, a parent that is not there and the rest with nothing written, then
+ * apply the one changeset as the administrator with the request, so that the
+ * core asks who may edit each entry. The reply is a redirect to the page, with
+ * a message, and the focus fragment of the entry when it is still there.
+ */
+static int menu_edit_post(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    GDEFCORE_Routes * routes, const struct MenuAction * act, const char * body,
+    size_t body_len, struct GDEFWEB_Admin_Reply * out) {
+  char name[160];
+  char suffix[140] = "";
+  char label[512];
+  char menu[80];
+  char route[160];
+  char parent[160];
+  char position[16];
+  char version[40];
+  char said[400];
+  GDEFCORE_Menu_Edit e;
+  GDEFCORE_Changeset * cs = NULL;
+  GDEFCORE_Route_Match * match = NULL;
+  const char * who;
+  size_t who_n = 0;
+  GDEFCORE_Result rc;
+  char confirm[96];
+  size_t confirm_n;
+  int position_value = 0;
+  int ok = 0;
+  menu_post(body, body_len, "name", name, sizeof name);
+  menu_post(body, body_len, "label", label, sizeof label);
+  menu_post(body, body_len, "menu", menu, sizeof menu);
+  menu_post(body, body_len, "route", route, sizeof route);
+  menu_post(body, body_len, "parent", parent, sizeof parent);
+  menu_post(body, body_len, "position", position, sizeof position);
+  menu_post(body, body_len, "version", version, sizeof version);
+  if (act->code == GDEFCORE_MENU_ACT_ADD) {
+    menu_post(body, body_len, "suffix", suffix, sizeof suffix);
+    if (snprintf(name, sizeof name, "%s%s", GDEFCORE_MENU_SITE_PREFIX, suffix) >=
+        (int)sizeof name) {
+      name[0] = '\0';
+    }
+  }
+  if (act->code == GDEFCORE_MENU_ACT_MOVE &&
+      (position[0] == '\0' || menu_int(position, &position_value) != 0 ||
+          position_value < 0)) {
+    say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, "That change was not made.");
+    return redirect(out, "/admin/menus");
+  }
+  memset(&e, 0, sizeof e);
+  e.size = sizeof e;
+  e.action = act->code;
+  e.name = name;
+  e.name_len = strlen(name);
+  e.label = label;
+  e.label_len = strlen(label);
+  e.menu = menu;
+  e.menu_len = strlen(menu);
+  e.route = route;
+  e.route_len = strlen(route);
+  e.parent = parent;
+  e.parent_len = strlen(parent);
+  e.position = (size_t)position_value;
+  e.version = version;
+  e.version_len = strlen(version);
+  who = gdefcore_request_principal(request, &who_n);
+  if (e.name_len == 0 || gdefcore_routes_match(routes, request, "/admin/menus", 12,
+                             &match) != GDEFCORE_OK ||
+      gdefcore_changeset_prepare(catalog, who, who_n, &cs) != GDEFCORE_OK) {
+    gdefcore_route_match_free(match);
+    say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, "That change was not made.");
+    return redirect(out, "/admin/menus");
+  }
+  gdefcore_changeset_set_request(cs, request);
+  rc = gdefcore_menu_stage_edit(cs, routes, request, match, &e);
+  if (rc != GDEFCORE_OK) {
+    menu_say_refused(catalog, request, gdefcore_changeset_refusal(cs, NULL));
+  } else if (gdefcore_changeset_touched_count(cs) == 0) {
+    say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Nothing changed.");
+    ok = 1;
+  } else {
+    confirm_n = menu_confirm(cs, confirm, sizeof confirm);
+    rc = confirm_n > 0 ? gdefcore_changeset_apply(cs, confirm, confirm_n)
+                       : GDEFCORE_ERR_INVALID;
+    if (rc == GDEFCORE_OK) {
+      ok = 1;
+      if (snprintf(said, sizeof said, "%s%s%s", act->done, name, act->after) >=
+          (int)sizeof said) {
+        snprintf(said, sizeof said, "%s", "Saved.");
+      }
+      say(catalog, request, GDEFCORE_MESSAGE_STATUS, said);
+    } else if (gdefcore_changeset_conflict(cs, NULL) != NULL) {
+      /* Written by someone between the page and the apply. */
+      say(catalog, request, GDEFCORE_MESSAGE_ERROR, GDEFCORE_MENU_REFUSED_STALE);
+    } else {
+      menu_say_refused(catalog, request, gdefcore_changeset_refusal(cs, NULL));
+    }
+  }
+  gdefcore_changeset_destroy(cs);
+  gdefcore_route_match_free(match);
+  if (ok && act->code != GDEFCORE_MENU_ACT_REMOVE && menu_name_safe(name)) {
+    char where[200];
+    snprintf(where, sizeof where, "/admin/menus#e-%s", name);
+    return redirect_to(out, where);
+  }
+  return redirect(out, "/admin/menus");
+}
+
 static int menus_write(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
     GDEFCORE_Keyring * keyring, const uint8_t * root, size_t root_len,
-    const char * session, size_t session_len, const char * body, size_t body_len,
-    struct GDEFWEB_Admin_Reply * out) {
+    const char * session, size_t session_len, GDEFCORE_Routes * routes,
+    const char * body, size_t body_len, struct GDEFWEB_Admin_Reply * out) {
   char token[4096];
   size_t token_n = 0;
   unsigned char raw[3072];
@@ -3861,6 +4541,7 @@ static int menus_write(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
   struct MenuWrite w;
   int done = -1;
   int has_weight;
+  size_t k;
   memset(&w, 0, sizeof w);
   /* A form that was not signed for this session, this administrator and this
    * purpose writes nothing. */
@@ -3884,9 +4565,20 @@ static int menus_write(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
         "That form is out of date. Nothing was changed.");
     return redirect(out, "/admin/menus");
   }
+  /* The editor's actions: the token says which form it is for, and the action
+   * the button names has to be one of that form's. */
+  for (k = 0; k < sizeof kMenuActions / sizeof kMenuActions[0]; k++) {
+    char word[16];
+    const struct MenuAction * act = &kMenuActions[k];
+    size_t purpose_n = strlen(kMenuPurpose[act->purpose]);
+    menu_post(body, body_len, "action", word, sizeof word);
+    if (form_len == purpose_n && memcmp(form_id, kMenuPurpose[act->purpose], purpose_n) == 0 &&
+        strcmp(word, act->word) == 0) {
+      return menu_edit_post(catalog, request, routes, act, body, body_len, out);
+    }
+  }
   menu_post(body, body_len, "name", w.name, sizeof w.name);
   menu_post(body, body_len, "label", w.label, sizeof w.label);
-  menu_post(body, body_len, "weight", w.weight, sizeof w.weight);
   menu_post(body, body_len, "hidden", w.hidden, sizeof w.hidden);
   /* The page says hide or show; the core says 1 or 0. */
   if (strcmp(w.hidden, "hide") == 0) {
@@ -3896,17 +4588,11 @@ static int menus_write(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
   } else {
     w.hidden[0] = '\0';
   }
-  menu_post(body, body_len, "parent", w.parent, sizeof w.parent);
   menu_post(body, body_len, "menu", w.menu, sizeof w.menu);
   menu_post(body, body_len, "route", w.route, sizeof w.route);
-  has_weight = w.weight[0] != '\0';
-  if (has_weight && menu_int(w.weight, &w.weight_value) != 0) {
-    say(catalog, request, GDEFCORE_MESSAGE_ERROR, "That change was not made.");
-    return redirect(out, "/admin/menus");
-  }
-  w.has_weight_value = has_weight;
   if (form_len == 13 && memcmp(form_id, "menu-override", 13) == 0) {
-    /* What is set stays set: a field left blank keeps the stored override's. */
+    /* What is set stays set: a field left blank keeps the stored override's. The
+     * weight and the parent are the moves', and stay as they are. */
     char label[512];
     char weight[16];
     char hidden[8];
@@ -3919,34 +4605,31 @@ static int menus_write(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
     if (w.label[0] == '\0') {
       menu_copy(w.label, sizeof w.label, label);
     }
-    if (!has_weight && weight[0] != '\0' && menu_int(weight, &w.weight_value) == 0) {
-      w.has_weight_value = 1;
-    }
+    has_weight = weight[0] != '\0' && menu_int(weight, &w.weight_value) == 0;
+    w.has_weight_value = has_weight;
     if (w.hidden[0] == '\0') {
       menu_copy(w.hidden, sizeof w.hidden, hidden);
     }
-    if (w.parent[0] == '\0') {
-      menu_copy(w.parent, sizeof w.parent, parent);
-    }
+    menu_copy(w.parent, sizeof w.parent, parent);
     if (w.menu[0] == '\0') {
       menu_copy(w.menu, sizeof w.menu, menu);
     }
-    done = menu_apply(catalog, request, menu_stage_override, &w, kTypeOverride);
+    done = menu_apply(catalog, request, menu_stage_override, &w);
   } else if (form_len == 10 && memcmp(form_id, "menu-reset", 10) == 0) {
-    done = menu_apply(catalog, request, menu_stage_forget, &w, kTypeOverride);
+    done = menu_apply(catalog, request, menu_stage_forget, &w);
   } else if (form_len == 10 && memcmp(form_id, "menu-entry", 10) == 0) {
-    done = menu_apply(catalog, request, menu_stage_entry, &w, kTypeEntry);
-  } else if (form_len == 11 && memcmp(form_id, "menu-forget", 11) == 0) {
-    done = menu_apply(catalog, request, menu_stage_forget, &w, kTypeEntry);
-  } else if (form_len == 8 && memcmp(form_id, "menu-add", 8) == 0) {
-    char suffix[140];
-    menu_post(body, body_len, "suffix", suffix, sizeof suffix);
-    if (snprintf(w.name, sizeof w.name, "%s%s", GDEFCORE_MENU_SITE_PREFIX, suffix) >=
-        (int)sizeof w.name) {
-      done = -1;
-    } else {
-      done = menu_apply(catalog, request, menu_stage_entry, &w, kTypeEntry);
+    /* The parent and the weight are the moves', and stay as they are. */
+    char weight[16];
+    if (menu_entry_stored(catalog, w.name, strlen(w.name), "parent", w.parent,
+            sizeof w.parent) != 0 ||
+        menu_entry_stored(catalog, w.name, strlen(w.name), "weight", weight,
+            sizeof weight) != 0 ||
+        (weight[0] != '\0' && menu_int(weight, &w.weight_value) != 0)) {
+      return -1;
     }
+    done = menu_apply(catalog, request, menu_stage_entry, &w);
+  } else if (form_len == 11 && memcmp(form_id, "menu-forget", 11) == 0) {
+    done = menu_apply(catalog, request, menu_stage_forget, &w);
   } else {
     say(catalog, request, GDEFCORE_MESSAGE_ERROR,
         "That form is out of date. Nothing was changed.");
@@ -3959,7 +4642,6 @@ static int menus_write(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
   say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Saved.");
   return redirect(out, "/admin/menus");
 }
-
 
 /*
  * /admin/settings: the settings of the kernel and of the enabled modules.
@@ -4494,7 +5176,7 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
           (const char *)raw, raw_n, routes, out);
     } else {
       rc = menus_write(catalog, request, keyring, root, root_len,
-          (const char *)raw, raw_n, body, body_len, out);
+          (const char *)raw, raw_n, routes, body, body_len, out);
     }
   } else if (strcmp(path, "/admin/settings") == 0 ||
              starts_with(path, "/admin/settings/")) {

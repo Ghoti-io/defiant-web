@@ -124,6 +124,11 @@ class NavAdmin : public Edge {
   }
 
   std::string MenusPage() { return Get("/admin/menus", cookie_).body; }
+
+  /* The version of the menus a page of the editor was drawn for, as a field. */
+  static std::string Ver(const std::string & page) {
+    return "&version=" + InputValue(page, "version", 0);
+  }
 };
 
 }  // namespace
@@ -231,7 +236,7 @@ TEST_F(NavAdmin, HidingAnEntryRemovesItFromTheMenuAndNotThePage) {
   EXPECT_TRUE(Has(MenuOf(Get("/admin/more", cookie_).body), "href=\"/admin/undo\""));
   /* Hide the undo link: the first row's override form is the same form for
    * every generated entry, and the name says which entry. */
-  Reply done = PostMenus(FormToken(page, ">Change</button>"),
+  Reply done = PostMenus(FormToken(page, ">Change the menu</button>"),
       "&name=core.l-admin-undo&hidden=hide&label=&weight=&parent=&menu=");
   EXPECT_EQ(200, done.status);
   EXPECT_FALSE(Has(MenuOf(Get("/admin", cookie_).body), "href=\"/admin/undo\""));
@@ -256,36 +261,58 @@ TEST_F(NavAdmin, RenamingAndReweightingKeepsWhatWasSetBefore) {
   Open();
   GrantMenus();
   std::string page = MenusPage();
-  std::string token = FormToken(page, ">Change</button>");
-  PostMenus(token, "&name=core.l-admin-more&label=Elsewhere&weight=&hidden=&parent=&menu=");
+  std::string token = FormToken(page, ">Change the menu</button>");
+  PostMenus(token, "&name=core.l-admin-more&label=Elsewhere&hidden=&menu=");
   std::string menu = MenuOf(Get("/admin", cookie_).body);
   EXPECT_TRUE(Has(menu, "href=\"/admin/more\">Elsewhere")) << menu;
   /* A second change of another field leaves the first in place: the override
-   * is what is set, and the form sets only what is filled in. */
-  PostMenus(token, "&name=core.l-admin-more&label=&weight=-50&hidden=&parent=&menu=");
+   * is what is set, and the form sets only what is filled in. A weight or a
+   * parent in the post is not read: where an entry stands is the moves'. */
+  PostMenus(token, "&name=core.l-admin-more&label=&weight=-50&parent=core.l-admin-post&hidden=hide&menu=");
   menu = MenuOf(Get("/admin", cookie_).body);
-  EXPECT_TRUE(Has(menu, "href=\"/admin/more\">Elsewhere")) << menu;
-  EXPECT_LT(menu.find("Elsewhere"), menu.find("Write a post")) << menu;
-  /* Only the changed fields are stored: the names of the stored fields. */
+  EXPECT_FALSE(Has(menu, "href=\"/admin/more\"")) << "hidden now";
+  EXPECT_TRUE(Has(MenusPage(), "Elsewhere</td>")) << "and still called what it was set to";
+  /* Only the changed fields are stored: the label and the hidden flag, and not
+   * a parent, a menu or a weight. */
   GDEFCORE_Catalog * catalog = Catalog();
   char ** ids = NULL;
   size_t n = 0;
+  size_t live = 0;
   ASSERT_EQ(GDEFCORE_OK, gdefcore_entity_ids(catalog, GDEFCORE_MENU_OVERRIDE_TYPE,
                              strlen(GDEFCORE_MENU_OVERRIDE_TYPE), &ids, &n));
-  ASSERT_EQ(1u, n);
-  for (const char * field : {"parent", "menu", "hidden"}) {
+  for (size_t i = 0; i < n; i++) {
     char ** t = NULL;
     size_t * l = NULL;
     size_t c = 0;
-    GDEFCORE_Result got = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED,
-        ids[0], strlen(ids[0]), "en", 2, field, strlen(field), &t, &l, &c);
-    /* A field with no value is a miss. */
-    EXPECT_TRUE(got == GDEFCORE_ERR_INVALID || (got == GDEFCORE_OK && c == 0))
-        << field << " is not stored";
-    if (got == GDEFCORE_OK) {
-      gdefcore_values_free(catalog, t, l, c);
+    if (gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED, ids[i],
+            strlen(ids[i]), "en", 2, "name", 4, &t, &l, &c) != GDEFCORE_OK || c == 0) {
+      continue;
+    }
+    gdefcore_values_free(catalog, t, l, c);
+    live += 1;
+    for (const char * field : {"parent", "menu", "weight"}) {
+      t = NULL;
+      l = NULL;
+      c = 0;
+      GDEFCORE_Result got = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED,
+          ids[i], strlen(ids[i]), "en", 2, field, strlen(field), &t, &l, &c);
+      /* A field with no value is a miss. */
+      EXPECT_TRUE(got == GDEFCORE_ERR_INVALID || (got == GDEFCORE_OK && c == 0))
+          << field << " is not stored";
+      if (got == GDEFCORE_OK) {
+        gdefcore_values_free(catalog, t, l, c);
+      }
+    }
+    for (const char * field : {"label", "hidden"}) {
+      GDEFCORE_Result got = gdefcore_entity_values(catalog, NULL, GDEFCORE_VIEW_PUBLISHED,
+          ids[i], strlen(ids[i]), "en", 2, field, strlen(field), &t, &l, &c);
+      EXPECT_TRUE(got == GDEFCORE_OK && c == 1) << field << " is stored";
+      if (got == GDEFCORE_OK) {
+        gdefcore_values_free(catalog, t, l, c);
+      }
     }
   }
+  EXPECT_EQ(1u, live);
   gdefcore_ids_free(catalog, ids, n);
   gdefcore_catalog_destroy(catalog);
 }
@@ -295,7 +322,8 @@ TEST_F(NavAdmin, ASiteEntryIsAddedChangedAndRemoved) {
   GrantMenus();
   std::string page = MenusPage();
   PostMenus(FormToken(page, ">Add</button>"),
-      "&suffix=docs&menu=admin&label=Docs&route=core.admin-more&parent=core.l-admin&weight=7");
+      "&action=add" + Ver(page) +
+          "&suffix=docs&menu=admin&label=Docs&route=core.admin-more&parent=core.l-admin");
   std::string menu = MenuOf(Get("/admin", cookie_).body);
   EXPECT_TRUE(Has(menu, "<a href=\"/admin/more\">Docs</a>")) << menu;
   page = MenusPage();
@@ -308,13 +336,13 @@ TEST_F(NavAdmin, ASiteEntryIsAddedChangedAndRemoved) {
   EXPECT_FALSE(Has(menu, ">Docs</a>"));
   /* Removed. */
   page = MenusPage();
-  PostMenus(FormToken(page, ">Remove</button>"), "&name=site.docs");
+  PostMenus(FormToken(page, ">Remove</button>"), "&action=remove" + Ver(page) + "&name=site.docs");
   EXPECT_FALSE(Has(MenuOf(Get("/admin", cookie_).body), "Manual"));
   /* A label with markup in it is shown as text, in the menu and on the page. */
   page = MenusPage();
   PostMenus(FormToken(page, ">Add</button>"),
-      "&suffix=evil&menu=admin&label=" + Enc("<script>alert(1)</script>") +
-          "&route=core.admin-more&parent=&weight=9");
+      "&action=add" + Ver(page) + "&suffix=evil&menu=admin&label=" +
+          Enc("<script>alert(1)</script>") + "&route=core.admin-more&parent=");
   EXPECT_FALSE(Has(Get("/admin", cookie_).body, "<script>alert"));
   EXPECT_TRUE(Has(MenuOf(Get("/admin", cookie_).body), "&lt;script&gt;alert(1)&lt;/script&gt;"));
   EXPECT_FALSE(Has(MenusPage(), "<script>alert"));
@@ -327,14 +355,14 @@ TEST_F(NavAdmin, WhatThePermissionDoesNotCoverIsRefusedAndSaid) {
   GrantMenus(true, false);
   std::string page = MenusPage();
   EXPECT_EQ(200, Get("/admin/menus", cookie_).status);
-  Reply done = PostMenus(FormToken(page, ">Change</button>"),
+  Reply done = PostMenus(FormToken(page, ">Change the menu</button>"),
       "&name=core.l-admin-undo&hidden=hide&label=&weight=&parent=&menu=");
   EXPECT_EQ(200, done.status);
   EXPECT_TRUE(Has(done.body, "That change was not made.")) << done.body;
   EXPECT_TRUE(Has(MenuOf(Get("/admin", cookie_).body), "href=\"/admin/undo\""));
   /* CONTROL: an entry, which it does cover, is made. */
   PostMenus(FormToken(page, ">Add</button>"),
-      "&suffix=ok&menu=admin&label=Fine&route=core.admin-more&parent=&weight=3");
+      "&action=add" + Ver(page) + "&suffix=ok&menu=admin&label=Fine&route=core.admin-more&parent=");
   EXPECT_TRUE(Has(MenuOf(Get("/admin", cookie_).body), ">Fine</a>"));
 }
 
@@ -342,7 +370,7 @@ TEST_F(NavAdmin, AFormNotSignedForThisWritesNothing) {
   Open();
   GrantMenus();
   std::string page = MenusPage();
-  std::string token = FormToken(page, ">Change</button>");
+  std::string token = FormToken(page, ">Change the menu</button>");
   const std::string fields =
       "&name=core.l-admin-undo&hidden=hide&label=&weight=&parent=&menu=";
   /* No token, a damaged one, and one for another login: each leaves the menu
@@ -435,7 +463,8 @@ TEST_F(NavAdmin, TheVisitorIsShownNoAdminEntryAnywhere) {
   GrantTemplateKinds(id_, {"core.pane"});
   std::string page = MenusPage();
   PostMenus(FormToken(page, ">Add</button>"),
-      "&suffix=public&menu=main&label=Public&route=core.admin-more&parent=&weight=1");
+      "&action=add" + Ver(page) +
+          "&suffix=public&menu=main&label=Public&route=core.admin-more&parent=");
   /* The front page, a post and the sign-in page carry no admin link, with
    * the entry and the permissions all in place. */
   for (const char * path : {"/", "/hello-title", "/login", "/no-such"}) {

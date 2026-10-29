@@ -633,6 +633,8 @@ class Edge : public ::testing::Test {
       return sent;
     }
     std::string where = HeaderValue(sent, "Location");
+    /* A browser keeps the fragment to itself and does not send it. */
+    where = where.substr(0, where.find('#'));
     return Get(where.c_str(), cookie);
   }
 

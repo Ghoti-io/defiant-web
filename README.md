@@ -55,6 +55,24 @@ its route (`core.menu.edit`); to anyone else it is a page that does not exist.
 Each change is a signed form and a changeset that carries the request, so the
 core decides again, entry by entry, when it is applied.
 
+Every action on an entry is a form that works with scripts off: add, rename, hide
+or show, remove (a site entry; a generated one is hidden), move up or down,
+indent under the entry above, outdent out from under the parent, and move to a
+parent and a position. Each posts, redirects to the entry's place on the page and
+leaves a message, and each is one changeset (a move that has to number its
+siblings again writes them in the same one), taken back whole by the button on
+`/admin/undo`. A form names the version of the menus its page showed; if the
+menus have changed since, nothing is written, a message says so, and the page
+shown is the menus as they are. A move under the entry itself or one of its own
+entries, or under an entry that is not in the menu, is refused the same way. The
+one script the library serves (`/defiant.js`, hashed in the page and in the
+policy, no other script) adds a drag, onto the upper part of a row to go above
+it, the middle to go under it, the lower part to go below it, and the keys Alt and
+Shift with Up, Down, Right and Left to move, indent and outdent a focused row;
+both fill in and submit the page's one move form, so a drag, a key and the form
+are the same post. The script says what it is doing in a live region, shows the
+messages a post left in the same region, and writes text only as text.
+
 `/admin/settings` is the settings pages. The core generates the form of a group
 (`documentation/settings.md` there); this library draws the page around it, signs
 it for the session and the administrator, and reads the post: a value is checked
