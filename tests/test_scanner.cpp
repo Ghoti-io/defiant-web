@@ -293,7 +293,7 @@ TEST_F(Scan, EveryRoute) {
   }
   const char * const get_paths[] = {"/", "/no-such", "/login", "/admin",
       "/admin/post", "/admin/front", "/admin/undo", "/admin/more",
-      "/admin/nothing", "/admin/post/saved", "/defiant.css", "/defiant.js",
+      "/admin/nothing", "/defiant.css", "/defiant.js",
       "/alive", "/ready", "/logout", "/admin/templates", "/admin/templates/layout",
       "/admin/templates/recent", "/admin/templates/recent/history",
       "/admin/templates/no-such", "/admin/templates/no-such/history"};

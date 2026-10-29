@@ -381,7 +381,7 @@ TEST_F(SettingsAdmin, AChangedTitleShowsOnTheNextPublicRequestAndNothingIsRebuil
   Reply done = PostForm("/admin/settings/core/site", cookie_,
       Body(page, "&s.core.site_title=" + Enc("Gadget <Works>") + "&s.core.tagline=" + Enc("Tools & more")));
   EXPECT_EQ(200, done.status);
-  EXPECT_TRUE(Has(done.body, "<p class=\"notice\">Saved.</p>")) << done.body;
+  EXPECT_TRUE(Has(done.body, "<div class=\"message status\">Saved.</div>")) << done.body;
   EXPECT_GT(Epoch(), before);
   EXPECT_EQ("Gadget &lt;Works&gt;", SiteName());
   EXPECT_TRUE(Has(Get("/", std::string()).body, "<span class=\"tagline\">Tools &amp; more</span>"));
@@ -399,13 +399,13 @@ TEST_F(SettingsAdmin, SavingWhatIsThereWritesNothingAndSaysSo) {
   uint64_t before = Epoch();
   Reply done = PostForm("/admin/settings/core/site", cookie_,
       Body(page, "&s.core.site_title=" + Enc("My site") + "&s.core.tagline="));
-  EXPECT_TRUE(Has(done.body, "<p class=\"notice\">Nothing changed.</p>")) << done.body;
+  EXPECT_TRUE(Has(done.body, "<div class=\"message status\">Nothing changed.</div>")) << done.body;
   EXPECT_EQ(before, Epoch());
   /* CONTROL: a change is a save. */
   page = Get("/admin/settings/core/site", cookie_).body;
   done = PostForm("/admin/settings/core/site", cookie_,
       Body(page, "&s.core.site_title=" + Enc("Different") + "&s.core.tagline="));
-  EXPECT_TRUE(Has(done.body, "<p class=\"notice\">Saved.</p>")) << done.body;
+  EXPECT_TRUE(Has(done.body, "<div class=\"message status\">Saved.</div>")) << done.body;
   EXPECT_GT(Epoch(), before);
 }
 
@@ -418,7 +418,7 @@ TEST_F(SettingsAdmin, AValueOutOfBoundsIsRefusedWithAMessageAndNothingIsWritten)
   Reply bad = PostForm("/admin/settings/shop/limits", cookie_,
       Body(page, "&s.shop.limit=500&s.shop.sale=true"));
   EXPECT_TRUE(Has(bad.body, "Order limit is above the highest value allowed")) << bad.body;
-  EXPECT_TRUE(Has(bad.body, "notice error"));
+  EXPECT_TRUE(Has(bad.body, "message error"));
   EXPECT_EQ(before, Epoch());
   Reply text = PostForm("/admin/settings/shop/limits", cookie_,
       Body(page, "&s.shop.limit=ten&s.shop.sale=true"));

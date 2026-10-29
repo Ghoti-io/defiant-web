@@ -64,7 +64,8 @@ plant token-signature-not-checked src/admin.c testSettingsadmin SettingsAdmin.AW
           session_len, (const char *)raw, raw_n, NULL) != GDEFCORE_OK ||
       token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
       form_len != 13' \
-  '      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+  '      ((void)keyring, (void)root, (void)root_len, (void)session, (void)session_len, 0) ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
       form_len != 13'
 
 # A token made for another form of the same session is taken for this one.

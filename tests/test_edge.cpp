@@ -549,7 +549,7 @@ TEST_F(Edge, AdminFirstScreen) {
     ExpectSecurity(page);
   }
   Reply more = Get("/admin/more", cookie);
-  EXPECT_TRUE(Has(more.body, "Server"));
+  EXPECT_TRUE(Has(more.body, "<h2>core</h2>"));
   EXPECT_FALSE(Has(more.body, "enant"));
   EXPECT_FALSE(Has(more.body, "<form"));
   Reply post = Get("/admin/post", cookie);
@@ -950,10 +950,12 @@ TEST_F(Edge, AdminRedirects) {
   Reply saved = PostRaw("/admin/post", cookie,
       Form(token, "&title=Once&summary=s&body=b"));
   EXPECT_EQ(303, saved.status);
-  EXPECT_EQ("/admin/post/saved", HeaderValue(saved, "Location"));
+  EXPECT_EQ("/admin/post", HeaderValue(saved, "Location"));
   EXPECT_TRUE(saved.body.empty());
-  Reply notice = Get("/admin/post/saved", cookie);
-  EXPECT_TRUE(Has(notice.body, "Saved."));
+  EXPECT_FALSE(Has(saved.body, "Saved.")) << "the message is not in the redirect";
+  /* The page the redirect lands on says so once: a refresh does not. */
+  Reply notice = Get("/admin/post", cookie);
+  EXPECT_TRUE(Has(notice.body, "<div class=\"message status\">Saved.</div>")) << notice.body;
   EXPECT_TRUE(Has(notice.body, "<form"));
   EXPECT_FALSE(Has(Get("/admin/post", cookie).body, "Saved."));
   Reply front = Get("/admin/front", cookie);
@@ -968,7 +970,7 @@ TEST_F(Edge, AdminRedirects) {
       Form(UndoToken(undo.body, "Front page"), ""));
   EXPECT_EQ(303, undone.status);
   EXPECT_EQ("/admin/undo", HeaderValue(undone, "Location"));
-  /* Hidden from a visitor, and the notice page is not a way around that. */
+  /* Hidden from a visitor, and the old notice page is not a way around that. */
   Reply unknown = Get("/no-such-path", std::string());
   Reply hidden = Get("/admin/post/saved", std::string());
   EXPECT_EQ(unknown.status, hidden.status);

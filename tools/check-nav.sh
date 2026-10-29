@@ -78,10 +78,15 @@ plant token-not-checked src/admin.c testNavadmin NavAdmin.AFormNotSignedForThisW
       token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0) {
     wipe(token, sizeof token);
     wipe(raw, sizeof raw);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR,
+        "That form is out of date. Nothing was changed.");
     return redirect(out, "/admin/menus");' \
-  '      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0) {
+  '      ((void)keyring, (void)root, (void)root_len, (void)session, (void)session_len, 0) ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0) {
     wipe(token, sizeof token);
     wipe(raw, sizeof raw);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR,
+        "That form is out of date. Nothing was changed.");
     return redirect(out, "/admin/menus");'
 
 # The change is applied without the request, so the core is not asked who may

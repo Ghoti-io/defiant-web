@@ -28,6 +28,7 @@
 
 #include <ghoti.io/cutil/allocator.h>
 #include <ghoti.io/defiant-core/access.h>
+#include <ghoti.io/defiant-core/layout.h>
 #include <ghoti.io/defiant-core/menu.h>
 #include <ghoti.io/defiant-core/module.h>
 #include <ghoti.io/defiant-core/render.h>
@@ -234,12 +235,15 @@ static int grow_add(const GDEFWEB_Allocator * alloc, char ** p, size_t * n,
   return 0;
 }
 
-/* One widget drawn into the result, in a nav element of the class @p cls, if
- * it has anything to show. A failure to draw adds nothing. */
+/* One widget drawn into the result, in an element of the class @p cls, if it
+ * has anything to show. A failure to draw adds nothing, and neither does a
+ * widget that drew nothing and is @p optional (the messages widget, which
+ * claims the session's messages when it draws and draws nothing when there are
+ * none). */
 static int add_widget(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Routes * routes, GDEFCORE_Request * request, const char * kind,
-    const char * target, const char * path, const char * cls, char ** p,
-    size_t * n, size_t * cap) {
+    const char * target, const char * path, const char * tag, const char * cls,
+    int optional, char ** p, size_t * n, size_t * cap) {
   char * html = NULL;
   size_t html_len = 0;
   int rc = 0;
@@ -248,11 +252,19 @@ static int add_widget(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
           &html, &html_len) != GDEFCORE_OK) {
     return 0;
   }
-  if (grow_add(alloc, p, n, cap, "<nav class=\"", 12) != 0 ||
+  if (optional && html_len == 0) {
+    gdefcore_text_free(catalog, html);
+    return 0;
+  }
+  if (grow_add(alloc, p, n, cap, "<", 1) != 0 ||
+      grow_add(alloc, p, n, cap, tag, strlen(tag)) != 0 ||
+      grow_add(alloc, p, n, cap, " class=\"", 8) != 0 ||
       grow_add(alloc, p, n, cap, cls, strlen(cls)) != 0 ||
       grow_add(alloc, p, n, cap, "\">", 2) != 0 ||
       grow_add(alloc, p, n, cap, html, html_len) != 0 ||
-      grow_add(alloc, p, n, cap, "</nav>", 6) != 0) {
+      grow_add(alloc, p, n, cap, "</", 2) != 0 ||
+      grow_add(alloc, p, n, cap, tag, strlen(tag)) != 0 ||
+      grow_add(alloc, p, n, cap, ">", 1) != 0) {
     rc = -1;
   }
   gdefcore_text_free(catalog, html);
@@ -285,29 +297,38 @@ char * gdefweb_nav_html(const GDEFWEB_Allocator * alloc,
   char * p = NULL;
   size_t n = 0;
   size_t cap = 0;
+  size_t base;
   if (alloc == NULL || catalog == NULL || routes == NULL || request == NULL ||
       path == NULL || out_len == NULL) {
     return NULL;
   }
-  if (add_widget(alloc, catalog, routes, request, GDEFCORE_WIDGET_MENU, "admin",
-          path, "admin-menu", &p, &n, &cap) != 0) {
+  /* The messages the session was left come first, and are claimed by drawing
+   * them: a page that is drawn shows them once. */
+  if (add_widget(alloc, catalog, routes, request, GDEFCORE_WIDGET_MESSAGES, "", path,
+          "div", "admin-messages", 1, &p, &n, &cap) != 0) {
     gcu_allocator_free(alloc, p);
     return NULL;
   }
-  if (n > 0 &&
+  base = n;
+  if (add_widget(alloc, catalog, routes, request, GDEFCORE_WIDGET_MENU, "admin",
+          path, "nav", "admin-menu", 0, &p, &n, &cap) != 0) {
+    gcu_allocator_free(alloc, p);
+    return NULL;
+  }
+  if (n > base &&
       count_items(catalog, routes, request, path, 0) > 1 &&
       add_widget(alloc, catalog, routes, request, GDEFCORE_WIDGET_BREADCRUMBS, "",
-          path, "admin-crumbs", &p, &n, &cap) != 0) {
+          path, "nav", "admin-crumbs", 0, &p, &n, &cap) != 0) {
     gcu_allocator_free(alloc, p);
     return NULL;
   }
-  if (n > 0 && count_items(catalog, routes, request, path, 1) > 0 &&
+  if (n > base && count_items(catalog, routes, request, path, 1) > 0 &&
       add_widget(alloc, catalog, routes, request, GDEFCORE_WIDGET_TABS, "", path,
-          "admin-tabs", &p, &n, &cap) != 0) {
+          "nav", "admin-tabs", 0, &p, &n, &cap) != 0) {
     gcu_allocator_free(alloc, p);
     return NULL;
   }
-  if (n == 0) {
+  if (n == base) {
     /* No templates to draw with: the one way home every page had. */
     static const char kHome[] = "<p><a href=\"/admin\">Home</a></p>";
     if (grow_add(alloc, &p, &n, &cap, kHome, sizeof kHome - 1) != 0) {

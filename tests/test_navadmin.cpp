@@ -159,7 +159,7 @@ TEST_F(NavAdmin, TheMenuIsTheCoresAndShowsWhatTheRoutesAllow) {
   EXPECT_TRUE(Has(MenuOf(more.body), "<li class=\"depth1 current\"><a "
                                      "href=\"/admin/more\">More"))
       << MenuOf(more.body);
-  EXPECT_TRUE(Has(more.body, "This server is running."));
+  EXPECT_TRUE(Has(more.body, "<h2>core</h2>")) << "the directory is the menu, grouped by module";
   EXPECT_FALSE(Has(more.body, "<form"));
   EXPECT_TRUE(ScansClean(home.body));
   ExpectSecurity(home);

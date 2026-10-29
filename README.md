@@ -69,6 +69,16 @@ it, and the write is decided again by the core for each setting
 (`core.settings.edit` may carry a condition on the setting's group). An
 environment-local secret is shown as Set or Not set and never again.
 
+`/admin/more` is the admin directory. It lists the pages the admin menu leads to
+for this administrator, grouped under the module that declared each (the kernel's
+are under `core`), and nothing in it is named here: an enabled module's links
+appear under its own heading, and a link whose route the administrator's own check
+refuses is absent. A save, an error or a refusal on any admin page answers with a
+303 and leaves a message for the session (`documentation/messages.md` there): the
+next page the same session is shown says it once, escaped, in the page's
+navigation, and a different session is never shown it. A public page shows it too
+when its layout places the messages widget.
+
 ## Tests and gates
 
 `make test PREFIX=...` also runs `check-seams` (no private header is included
@@ -76,7 +86,8 @@ across a seam), `check-noveto` (nothing here names the veto on template edits th
 defiant-core retired), `check-plants` (the response scanner and the two-tenant tests
 are shown to fail, by name, when a defect is planted in a scratch copy of the
 server), `check-tpladmin` (the same for the template editor), `check-nav` (the same for the
-admin navigation and the menus page), `check-settingsadmin` (the same for the settings pages), `check-access` (the same
+admin navigation and the menus page), `check-settingsadmin` (the same for the settings pages), `check-messageadmin` (the same for the
+admin directory and the messages a save leaves), `check-access` (the same
 for the access matrix page), and on Linux
 `check-defiant` and `check-demo`. The scanner uses
 `defiant-test`, which has to be installed in the same prefix.

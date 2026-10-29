@@ -33,6 +33,7 @@
 #include <ghoti.io/defiant-core/entity.h>
 #include <ghoti.io/defiant-core/form.h>
 #include <ghoti.io/defiant-core/menu.h>
+#include <ghoti.io/defiant-core/message.h>
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/settings.h>
 #include <ghoti.io/defiant-core/template.h>
@@ -104,6 +105,16 @@ static const char kCss[] =
     "pre {\n"
     "  white-space: pre-wrap;\n"
     "  overflow-wrap: anywhere;\n"
+    "}\n"
+    ".message {\n"
+    "  margin: 0.5rem 0;\n"
+    "  padding: 0.5rem 0.75rem;\n"
+    "  border: 1px solid GrayText;\n"
+    "  border-left-width: 0.5rem;\n"
+    "}\n"
+    ".message.error, .message.refusal {\n"
+    "  border-style: double;\n"
+    "  border-left-width: 0.5rem;\n"
     "}\n";
 
 static char kHash[80];
@@ -832,6 +843,44 @@ static int redirect(struct GDEFWEB_Admin_Reply * out, const char * location) {
   return 0;
 }
 
+/* A redirect to a path this file made (an admin page's own). */
+static int redirect_to(struct GDEFWEB_Admin_Reply * out, const char * path) {
+  if (snprintf(out->location_buf, sizeof out->location_buf, "%s", path) >=
+      (int)sizeof out->location_buf) {
+    return redirect(out, "/admin");
+  }
+  (void)redirect(out, out->location_buf);
+  return 0;
+}
+
+/*
+ * Leave the session a message for the page a redirect goes to (the core's
+ * message queue: sealed, bound to this session, shown once by the messages
+ * widget in the page's navigation). A request with no queue, or a store that
+ * cannot take it, loses the message and not the redirect: the write it reports
+ * has been decided already.
+ */
+static void say(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request, int kind,
+    const char * text) {
+  (void)gdefcore_message_post(catalog, request, kind, text, strlen(text));
+}
+
+/* Bind the session's queue to the request, for a request that carries a live
+ * admin session. Nothing is bound for any other. */
+void gdefweb_admin_bind_messages(GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * cookie) {
+  unsigned char raw[768];
+  size_t raw_n = 0;
+  if (catalog == NULL || request == NULL || cookie == NULL ||
+      session_raw(cookie, raw, sizeof raw, &raw_n) != 0) {
+    return;
+  }
+  (void)gdefcore_message_bind(catalog, request, keyring, root, root_len,
+      (const char *)raw, raw_n);
+  wipe(raw, sizeof raw);
+}
+
 static int home_page(const GDEFWEB_Allocator * alloc, struct GDEFWEB_Admin_Reply * out) {
   struct Page page;
   memset(&page, 0, sizeof page);
@@ -857,16 +906,139 @@ static int home_page(const GDEFWEB_Allocator * alloc, struct GDEFWEB_Admin_Reply
   return 0;
 }
 
-static int more_page(const GDEFWEB_Allocator * alloc, struct GDEFWEB_Admin_Reply * out) {
+/*
+ * /admin/more: every page the admin menu leads to that this administrator may
+ * follow, grouped by the module that declared it. Nothing here names a page: the
+ * entries are the admin menu's (the kernel's links, the links of every enabled
+ * module, the site's own), computed for this request, so an entry whose route
+ * the viewer's own check refuses is absent, and a module that is enabled brings
+ * its heading with it. An entry's module is the part of its machine name before
+ * the first dot, which a manifest is held to (AD-35); a module's heading is its
+ * machine name, and the kernel's is `core`.
+ */
+#define MORE_MODULES 64
+
+struct MoreItem {
+  char module[64];
+  size_t module_len;
+  const char * label;
+  size_t label_len;
+  const char * href;
+  size_t href_len;
+};
+
+static int more_module_cmp(const void * a, const void * b) {
+  const char * x = (const char *)a;
+  const char * y = (const char *)b;
+  /* The kernel first, then by name. */
+  if (strcmp(x, "core") == 0 || strcmp(y, "core") == 0) {
+    return strcmp(x, "core") == 0 ? (strcmp(y, "core") == 0 ? 0 : -1) : 1;
+  }
+  return strcmp(x, y);
+}
+
+static int more_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Routes * routes,
+    struct GDEFWEB_Admin_Reply * out) {
   struct Page page;
+  GDEFCORE_Route_Match * match = NULL;
+  GDEFCORE_Menu * menu = NULL;
+  struct MoreItem * items = NULL;
+  char modules[MORE_MODULES][64];
+  size_t nmodules = 0;
+  size_t n;
+  size_t nitems = 0;
+  size_t i;
+  size_t m;
   memset(&page, 0, sizeof page);
   page.alloc = alloc;
-  if (page_begin(&page, "More") != 0 ||
-      page_str(&page, "<h2>Server</h2><p>This server is running.</p>") != 0) {
-    page_free(&page);
-    return -1;
+  if (routes != NULL) {
+    (void)gdefcore_routes_match(routes, request, "/admin/more", 11, &match);
+    if (gdefcore_menu_tree(catalog, routes, request, match, "admin", 5, &menu) !=
+        GDEFCORE_OK) {
+      menu = NULL;
+    }
   }
+  n = gdefcore_menu_count(menu);
+  if (n > 0) {
+    items = (struct MoreItem *)gcu_allocator_calloc(alloc, n, sizeof *items);
+    if (items == NULL) {
+      goto fail;
+    }
+  }
+  for (i = 0; i < n; i++) {
+    GDEFCORE_Menu_Item it;
+    const char * dot;
+    size_t len;
+    int seen = 0;
+    memset(&it, 0, sizeof it);
+    it.size = sizeof it;
+    if (gdefcore_menu_item(menu, i, &it) != GDEFCORE_OK) {
+      goto fail;
+    }
+    /* An entry that only groups others has no page; the page being shown is
+     * not offered to the one reading it. */
+    if (it.href_len == 0 || it.current) {
+      continue;
+    }
+    dot = (const char *)memchr(it.name, '.', it.name_len);
+    len = dot == NULL ? it.name_len : (size_t)(dot - it.name);
+    if (len == 0 || len >= sizeof items[0].module) {
+      continue;
+    }
+    memcpy(items[nitems].module, it.name, len);
+    items[nitems].module[len] = '\0';
+    items[nitems].module_len = len;
+    items[nitems].label = it.label;
+    items[nitems].label_len = it.label_len;
+    items[nitems].href = it.href;
+    items[nitems].href_len = it.href_len;
+    for (m = 0; m < nmodules; m++) {
+      if (strcmp(modules[m], items[nitems].module) == 0) {
+        seen = 1;
+      }
+    }
+    if (!seen && nmodules < MORE_MODULES) {
+      memcpy(modules[nmodules++], items[nitems].module, len + 1);
+    }
+    nitems += 1;
+  }
+  qsort(modules, nmodules, sizeof modules[0], more_module_cmp);
+  if (page_begin(&page, "More") != 0 || page_str(&page, "<h1>More</h1>") != 0) {
+    goto fail;
+  }
+  for (m = 0; m < nmodules; m++) {
+    if (page_str(&page, "<section class=\"more-module\"><h2>") != 0 ||
+        page_esc(&page, modules[m], strlen(modules[m])) != 0 ||
+        page_str(&page, "</h2><ul>") != 0) {
+      goto fail;
+    }
+    for (i = 0; i < nitems; i++) {
+      if (strcmp(items[i].module, modules[m]) != 0) {
+        continue;
+      }
+      if (page_str(&page, "<li><a href=\"") != 0 ||
+          page_esc(&page, items[i].href, items[i].href_len) != 0 ||
+          page_str(&page, "\">") != 0 ||
+          page_esc(&page, items[i].label, items[i].label_len) != 0 ||
+          page_str(&page, "</a></li>") != 0) {
+        goto fail;
+      }
+    }
+    if (page_str(&page, "</ul></section>") != 0) {
+      goto fail;
+    }
+  }
+  gcu_allocator_free(alloc, items);
+  gdefcore_menu_free(menu);
+  gdefcore_route_match_free(match);
   return take_page(&page, out);
+fail:
+  gcu_allocator_free(alloc, items);
+  gdefcore_menu_free(menu);
+  gdefcore_route_match_free(match);
+  page_free(&page);
+  return -1;
 }
 
 static int unknown_admin(const char * method, struct GDEFWEB_Admin_Reply * out);
@@ -965,7 +1137,7 @@ fail:
 
 static int post_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
-    size_t root_len, const char * session, size_t session_len, int saved,
+    size_t root_len, const char * session, size_t session_len,
     struct GDEFWEB_Admin_Reply * out) {
   struct Page page;
   GDEFCORE_Form * form = NULL;
@@ -1021,7 +1193,6 @@ static int post_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog
   if (sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
           "post", id, values, nvalues, &token) != 0 ||
       page_begin(&page, "Write a post") != 0 ||
-      (saved && page_str(&page, "<p>Saved.</p>") != 0) ||
       page_str(&page, "<form method=\"post\" action=\"/admin/post\">"
                       "<input type=\"hidden\" name=\"token\" value=\"") != 0 ||
       page_esc(&page, token, strlen(token)) != 0 ||
@@ -1373,11 +1544,8 @@ static int post_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
       b64_decode(token, raw, sizeof raw, &raw_n) != 0) {
     wipe(token, sizeof token);
     wipe(raw, sizeof raw);
-    if (page_begin(&page, "Write a post") != 0 || page_str(&page, "<p>Not saved.</p>") != 0) {
-      page_free(&page);
-      return -1;
-    }
-    return take_page(&page, out);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, "Not saved.");
+    return redirect(out, "/admin/post");
   }
   if (gdefcore_form_check(catalog, request, keyring, root, root_len, session,
           session_len, (const char *)raw, raw_n, NULL) != GDEFCORE_OK ||
@@ -1386,11 +1554,8 @@ static int post_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
       !base_matches(catalog, target, base)) {
     wipe(token, sizeof token);
     wipe(raw, sizeof raw);
-    if (page_begin(&page, "Write a post") != 0 || page_str(&page, "<p>Not saved.</p>") != 0) {
-      page_free(&page);
-      return -1;
-    }
-    return take_page(&page, out);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, "Not saved.");
+    return redirect(out, "/admin/post");
   }
   if (gdefcore_form_tree(catalog, "site.post", 9, NULL, 0, "en", 2, &tree) != GDEFCORE_OK) {
     wipe(token, sizeof token);
@@ -1468,7 +1633,8 @@ static int post_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   }
   wipe(token, sizeof token);
   wipe(raw, sizeof raw);
-  return redirect(out, "/admin/post/saved");
+  say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Saved.");
+  return redirect(out, "/admin/post");
 refuse:
   for (i = 0; i < nvalues; i++) {
     if (texts[i] != NULL) {
@@ -1481,11 +1647,8 @@ refuse:
   if (wrote) {
     return -1;
   }
-  if (page_begin(&page, "Write a post") != 0 || page_str(&page, "<p>Not saved.</p>") != 0) {
-    page_free(&page);
-    return -1;
-  }
-  return take_page(&page, out);
+  say(catalog, request, GDEFCORE_MESSAGE_ERROR, "Not saved.");
+  return redirect(out, "/admin/post");
 oom:
   for (i = 0; i < nvalues; i++) {
     gcu_allocator_free(alloc, texts[i]);
@@ -1536,6 +1699,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
     size_t root_len, const char * session, size_t session_len, const char * body,
     size_t body_len, struct GDEFWEB_Admin_Reply * out) {
   (void)alloc;
+  const char * stale = "That form is out of date. Nothing was changed.";
   char token[4096];
   size_t token_n = 0;
   char target[GDEFCORE_PUBLIC_ID_LEN + 1];
@@ -1559,6 +1723,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0) {
     wipe(token, sizeof token);
     wipe(raw, sizeof raw);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, stale);
     return redirect(out, "/admin/front");
   }
   wipe(token, sizeof token);
@@ -1567,6 +1732,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       memcmp(target, front, GDEFCORE_PUBLIC_ID_LEN) != 0 ||
       !base_matches(catalog, front, base) ||
       load_panes(catalog, front, held, 32, &npanes) != 0) {
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, stale);
     return redirect(out, "/admin/front");
   }
   if (form_len == 5 && memcmp(form_id, "place", 5) == 0) {
@@ -1576,6 +1742,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
   } else if (form_len == 5 && memcmp(form_id, "order", 5) == 0) {
     kind = 3;
   } else {
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, stale);
     return redirect(out, "/admin/front");
   }
   if (kind == 1) {
@@ -1610,6 +1777,8 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
     size_t posted_n = 0;
     if (form_pair(body, body_len, "panes", text, sizeof text, &text_n) != 0 ||
         panes_from_post(text, text_n, posted, &posted_n) != 0) {
+      say(catalog, request, GDEFCORE_MESSAGE_ERROR,
+          "That order was not understood. Nothing was changed.");
       return redirect(out, "/admin/front");
     }
     for (i = 0; i < posted_n; i++) {
@@ -1619,6 +1788,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       return -1;
     }
   }
+  say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Saved.");
   return redirect(out, "/admin/front");
 }
 
@@ -1652,12 +1822,15 @@ static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
       !base_matches(catalog, target, base)) {
     wipe(token, sizeof token);
     wipe(raw, sizeof raw);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR,
+        "That form is out of date. Nothing was undone.");
     return redirect(out, "/admin/undo");
   }
   wipe(token, sizeof token);
   wipe(raw, sizeof raw);
   if (gdefcore_entity_type(catalog, target, GDEFCORE_PUBLIC_ID_LEN, &type, &type_n) !=
       GDEFCORE_OK) {
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, "Nothing was undone.");
     return redirect(out, "/admin/undo");
   }
   if (type_n == 9 && memcmp(type, "site.post", 9) == 0) {
@@ -1673,6 +1846,7 @@ static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   }
   if (!allowed) {
     gdefcore_text_free(catalog, type);
+    say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, "That cannot be undone here.");
     return redirect(out, "/admin/undo");
   }
   who = gdefcore_request_principal(request, &who_n);
@@ -1691,8 +1865,10 @@ static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   gdefcore_changeset_destroy(cs);
   gdefcore_text_free(catalog, type);
   if (rc != GDEFCORE_OK) {
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, "Nothing was undone.");
     return redirect(out, "/admin/undo");
   }
+  say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Undone.");
   return redirect(out, "/admin/undo");
 }
 
@@ -3304,7 +3480,6 @@ static int tpl_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog
  * someone, so every one is escaped.
  */
 
-enum { MENU_SAVED = 1, MENU_REFUSED = 2 };
 
 static const char kTypeEntry[] = GDEFCORE_MENU_ENTRY_TYPE;
 static const char kTypeOverride[] = GDEFCORE_MENU_OVERRIDE_TYPE;
@@ -3402,7 +3577,7 @@ static int menu_tokens(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
 static int menus_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * session, size_t session_len,
-    GDEFCORE_Routes * routes, int notice, struct GDEFWEB_Admin_Reply * out) {
+    GDEFCORE_Routes * routes, struct GDEFWEB_Admin_Reply * out) {
   struct Page page;
   struct MenuTokens tokens;
   GDEFCORE_Route_Match * match = NULL;
@@ -3420,13 +3595,6 @@ static int menus_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
     goto done;
   }
   if (page_begin(&page, "Menus") != 0 || page_str(&page, "<h1>Menus</h1>") != 0) {
-    goto done;
-  }
-  if (notice == MENU_SAVED && page_str(&page, "<p class=\"notice\">Saved.</p>") != 0) {
-    goto done;
-  }
-  if (notice == MENU_REFUSED &&
-      page_str(&page, "<p class=\"notice\">That change was not made.</p>") != 0) {
     goto done;
   }
   if (page_str(&page, "<table class=\"menus\"><tr><th>Entry</th><th>Name</th>"
@@ -3676,10 +3844,9 @@ static int menu_stage_forget(GDEFCORE_Changeset * cs, void * ctx) {
              : -1;
 }
 
-static int menus_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
-    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
-    size_t root_len, const char * session, size_t session_len,
-    GDEFCORE_Routes * routes, const char * body, size_t body_len,
+static int menus_write(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    GDEFCORE_Keyring * keyring, const uint8_t * root, size_t root_len,
+    const char * session, size_t session_len, const char * body, size_t body_len,
     struct GDEFWEB_Admin_Reply * out) {
   char token[4096];
   size_t token_n = 0;
@@ -3704,6 +3871,8 @@ static int menus_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0) {
     wipe(token, sizeof token);
     wipe(raw, sizeof raw);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR,
+        "That form is out of date. Nothing was changed.");
     return redirect(out, "/admin/menus");
   }
   wipe(token, sizeof token);
@@ -3711,6 +3880,8 @@ static int menus_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
   who = gdefcore_request_principal(request, &who_n);
   if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN ||
       memcmp(target, who, GDEFCORE_PUBLIC_ID_LEN) != 0) {
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR,
+        "That form is out of date. Nothing was changed.");
     return redirect(out, "/admin/menus");
   }
   menu_post(body, body_len, "name", w.name, sizeof w.name);
@@ -3730,8 +3901,8 @@ static int menus_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
   menu_post(body, body_len, "route", w.route, sizeof w.route);
   has_weight = w.weight[0] != '\0';
   if (has_weight && menu_int(w.weight, &w.weight_value) != 0) {
-    return menus_page(alloc, catalog, request, keyring, root, root_len, session,
-        session_len, routes, MENU_REFUSED, out);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, "That change was not made.");
+    return redirect(out, "/admin/menus");
   }
   w.has_weight_value = has_weight;
   if (form_len == 13 && memcmp(form_id, "menu-override", 13) == 0) {
@@ -3777,12 +3948,15 @@ static int menus_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       done = menu_apply(catalog, request, menu_stage_entry, &w, kTypeEntry);
     }
   } else {
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR,
+        "That form is out of date. Nothing was changed.");
     return redirect(out, "/admin/menus");
   }
   if (done != 0) {
-    return menus_page(alloc, catalog, request, keyring, root, root_len, session,
-        session_len, routes, MENU_REFUSED, out);
+    say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, "That change was not made.");
+    return redirect(out, "/admin/menus");
   }
+  say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Saved.");
   return redirect(out, "/admin/menus");
 }
 
@@ -3799,8 +3973,6 @@ static int menus_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
  * that does not exist. A write is decided by the core entry by entry, when the
  * changeset is applied (gdefcore_settings_authorize()).
  */
-
-enum { SETTINGS_NONE = 0, SETTINGS_SAVED, SETTINGS_UNCHANGED, SETTINGS_FAILED };
 
 static int settings_name_ok(const char * s, size_t n) {
   size_t i;
@@ -3980,8 +4152,7 @@ static int settings_index(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * ca
 static int settings_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * session, size_t session_len, const char * path,
-    const char * key, int notice, const char * message, size_t message_len,
-    struct GDEFWEB_Admin_Reply * out) {
+    const char * key, struct GDEFWEB_Admin_Reply * out) {
   struct Page page;
   char * token = NULL;
   char * html = NULL;
@@ -4014,26 +4185,6 @@ static int settings_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cat
     page_free(&page);
     return -1;
   }
-  if (notice == SETTINGS_SAVED && page_str(&page, "<p class=\"notice\">Saved.</p>") != 0) {
-    gdefcore_text_free(catalog, html);
-    page_free(&page);
-    return -1;
-  }
-  if (notice == SETTINGS_UNCHANGED &&
-      page_str(&page, "<p class=\"notice\">Nothing changed.</p>") != 0) {
-    gdefcore_text_free(catalog, html);
-    page_free(&page);
-    return -1;
-  }
-  if (notice == SETTINGS_FAILED &&
-      (page_str(&page, "<p class=\"notice error\">") != 0 ||
-          page_esc_digits(&page, message == NULL ? "Not saved." : message,
-              message == NULL ? 10 : message_len) != 0 ||
-          page_str(&page, "</p>") != 0)) {
-    gdefcore_text_free(catalog, html);
-    page_free(&page);
-    return -1;
-  }
   /* The core's own markup: every text in it is escaped there. */
   if (page_add(&page, html, html_len) != 0) {
     gdefcore_text_free(catalog, html);
@@ -4044,11 +4195,10 @@ static int settings_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cat
   return take_page(&page, out);
 }
 
-static int settings_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
-    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
-    size_t root_len, const char * session, size_t session_len, const char * path,
-    const char * key, const char * body, size_t body_len,
-    struct GDEFWEB_Admin_Reply * out) {
+static int settings_write(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    GDEFCORE_Keyring * keyring, const uint8_t * root, size_t root_len,
+    const char * session, size_t session_len, const char * path, const char * key,
+    const char * body, size_t body_len, struct GDEFWEB_Admin_Reply * out) {
   char token[4096];
   size_t token_n = 0;
   unsigned char raw[3072];
@@ -4071,8 +4221,6 @@ static int settings_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * ca
   char * message = NULL;
   size_t message_len = 0;
   GDEFCORE_Result rc;
-  int notice;
-  int done;
   /* A form that was not signed for this session, this administrator and this
    * purpose writes nothing. */
   if (form_pair(body, body_len, "token", token, sizeof token, &token_n) != 0 ||
@@ -4083,18 +4231,18 @@ static int settings_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * ca
       form_len != 13 || memcmp(form_id, "settings-save", 13) != 0) {
     wipe(token, sizeof token);
     wipe(raw, sizeof raw);
-    return settings_page(alloc, catalog, request, keyring, root, root_len, session,
-        session_len, path, key, SETTINGS_FAILED,
-        "That form is out of date. Nothing was saved.", 44, out);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR,
+        "That form is out of date. Nothing was saved.");
+    return redirect_to(out, path);
   }
   wipe(token, sizeof token);
   wipe(raw, sizeof raw);
   who = gdefcore_request_principal(request, &who_n);
   if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN ||
       memcmp(target, who, GDEFCORE_PUBLIC_ID_LEN) != 0) {
-    return settings_page(alloc, catalog, request, keyring, root, root_len, session,
-        session_len, path, key, SETTINGS_FAILED,
-        "That form is out of date. Nothing was saved.", 44, out);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR,
+        "That form is out of date. Nothing was saved.");
+    return redirect_to(out, path);
   }
   version[0] = '\0';
   (void)form_pair(body, body_len, "version", version, sizeof version, &version_n);
@@ -4157,12 +4305,23 @@ static int settings_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * ca
     free(owned[i]);
     free(names[i]);
   }
-  notice = rc == GDEFCORE_OK ? (written > 0 ? SETTINGS_SAVED : SETTINGS_UNCHANGED)
-                             : SETTINGS_FAILED;
-  done = settings_page(alloc, catalog, request, keyring, root, root_len, session,
-      session_len, path, key, notice, message, message_len, out);
+  /* Post, redirect, message: the page the redirect lands on is the form again,
+   * drawn fresh against the version that is stored now, with what happened. */
+  if (rc == GDEFCORE_OK) {
+    say(catalog, request, GDEFCORE_MESSAGE_STATUS,
+        written > 0 ? "Saved." : "Nothing changed.");
+  } else {
+    /* What the core said is what happened: it names the setting and why. A
+     * text too long for a message is not one the form can use, so it is the
+     * short version. */
+    if (message == NULL || message_len == 0 ||
+        gdefcore_message_post(catalog, request, GDEFCORE_MESSAGE_ERROR, message,
+            message_len) != GDEFCORE_OK) {
+      say(catalog, request, GDEFCORE_MESSAGE_ERROR, "Not saved.");
+    }
+  }
   gdefcore_text_free(catalog, message);
-  return done;
+  return redirect_to(out, path);
 }
 
 static int settings_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
@@ -4190,9 +4349,9 @@ static int settings_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * ca
   }
   if (is_get) {
     rc = settings_page(alloc, catalog, request, keyring, root, root_len, session,
-        session_len, path, key, SETTINGS_NONE, NULL, 0, out);
+        session_len, path, key, out);
   } else {
-    rc = settings_write(alloc, catalog, request, keyring, root, root_len, session,
+    rc = settings_write(catalog, request, keyring, root, root_len, session,
         session_len, path, key, body, body_len, out);
   }
   /* A principal who may not edit settings is told what an unknown page is. */
@@ -4298,23 +4457,24 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
   if (session_raw(cookie, raw, sizeof raw, &raw_n) != 0) {
     return -1;
   }
+  /* The session's messages are drawn by the navigation of whatever page is
+   * served below, and posted by whatever handler redirects. */
+  (void)gdefcore_message_bind(catalog, request, keyring, root, root_len,
+      (const char *)raw, raw_n);
   routes = gdefweb_nav_open(catalog);
   if (strcmp(path, "/admin") == 0) {
     rc = is_get ? home_page(alloc, out) : unknown_admin(method, out);
   } else if (strcmp(path, "/admin/more") == 0) {
-    rc = more_page(alloc, out);
+    rc = is_get ? more_page(alloc, catalog, request, routes, out)
+                : unknown_admin(method, out);
   } else if (strcmp(path, "/admin/access") == 0) {
     rc = is_get ? access_page(alloc, catalog, request, out)
                 : unknown_admin(method, out);
   } else if (strcmp(path, "/admin/post") == 0) {
     rc = is_get ? post_page(alloc, catalog, request, keyring, root, root_len,
-                            (const char *)raw, raw_n, 0, out)
+                            (const char *)raw, raw_n, out)
                 : post_write(alloc, catalog, request, keyring, root, root_len,
                       (const char *)raw, raw_n, body, body_len, out);
-  } else if (strcmp(path, "/admin/post/saved") == 0) {
-    rc = is_get ? post_page(alloc, catalog, request, keyring, root, root_len,
-                            (const char *)raw, raw_n, 1, out)
-                : unknown_admin(method, out);
   } else if (strcmp(path, "/admin/front") == 0) {
     rc = is_get ? front_page(alloc, catalog, request, keyring, root, root_len,
                              (const char *)raw, raw_n, out)
@@ -4331,10 +4491,10 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
       rc = unknown_admin(method, out);
     } else if (is_get) {
       rc = menus_page(alloc, catalog, request, keyring, root, root_len,
-          (const char *)raw, raw_n, routes, 0, out);
+          (const char *)raw, raw_n, routes, out);
     } else {
-      rc = menus_write(alloc, catalog, request, keyring, root, root_len,
-          (const char *)raw, raw_n, routes, body, body_len, out);
+      rc = menus_write(catalog, request, keyring, root, root_len,
+          (const char *)raw, raw_n, body, body_len, out);
     }
   } else if (strcmp(path, "/admin/settings") == 0 ||
              starts_with(path, "/admin/settings/")) {

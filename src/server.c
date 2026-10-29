@@ -1419,6 +1419,10 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
     size_t bytes_n = 0;
     GDEFCORE_Routes * routes = NULL;
     render_path(in.path, &page_path, &page_n);
+    /* A signed-in session is shown the messages it was left, if the layout
+     * places the messages widget. */
+    gdefweb_admin_bind_messages(catalog, request, keyring, server->root,
+        sizeof server->root, in.cookie);
     /* The route trie of the modules enabled for this tenant: their routes, and
      * the contributors that choose a page's layout. The kernel's own
      * contributor, which offers the site's rules, is in every table. */

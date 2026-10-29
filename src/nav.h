@@ -63,9 +63,10 @@ int gdefweb_nav_follows(GDEFCORE_Routes * routes, GDEFCORE_Request * request,
     const char * path, const char * machine);
 
 /**
- * @brief The navigation of the page at @p path as HTML: the admin menu, and
- * the breadcrumbs and tabs when the page has them, each drawn by the core's
- * widget. If the menu cannot be drawn (the site has no templates for it) the
+ * @brief The navigation of the page at @p path as HTML: the session's
+ * messages, if it was left any (drawing them claims them, so a page shows them
+ * once), the admin menu, and the breadcrumbs and tabs when the page has them,
+ * each drawn by the core's widget. If the menu cannot be drawn (the site has no templates for it) the
  * result is a single link home, never nothing. Free with the allocator.
  */
 char * gdefweb_nav_html(const GDEFWEB_Allocator * alloc,

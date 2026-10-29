@@ -250,7 +250,7 @@ TEST_F(Tenants, NoPageLeaks) {
   const char * const hosts[2] = {kHostA, kHostB};
   const char * const paths[] = {"/", "/alpha-post", "/beta-post", "/no-such",
       "/login", "/admin", "/admin/post", "/admin/front", "/admin/undo",
-      "/admin/more", "/admin/post/saved"};
+      "/admin/more"};
   size_t seen = 0;
   for (int round = 0; round < 2; round++) {
     for (int i = 0; i < 2; i++) {
@@ -287,7 +287,7 @@ TEST_F(Tenants, NoPageLeaks) {
       }
     }
   }
-  EXPECT_GT(seen, (size_t)80);
+  EXPECT_GT(seen, (size_t)70);
   /* The controls: what was written is there, at its own tenant. */
   EXPECT_TRUE(Has(GetAt(kHostA, "/", std::string()).body, "Only In Alpha"));
   EXPECT_TRUE(Has(GetAt(kHostB, "/", std::string()).body, "Only In Beta"));
