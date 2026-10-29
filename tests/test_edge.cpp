@@ -556,7 +556,7 @@ TEST_F(Edge, AdminFirstScreen) {
   EXPECT_TRUE(Has(post.body, "<form"));
   EXPECT_FALSE(Has(post.body, "id=\"panes\""));
   Reply front = Get("/admin/front", cookie);
-  EXPECT_TRUE(Has(front.body, "side view recent"));
+  EXPECT_TRUE(Has(front.body, "side recent"));
   EXPECT_FALSE(Has(front.body, "name=\"title\""));
   Reply undo = Get("/admin/undo", cookie);
   EXPECT_FALSE(Has(undo.body, "rase"));
@@ -746,7 +746,7 @@ TEST_F(Edge, AdminFront) {
   std::string place = FormToken(removed.body, "Place recent posts");
   ASSERT_FALSE(place.empty());
   Reply placed = PostForm("/admin/front", cookie, Form(place, ""));
-  EXPECT_TRUE(Has(placed.body, "side view recent"));
+  EXPECT_TRUE(Has(placed.body, "side recent"));
   EXPECT_TRUE(in_region(Visit("/"), "side", "Hello Title"));
   /* Placing twice does not double it. */
   std::string place2 = FormToken(placed.body, "Place recent posts");
@@ -758,22 +758,22 @@ TEST_F(Edge, AdminFront) {
   std::string order = InputValue(twice.body, "token", 2);
   ASSERT_FALSE(order.empty());
   PostForm("/admin/front", cookie,
-      Form(order, "&panes=main+view+recent%0Aside+view+other"));
+      Form(order, "&panes=main+recent%0Aside+other"));
   EXPECT_TRUE(in_region(Visit("/"), "side", "Hello Title"));
   PostForm("/admin/front", cookie,
-      Form(order, "&panes=main+entity+recent"));
+      Form(order, "&panes=main+content"));
   EXPECT_TRUE(in_region(Visit("/"), "side", "Hello Title"));
   PostForm("/admin/front", cookie, Form(order, "&panes="));
   EXPECT_TRUE(in_region(Visit("/"), "side", "Hello Title"));
   Reply dragged = PostForm("/admin/front", cookie,
-      Form(order, "&panes=main+view+recent"));
+      Form(order, "&panes=main+recent"));
   EXPECT_EQ(200, dragged.status);
   EXPECT_TRUE(in_region(Visit("/"), "main", "Hello Title"));
   EXPECT_FALSE(in_region(Visit("/"), "side", "Hello Title"));
   /* The Lax cookie alone drags nothing. */
   std::string lax_only = "Cookie: " + CookiePair(Login("ada", "secret"), "__Host-session") + "\r\n";
   std::string order2 = InputValue(dragged.body, "token", 2);
-  PostForm("/admin/front", lax_only, Form(order2, "&panes=side+view+recent"));
+  PostForm("/admin/front", lax_only, Form(order2, "&panes=side+recent"));
   EXPECT_TRUE(in_region(Visit("/"), "main", "Hello Title"));
 }
 
@@ -833,7 +833,7 @@ TEST_F(Edge, AdminUndo) {
   undone = PostForm("/admin/undo", cookie, Form(UndoToken(page.body, "Front page"), ""));
   EXPECT_EQ(200, undone.status);
   EXPECT_TRUE(Has(Visit("/"), "Hello Title"));
-  EXPECT_TRUE(Has(Get("/admin/front", cookie).body, "side view recent"));
+  EXPECT_TRUE(Has(Get("/admin/front", cookie).body, "side recent"));
 
   /* A role change. */
   {

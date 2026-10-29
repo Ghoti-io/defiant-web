@@ -28,7 +28,10 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <ghoti.io/defiant-web/server.h>
+#include <ghoti.io/defiant-core/access.h>
 #include <ghoti.io/defiant-core/account.h>
+#include <ghoti.io/defiant-core/entity.h>
+#include <ghoti.io/defiant-core/form.h>
 #include <ghoti.io/defiant-core/module.h>
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/request.h>
@@ -1414,9 +1417,39 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
     size_t page_n = 0;
     char * bytes = NULL;
     size_t bytes_n = 0;
+    GDEFCORE_Routes * routes = NULL;
     render_path(in.path, &page_path, &page_n);
-    rc = gdefcore_render_page(catalog, NULL, request, page_path, page_n,
-        GDEFCORE_RENDER_PAGE_FUEL, &bytes, &bytes_n);
+    /* The route trie of the modules enabled for this tenant: their routes, and
+     * the contributors that choose a page's layout. The kernel's own
+     * contributor, which offers the site's rules, is in every table. */
+    if (gdefcore_routes_create(NULL, &routes) == GDEFCORE_OK) {
+      if (gdefcore_routes_set_check(routes, gdefcore_access_route_check,
+              catalog) != GDEFCORE_OK) {
+        gdefcore_routes_destroy(routes);
+        routes = NULL;
+      }
+    }
+    if (routes != NULL && server->host != NULL) {
+      size_t tenant_n = 0;
+      const uint8_t * tenant = gdefcore_catalog_tenant(catalog, &tenant_n);
+      char * err = NULL;
+      size_t err_n = 0;
+      (void)gdefcore_module_add_routes(server->host, tenant, tenant_n, NULL,
+          routes, &err, &err_n);
+      gdefcore_routes_free(routes, err);
+      /* A module's route answers a path with its slash; an alias is spelled
+       * without. The route is asked first. */
+      rc = gdefcore_render_page(catalog, routes, request, in.path,
+          strlen(in.path), GDEFCORE_RENDER_PAGE_FUEL, &bytes, &bytes_n);
+      if (rc != GDEFCORE_OK && rc != GDEFCORE_ERR_OOM) {
+        rc = gdefcore_render_page(catalog, routes, request, page_path, page_n,
+            GDEFCORE_RENDER_PAGE_FUEL, &bytes, &bytes_n);
+      }
+    } else {
+      rc = gdefcore_render_page(catalog, routes, request, page_path, page_n,
+          GDEFCORE_RENDER_PAGE_FUEL, &bytes, &bytes_n);
+    }
+    gdefcore_routes_destroy(routes);
     if (rc == GDEFCORE_ERR_OOM) {
       reply(server, sock, 500, "Internal Server Error", "", 0, NULL,
           "text/html; charset=utf-8", in.method, in.path, client);

@@ -392,7 +392,7 @@ TEST_F(TplAdmin, ListShowsOnlyKindsThePrincipalMayEdit) {
   Reply list = Get("/admin/templates", cookie_);
   EXPECT_EQ(200, list.status);
   /* The control: the pane templates are there, as links. */
-  for (const char * name : {"entity", "recent", "field"}) {
+  for (const char * name : {"entity", "recent"}) {
     EXPECT_TRUE(Has(list.body, (std::string("href=\"/admin/templates/") + name + "\"").c_str()))
         << name;
   }
@@ -416,7 +416,7 @@ TEST_F(TplAdmin, NotGrantedIsLikeNotFound) {
   Reply list = Get("/admin/templates", cookie_);
   EXPECT_EQ(200, list.status);
   EXPECT_TRUE(Has(list.body, "There are no templates you may edit."));
-  for (const char * name : {"layout", "recent", "entity", "field", "Pane", "Page"}) {
+  for (const char * name : {"layout", "recent", "entity", "Pane", "Page"}) {
     EXPECT_FALSE(Has(list.body, name)) << name;
   }
   Reply missing = EditPage("no-such-template");
@@ -692,8 +692,7 @@ TEST_F(TplAdmin, TheListThePageAndTheSaveAgreeForEveryGrant) {
     const char * classification;
   };
   const Tpl templates[] = {{"entity", "core.pane", ""}, {"recent", "core.pane", ""},
-      {"field", "core.pane", ""}, {"layout", "core.page", "internal"},
-      {"notes", "core.page", "public"}};
+      {"layout", "core.page", "internal"}, {"notes", "core.page", "public"}};
   bool pane = false;
   bool page = false;
   bool desk = false;

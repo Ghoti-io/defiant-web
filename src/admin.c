@@ -69,7 +69,7 @@ static const char kJs[] =
     "    for (i = 0; i < regions.length; i += 1) {\n"
     "      items = regions[i].querySelectorAll(\"[data-pane]\");\n"
     "      for (j = 0; j < items.length; j += 1) {\n"
-    "        lines.push(regions[i].getAttribute(\"data-region\") + \" view recent\");\n"
+    "        lines.push(regions[i].getAttribute(\"data-region\") + \" recent\");\n"
     "      }\n"
     "    }\n"
     "    field = form.querySelector(\"[name=panes]\");\n"
@@ -751,14 +751,19 @@ static int load_panes(GDEFCORE_Catalog * catalog, const char * id, struct Held *
     held[i].kind[kind_n] = '\0';
     memcpy(held[i].target, target, target_n);
     held[i].target[target_n] = '\0';
+    /* region widget [target]: no trailing space when there is no target. */
     memcpy(held[i].line, region, region_n);
     held[i].line[region_n] = ' ';
     memcpy(held[i].line + region_n + 1, kind, kind_n);
-    held[i].line[region_n + 1 + kind_n] = ' ';
-    memcpy(held[i].line + region_n + kind_n + 2, target, target_n);
-    held[i].line[region_n + kind_n + target_n + 2] = '\0';
-    held[i].recent = strcmp(held[i].kind, "view") == 0 &&
-                     strcmp(held[i].target, "recent") == 0;
+    if (target_n > 0) {
+      held[i].line[region_n + 1 + kind_n] = ' ';
+      memcpy(held[i].line + region_n + kind_n + 2, target, target_n);
+      held[i].line[region_n + kind_n + target_n + 2] = '\0';
+    } else {
+      held[i].line[region_n + 1 + kind_n] = '\0';
+    }
+    held[i].recent = strcmp(held[i].kind, "recent") == 0 &&
+                     (target_n == 0 || strcmp(held[i].target, "recent") == 0);
     gdefcore_text_free(catalog, region);
     gdefcore_text_free(catalog, kind);
     gdefcore_text_free(catalog, target);
@@ -1504,9 +1509,9 @@ static int panes_from_post(const char * text, size_t n, char lines[][64],
       i += 1;
     }
     len = i - start;
-    if (len != 16 ||
-        (memcmp(text + start, "main view recent", 16) != 0 &&
-            memcmp(text + start, "side view recent", 16) != 0)) {
+    if (len != 11 ||
+        (memcmp(text + start, "main recent", 11) != 0 &&
+            memcmp(text + start, "side recent", 11) != 0)) {
       return -1;
     }
     if (*out_n >= 32) {
@@ -1581,7 +1586,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       }
     }
     if (!already && nlines < 32) {
-      lines[nlines++] = "side view recent";
+      lines[nlines++] = "side recent";
       if (save_panes(catalog, request, front, lines, nlines) != 0) {
         return -1;
       }

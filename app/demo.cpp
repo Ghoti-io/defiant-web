@@ -373,7 +373,7 @@ int Web1(uint16_t port, const std::string & scratch) {
       "the front page has no drag area or script");
   std::string order = InputValue(front.body, "token", 2);
   Need(!order.empty(), "the front page has no order form");
-  c.Post(host, "/admin/front", cookie, "token=" + order + "&panes=main+view+recent");
+  c.Post(host, "/admin/front", cookie, "token=" + order + "&panes=main+recent");
   Reply moved = c.Send("GET", host, "/", std::string(), std::string());
   Need(PostRegion(moved.body) == "main", "a visitor does not see the new order");
   Ok(2, "drag a widget: recent posts moved from the side to the main region");
