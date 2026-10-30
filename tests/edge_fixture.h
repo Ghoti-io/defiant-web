@@ -620,14 +620,9 @@ class Edge : public ::testing::Test {
         20000);
   }
 
-  /* The Cookie header line for a login: both cookies when both were set. */
+  /* The Cookie header line for a login: the one session cookie. */
   std::string CookieLine(const Reply & login) {
-    std::string line = "Cookie: " + CookiePair(login, "__Host-session");
-    std::string admin = CookiePair(login, "__Host-admin");
-    if (!admin.empty()) {
-      line += "; " + admin;
-    }
-    return line + "\r\n";
+    return "Cookie: " + CookiePair(login, "__Host-session") + "\r\n";
   }
 
   Reply Get(const char * path, const std::string & cookie) {

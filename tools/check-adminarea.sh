@@ -42,6 +42,30 @@ plant_hook_done() {
   printf 'check-adminarea: every planted defect turned its named test red\n'
 }
 
+# Gate 1: nothing names a second, separate admin cookie any more. The words are
+# put together here so that this script does not carry them itself.
+needle_a='__Host-'
+needle_b='admin'
+leftover() { # dir
+  (cd "$1" && grep -rIlE -e "${needle_a}${needle_b}" -e '[Aa]dmin cookie' src include tests app README.md 2>/dev/null)
+}
+root=$(cd "$(dirname "$0")/.." && pwd)
+found=$(leftover "$root")
+if [ -n "$found" ]; then
+  printf 'check-adminarea: a second admin cookie is still named in: %s\n' "$found" >&2
+  exit 1
+fi
+seen_dir=$(mktemp -d)
+mkdir -p "$seen_dir/src"
+printf '/* %s%s */\n' "$needle_a" "$needle_b" > "$seen_dir/src/x.c"
+if [ -z "$(leftover "$seen_dir")" ]; then
+  rm -rf "$seen_dir"
+  printf 'check-adminarea: the search for the second admin cookie did not find a planted name\n' >&2
+  exit 1
+fi
+rm -rf "$seen_dir"
+printf 'check-adminarea: no second admin cookie is named, and the search was seen to find one\n'
+
 plant_setup "$@"
 plant_control 'testAdminarea' '*'
 
@@ -107,8 +131,8 @@ plant more-lists-a-page-the-viewer-may-not-reach src/admin.c testAdminarea Admin
 # A sign-in leads to the admin home whoever signs in.
 PLANT_NEED_TEXT='ONE-GRANT'
 plant sign-in-lands-on-the-home src/server.c testAdminarea AdminArea.OneGrantReachesThatPageAndNothingElse \
-  'cookies.values[1] != NULL ? landing : "/");' \
-  'cookies.values[1] != NULL ? (landing[0] != 0 ? "/admin" : landing) : "/");'
+  'landing[0] != '"'"'\0'"'"' ? landing : "/");' \
+  'landing[0] != '"'"'\0'"'"' ? "/admin" : "/");'
 
 # The refusal says what would have allowed it.
 PLANT_NEED_TEXT='NAMES:'
@@ -135,6 +159,74 @@ plant front-saved-without-the-request src/admin.c testAdminarea AdminArea.TheFro
   '  gdefcore_changeset_set_request(cs, request);
   rc = gdefcore_entity_save(cs, id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, &value, 1);' \
   '  rc = gdefcore_entity_save(cs, id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, &value, 1);'
+
+# Gate 2: a grant made after sign-in opens its page with no new sign-in. The
+# authentication reads a second cookie again (put together so as not to name it).
+PLANT_NEED_TEXT='LATE:'
+plant second-cookie-required-again src/admin.c testAdminarea AdminArea.AGrantMadeAfterSignInOpensItsPageOnTheNextRequestWithNoNewSignIn \
+  '  if (cookie_named(cookie, "__Host-session", encoded, sizeof encoded) != 0) {
+    return 0;
+  }' \
+  '  if (cookie_named(cookie, "__Host-" "admin", encoded, sizeof encoded) != 0) {
+    return 0;
+  }'
+
+# The session cookie is withheld from a person who has no admin page to go to at
+# the moment they sign in, which is what the second cookie did.
+PLANT_NEED_TEXT='LATE:'
+plant session-withheld-from-a-person-with-no-admin-page src/server.c testAdminarea AdminArea.AGrantMadeAfterSignInOpensItsPageOnTheNextRequestWithNoNewSignIn \
+  '      landing[0] = '"'"'\0'"'"';
+    }
+    gdefcore_text_free(catalog, token);' \
+  '      landing[0] = '"'"'\0'"'"';
+      cookies.values[0] = NULL;
+    }
+    gdefcore_text_free(catalog, token);'
+
+# Gate 3: every mutating admin endpoint refuses a request with a valid session
+# and no, or a damaged, form token. Each plant removes one signature check.
+PLANT_NEED_TEXT='TOKEN:'
+plant menu-undo-written-without-the-signature-check src/admin.c testAdminarea \
+  AdminArea.UndoingAMenuEditNeedsTheSignedFormOfThisSession \
+  '      gdefcore_form_check(catalog, request, keyring, root, root_len, session,
+          session_len, (const char *)raw, raw_n, NULL) != GDEFCORE_OK ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+      form_len != 9 || memcmp(form_id, "menu-undo", 9) != 0) {' \
+  '      ((void)keyring, (void)root, (void)root_len, (void)session, (void)session_len, 0) ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+      form_len != 9 || memcmp(form_id, "menu-undo", 9) != 0) {'
+
+# The post form has no plant here: its own check above the core is a second
+# layer, because gdefcore_form_resign() verifies the token's signature again
+# before anything is written (the core's gate plants that one), so removing the
+# web check alone changes nothing a request can see. The test of the post form
+# (WritingAPostNeedsTheSignedFormOfThisSession) still runs in every control.
+
+PLANT_NEED_TEXT='TOKEN:'
+plant front-saved-without-the-signature-check src/admin.c testAdminarea \
+  AdminArea.SavingTheFrontPageNeedsTheSignedFormOfThisSession \
+  '      gdefcore_form_check(catalog, request, keyring, root, root_len, session,
+          session_len, (const char *)raw, raw_n, NULL) != GDEFCORE_OK ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0) {
+    wipe(token, sizeof token);
+    wipe(raw, sizeof raw);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, stale);' \
+  '      ((void)keyring, (void)root, (void)root_len, (void)session, (void)session_len, 0) ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0) {
+    wipe(token, sizeof token);
+    wipe(raw, sizeof raw);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, stale);'
+
+PLANT_NEED_TEXT='TOKEN:'
+plant undo-written-without-the-signature-check src/admin.c testAdminarea \
+  AdminArea.UndoingAChangeNeedsTheSignedFormOfThisSession \
+  '      gdefcore_form_check(catalog, request, keyring, root, root_len, session,
+          session_len, (const char *)raw, raw_n, NULL) != GDEFCORE_OK ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+      form_len != 4 || memcmp(form_id, "undo", 4) != 0 ||' \
+  '      ((void)keyring, (void)root, (void)root_len, (void)session, (void)session_len, 0) ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+      form_len != 4 || memcmp(form_id, "undo", 4) != 0 ||'
 
 # The stale-object plant. A plant's copy starts from the finished build, so the
 # edit has to be compiled into it; this one is made not to be (the objects that

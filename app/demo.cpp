@@ -341,9 +341,8 @@ std::string Login(Client & c, const std::string & host) {
   Reply r = c.Send("POST", host, "/login", std::string(), body);
   Need(r.status == 303, "the admin could not sign in at " + host);
   std::string session = CookiePair(r, "__Host-session");
-  std::string admin = CookiePair(r, "__Host-admin");
-  Need(!session.empty() && !admin.empty(), "an admin login set no cookie pair");
-  return session + "; " + admin;
+  Need(!session.empty(), "an admin login set no session cookie");
+  return session;
 }
 
 /* ---- the web stages ---- */
@@ -422,7 +421,7 @@ int Web3(uint16_t port, const std::string &) {
       "the second tenant does not serve its own front page");
   Need(!Has(theirs.body, kPostTitle), "the second tenant sees the first one's post");
   Reply admin_there = c.Send("GET", other, "/admin", cookie, std::string());
-  Need(admin_there.body.empty(), "an admin cookie from tenant A opens tenant B");
+  Need(admin_there.body.empty(), "a session from tenant A opens tenant B");
   Reply login_there = c.Send("POST", other, "/login", std::string(),
       std::string("username=") + kAdminUser + "&password=" + kAdminPass);
   Need(login_there.status == 401 && HeaderAll(login_there, "Set-Cookie").empty(),

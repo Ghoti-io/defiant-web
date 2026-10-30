@@ -568,17 +568,11 @@ TEST_F(Edge, AdminHidden) {
   AddUser(id, "bob", "hunter2");
   Reply admin = Login("ada", "secret");
   Reply bob = Login("bob", "hunter2");
-  std::string lax_only = "Cookie: " + CookiePair(admin, "__Host-session") + "\r\n";
   std::string bob_cookie = CookieLine(bob);
-  /* Bob's session token offered as the Strict cookie as well. */
-  std::string bob_forged = "Cookie: " + CookiePair(bob, "__Host-session") + "; __Host-admin=" +
-      CookiePair(bob, "__Host-session").substr(strlen("__Host-session=")) + "\r\n";
-  std::string bad_cookie = "Cookie: __Host-admin=not-a-token\r\n";
-  EXPECT_FALSE(CookiePair(admin, "__Host-admin").empty());
-  EXPECT_TRUE(CookiePair(bob, "__Host-admin").empty());
+  std::string bad_cookie = "Cookie: __Host-session=not-a-token\r\n";
   const char * paths[] = {"/admin", "/admin/post", "/admin/front", "/admin/undo",
       "/admin/more", "/admin/nothing"};
-  std::string cookies[] = {std::string(), lax_only, bob_cookie, bob_forged, bad_cookie};
+  std::string cookies[] = {std::string(), bob_cookie, bad_cookie};
   for (const std::string & cookie : cookies) {
     Reply unknown = Get("/no-such-path", cookie);
     for (const char * path : paths) {
@@ -602,25 +596,23 @@ TEST_F(Edge, AdminCookies) {
   Reply admin = Login("ada", "secret");
   Reply bob = Login("bob", "hunter2");
   std::string session = SetCookieLine(admin, "__Host-session");
-  std::string strict = SetCookieLine(admin, "__Host-admin");
   EXPECT_TRUE(Has(session, "SameSite=Lax"));
-  EXPECT_TRUE(Has(strict, "SameSite=Strict"));
-  EXPECT_TRUE(Has(strict, "Secure"));
-  EXPECT_TRUE(Has(strict, "HttpOnly"));
-  EXPECT_TRUE(Has(strict, "Path=/"));
-  EXPECT_FALSE(Has(strict, "Domain="));
-  EXPECT_EQ(CookiePair(admin, "__Host-session").substr(strlen("__Host-session=")),
-      CookiePair(admin, "__Host-admin").substr(strlen("__Host-admin=")));
+  EXPECT_TRUE(Has(session, "Secure"));
+  EXPECT_TRUE(Has(session, "HttpOnly"));
+  EXPECT_TRUE(Has(session, "Path=/"));
+  EXPECT_FALSE(Has(session, "Domain="));
+  /* One cookie is the whole sign-in, for a person with an admin page and for one
+   * without. */
+  EXPECT_EQ((size_t)1, HeaderAll(admin, "Set-Cookie").size());
+  EXPECT_EQ((size_t)1, HeaderAll(bob, "Set-Cookie").size());
   EXPECT_FALSE(SetCookieLine(bob, "__Host-session").empty());
-  EXPECT_TRUE(SetCookieLine(bob, "__Host-admin").empty());
   Reply out = Ask(Req("POST", "/logout", "site.example",
                       (std::string("Origin: http://site.example\r\n") + CookieLine(admin))
                           .c_str(),
                       ""),
       5000);
   EXPECT_TRUE(Has(SetCookieLine(out, "__Host-session"), "Max-Age=0"));
-  EXPECT_TRUE(Has(SetCookieLine(out, "__Host-admin"), "Max-Age=0"));
-  EXPECT_TRUE(Has(SetCookieLine(out, "__Host-admin"), "SameSite=Strict"));
+  EXPECT_EQ((size_t)1, HeaderAll(out, "Set-Cookie").size());
 }
 
 TEST_F(Edge, AdminAssets) {
@@ -705,7 +697,7 @@ TEST_F(Edge, AdminWritePost) {
   std::string token2 = InputValue(fresh.body, "token", 0);
   Reply missing = PostForm("/admin/post", cookie, Form(token2, "&summary=only"));
   EXPECT_FALSE(Has(missing.body, "Saved"));
-  /* The Lax cookie alone cannot post. */
+  /* Another sign-in's cookie cannot post this form's token. */
   std::string lax_only = "Cookie: " + CookiePair(Login("ada", "secret"), "__Host-session") + "\r\n";
   Reply lax = PostForm("/admin/post", lax_only, Form(token2, "&title=Lax+Post&summary=s&body=b"));
   EXPECT_FALSE(Has(lax.body, "Saved"));
@@ -770,7 +762,7 @@ TEST_F(Edge, AdminFront) {
   EXPECT_EQ(200, dragged.status);
   EXPECT_TRUE(in_region(Visit("/"), "main", "Hello Title"));
   EXPECT_FALSE(in_region(Visit("/"), "side", "Hello Title"));
-  /* The Lax cookie alone drags nothing. */
+  /* Another sign-in's cookie drags nothing with this form's token. */
   std::string lax_only = "Cookie: " + CookiePair(Login("ada", "secret"), "__Host-session") + "\r\n";
   std::string order2 = InputValue(dragged.body, "token", 2);
   PostForm("/admin/front", lax_only, Form(order2, "&panes=side+recent"));
@@ -880,7 +872,7 @@ TEST_F(Edge, AdminUndo) {
   }
   gdefcore_catalog_destroy(catalog);
 
-  /* A bad token, a foreign Origin and the Lax cookie alone undo nothing. */
+  /* A bad token, a foreign Origin and another sign-in's cookie undo nothing. */
   page = Get("/admin/undo", cookie);
   std::string token = UndoToken(page.body, "Post Hello Title");
   ASSERT_FALSE(token.empty());
@@ -999,7 +991,6 @@ TEST_F(Edge, LoginPage) {
   EXPECT_FALSE(CookiePair(admin, "__Host-session").empty());
   EXPECT_EQ(303, other.status);
   EXPECT_EQ("/", HeaderValue(other, "Location"));
-  EXPECT_TRUE(CookiePair(other, "__Host-admin").empty());
   /* A wrong password and an unknown user get the same page, and no cookie. */
   Reply wrong = PostRaw("/login", std::string(), "username=ada&password=nope");
   Reply unknown = PostRaw("/login", std::string(), "username=nobody&password=nope");

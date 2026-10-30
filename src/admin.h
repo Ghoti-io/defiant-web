@@ -62,7 +62,7 @@ void gdefweb_admin_bind_messages(GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * cookie);
 
-/* Whether the admin cookie carries a live session, and so who the request is
+/* Whether the session cookie carries a live session, and so who the request is
  * from: the principal is bound to the request. That is authentication and only
  * that. What the person may do is decided by each page's own route check
  * (nav.h), never by a role they hold. */

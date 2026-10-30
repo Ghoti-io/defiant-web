@@ -182,4 +182,30 @@ plant admin-names-posts-by-the-published-view src/admin.c testEdge Edge.AdminNam
       id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, field, strlen(field), &texts, &lens,
       &count);'
 
+# Every write of the editor needs the form its page gave this session: the
+# signature check is removed from the save, and then from the revert.
+PLANT_NEED_TEXT='TOKEN: a save'
+plant template-saved-without-the-signature-check src/admin.c testTpladmin \
+  TplAdmin.ATokenWhoseSignatureIsDamagedWritesNothingOnSaveAndOnRevert \
+  '      gdefcore_form_check(catalog, request, keyring, root, root_len, session, session_len,
+          (const char *)raw, raw_n, NULL) != GDEFCORE_OK ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+      memcmp(target, id, GDEFCORE_PUBLIC_ID_LEN) != 0 ||
+      strlen(act == A_SAVE ? "tpl-save" : "tpl-check") != form_len ||' \
+  '      ((void)keyring, (void)root, (void)root_len, (void)session, (void)session_len, 0) ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+      memcmp(target, id, GDEFCORE_PUBLIC_ID_LEN) != 0 ||
+      strlen(act == A_SAVE ? "tpl-save" : "tpl-check") != form_len ||'
+
+PLANT_NEED_TEXT='TOKEN: a revert'
+plant template-reverted-without-the-signature-check src/admin.c testTpladmin \
+  TplAdmin.ATokenWhoseSignatureIsDamagedWritesNothingOnSaveAndOnRevert \
+  '      gdefcore_form_check(catalog, request, keyring, root, root_len, session, session_len,
+          (const char *)raw, raw_n, NULL) != GDEFCORE_OK ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+      memcmp(target, id, GDEFCORE_PUBLIC_ID_LEN) != 0 || form_len != 10 ||' \
+  '      ((void)keyring, (void)root, (void)root_len, (void)session, (void)session_len, 0) ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+      memcmp(target, id, GDEFCORE_PUBLIC_ID_LEN) != 0 || form_len != 10 ||'
+
 plant_finish

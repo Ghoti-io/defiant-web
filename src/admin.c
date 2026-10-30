@@ -649,7 +649,7 @@ int gdefweb_admin_authenticated(GDEFCORE_Catalog * catalog,
   unsigned char raw[768];
   size_t raw_n = 0;
   int ok = 0;
-  if (cookie_named(cookie, "__Host-admin", encoded, sizeof encoded) != 0) {
+  if (cookie_named(cookie, "__Host-session", encoded, sizeof encoded) != 0) {
     return 0;
   }
   if (b64_decode(encoded, raw, sizeof raw, &raw_n) != 0) {
@@ -774,7 +774,7 @@ static int session_raw(const char * cookie, unsigned char * raw, size_t cap,
     size_t * out_n) {
   char encoded[1200];
   int rc;
-  if (cookie_named(cookie, "__Host-admin", encoded, sizeof encoded) != 0) {
+  if (cookie_named(cookie, "__Host-session", encoded, sizeof encoded) != 0) {
     return -1;
   }
   rc = b64_decode(encoded, raw, cap, out_n);

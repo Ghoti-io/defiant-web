@@ -126,6 +126,45 @@ class AdminArea : public Edge {
     gdefcore_catalog_destroy(catalog);
   }
 
+  /* How many writes the tenant has had: a request that changed nothing leaves it. */
+  uint64_t Epoch() {
+    GDEFCORE_Catalog * catalog = Catalog();
+    uint64_t epoch = 0;
+    EXPECT_EQ(GDEFCORE_OK, gdefcore_epoch(catalog, &epoch));
+    gdefcore_catalog_destroy(catalog);
+    return epoch;
+  }
+
+  /* A real token with its signature tag damaged and nothing else: the one shape
+   * that is refused by the signature check and by nothing after it. */
+  static std::string Damaged(std::string token) {
+    for (size_t i = token.size() - 4; i < token.size(); i++) {
+      token[i] = token[i] == 'A' ? 'B' : 'A';
+    }
+    return token;
+  }
+
+  /*
+   * Every way a request with a valid session can lack the form the page gave
+   * it, made against the write @p rest asks for: no token, a token that is not
+   * one, the real token with its signature damaged, and the real token from
+   * another origin. None may change anything. @p rest starts with '&'.
+   */
+  void NothingIsWrittenWithout(const char * path, const std::string & cookie,
+      const std::string & token, const std::string & rest, const char * what) {
+    ASSERT_GT(token.size(), 8u) << what;
+    uint64_t before = Epoch();
+    PostRaw(path, cookie, rest.empty() ? std::string("x=1") : rest.substr(1));
+    EXPECT_EQ(before, Epoch()) << "TOKEN: " << what << " wrote with no token";
+    PostRaw(path, cookie, "token=not-a-token" + rest);
+    EXPECT_EQ(before, Epoch()) << "TOKEN: " << what << " wrote with a token that is not one";
+    PostRaw(path, cookie, "token=" + Damaged(token) + rest);
+    EXPECT_EQ(before, Epoch()) << "TOKEN: " << what << " wrote with a damaged token";
+    EXPECT_EQ(403, PostRaw(path, cookie, "token=" + token + rest, "http://evil.example").status)
+        << what;
+    EXPECT_EQ(before, Epoch()) << "TOKEN: " << what << " wrote from another origin";
+  }
+
   void Revoke(const char * role, const char * label) {
     GDEFCORE_Catalog * catalog = Catalog();
     ASSERT_EQ(GDEFCORE_OK,
@@ -195,7 +234,7 @@ TEST_F(AdminArea, TheFirstAdministratorOfAFreshInstallReachesEveryAdminPage) {
   Open(true);
   Reply login = SignIn("ada", &ada_);
   EXPECT_EQ(303, login.status);
-  EXPECT_FALSE(CookiePair(login, "__Host-admin").empty()) << "no admin cookie for the first administrator";
+  EXPECT_FALSE(CookiePair(login, "__Host-session").empty());
   EXPECT_EQ("/admin", HeaderValue(login, "Location"));
   std::set<std::string> want(std::begin(kPages), std::end(kPages));
   EXPECT_EQ(Join(want), Join(Reached(ada_))) << "FRESH: a page the first administrator cannot reach";
@@ -209,9 +248,8 @@ TEST_F(AdminArea, AFreshInstallWithNothingGrantedOpensNoAdminPageToTheRoleNamedA
   Open(false);
   Reply login = SignIn("ada", &ada_);
   EXPECT_EQ(303, login.status);
-  /* The role is held and nothing is granted: no admin cookie, and nowhere to land. */
-  EXPECT_TRUE(CookiePair(login, "__Host-admin").empty()) << "ROLE-NAME: an admin cookie for a role with no grants";
-  EXPECT_EQ("/", HeaderValue(login, "Location"));
+  /* The role is held and nothing is granted: nowhere to land. */
+  EXPECT_EQ("/", HeaderValue(login, "Location")) << "ROLE-NAME: a landing for a role with no grants";
   EXPECT_EQ("(none)", Join(Reached(ada_))) << "ROLE-NAME: a role named admin with no grants reached a page";
   /* CONTROL: the same person, once the role holds one grant. */
   GDEFCORE_Catalog * catalog = Catalog();
@@ -221,7 +259,7 @@ TEST_F(AdminArea, AFreshInstallWithNothingGrantedOpensNoAdminPageToTheRoleNamedA
           strlen(GDEFCORE_ADMIN_USE_LABEL), "core.role", 9));
   gdefcore_catalog_destroy(catalog);
   login = SignIn("ada", &ada_);
-  EXPECT_FALSE(CookiePair(login, "__Host-admin").empty());
+  EXPECT_EQ("/admin", HeaderValue(login, "Location"));
   EXPECT_EQ("/admin /admin/more ", Join(Reached(ada_)));
 }
 
@@ -234,8 +272,6 @@ TEST_F(AdminArea, OneGrantReachesThatPageAndNothingElse) {
   std::string carol;
   Reply login = SignIn("carol", &carol);
   EXPECT_EQ(303, login.status);
-  EXPECT_FALSE(CookiePair(login, "__Host-admin").empty())
-      << "ONE-GRANT: no admin cookie for a person with an admin page";
   EXPECT_EQ("/admin/menus", HeaderValue(login, "Location")) << "ONE-GRANT: sign-in lands on the page";
   Reply menus = Get("/admin/menus", carol);
   EXPECT_EQ(200, menus.status);
@@ -263,7 +299,6 @@ TEST_F(AdminArea, EveryGrantOpensTheOnePageItGovernsAndNoOther) {
     EXPECT_EQ(Join(grant.opens), Join(Reached(cookie)))
         << "OPENS: '" << grant.label << "' opens a page it does not govern, or not its own";
     if (grant.opens.empty()) {
-      EXPECT_TRUE(CookiePair(login, "__Host-admin").empty()) << grant.label;
       EXPECT_EQ("/", HeaderValue(login, "Location")) << grant.label;
     }
   }
@@ -325,7 +360,6 @@ TEST_F(AdminArea, AnonymousAndASessionWithNoGrantsReachNoAdminPage) {
   std::string bob;
   Reply login = SignIn("bob", &bob);
   EXPECT_EQ(303, login.status);
-  EXPECT_TRUE(CookiePair(login, "__Host-admin").empty());
   EXPECT_EQ("/", HeaderValue(login, "Location"));
   for (const std::string & who : {std::string(), bob}) {
     Reply unknown = Get("/no-such-path", who);
@@ -441,6 +475,99 @@ TEST_F(AdminArea, TheFrontPageWriteAsksTheLayoutDecisionOfTheDisplay) {
   Reply yes = PostForm("/admin/front", layouter, "token=" + FormToken(page, "Remove recent posts"));
   EXPECT_TRUE(Has(Messages(yes.body), "Saved.")) << Messages(yes.body);
   EXPECT_FALSE(Has(yes.body, "side recent"));
+}
+
+/* ---- One session cookie: a grant made after sign-in ------------------------------ */
+
+TEST_F(AdminArea, AGrantMadeAfterSignInOpensItsPageOnTheNextRequestWithNoNewSignIn) {
+  Open(true);
+  Person("erin", "late-grants", {});
+  std::string erin;
+  Reply login = SignIn("erin", &erin);
+  EXPECT_EQ(303, login.status);
+  EXPECT_EQ("/", HeaderValue(login, "Location"));
+  EXPECT_EQ("(none)", Join(Reached(erin))) << "LATE: a page before any grant";
+  /* The same session, a grant made now. */
+  GDEFCORE_Catalog * catalog = Catalog();
+  ASSERT_EQ(GDEFCORE_OK,
+      gdefcore_access_grant(catalog, "late-grants", 11, GDEFCORE_MENU_EDIT_ENTRY_LABEL,
+          strlen(GDEFCORE_MENU_EDIT_ENTRY_LABEL), "core.role", 9));
+  gdefcore_catalog_destroy(catalog);
+  EXPECT_EQ("/admin/menus ", Join(Reached(erin)))
+      << "LATE: a grant made after sign-in did not open its page without a new sign-in";
+  EXPECT_EQ(200, Get("/admin/menus", erin).status);
+  /* And it goes the same way when revoked. */
+  Revoke("late-grants", GDEFCORE_MENU_EDIT_ENTRY_LABEL);
+  EXPECT_EQ("(none)", Join(Reached(erin))) << "LATE: a revoked grant still opens its page";
+}
+
+/* ---- Every mutating admin endpoint needs the form its page gave this session ------- */
+
+TEST_F(AdminArea, WritingAPostNeedsTheSignedFormOfThisSession) {
+  Open(true);
+  SignIn("ada", &ada_);
+  std::string token = InputValue(Get("/admin/post", ada_).body, "token", 0);
+  const std::string rest = "&title=Sneak+Post&summary=s&body=b";
+  NothingIsWrittenWithout("/admin/post", ada_, token, rest, "the post form");
+  uint64_t before = Epoch();
+  Reply done = PostForm("/admin/post", ada_, "token=" + token + rest);
+  EXPECT_TRUE(Has(Messages(done.body), "Saved.")) << "CONTROL: " << Messages(done.body);
+  EXPECT_GT(Epoch(), before);
+}
+
+TEST_F(AdminArea, SavingTheFrontPageNeedsTheSignedFormOfThisSession) {
+  Open(true);
+  SignIn("ada", &ada_);
+  std::string page = Get("/admin/front", ada_).body;
+  std::string token = FormToken(page, "Remove recent posts");
+  NothingIsWrittenWithout("/admin/front", ada_, token, "", "the front page form");
+  uint64_t before = Epoch();
+  Reply done = PostForm("/admin/front", ada_, "token=" + token);
+  EXPECT_TRUE(Has(Messages(done.body), "Saved.")) << "CONTROL: " << Messages(done.body);
+  EXPECT_GT(Epoch(), before);
+}
+
+TEST_F(AdminArea, UndoingAChangeNeedsTheSignedFormOfThisSession) {
+  Open(true);
+  SignIn("ada", &ada_);
+  GDEFCORE_Catalog * catalog = Catalog();
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_access_role_create(catalog, "extras-one", 10, NULL));
+  ASSERT_EQ(GDEFCORE_OK,
+      gdefcore_access_grant(catalog, "extras-one", 10, GDEFCORE_POST_WRITE_LABEL,
+          strlen(GDEFCORE_POST_WRITE_LABEL), "core.role", 9));
+  gdefcore_catalog_destroy(catalog);
+  std::string token = UndoToken(Get("/admin/undo", ada_).body, "Role extras-one");
+  NothingIsWrittenWithout("/admin/undo", ada_, token, "", "the undo form of a role");
+  uint64_t before = Epoch();
+  Reply done = PostForm("/admin/undo", ada_, "token=" + token);
+  EXPECT_TRUE(Has(Messages(done.body), "Undone.")) << "CONTROL: " << Messages(done.body);
+  EXPECT_GT(Epoch(), before);
+}
+
+TEST_F(AdminArea, UndoingAMenuEditNeedsTheSignedFormOfThisSession) {
+  Open(true);
+  SignIn("ada", &ada_);
+  /* A menu edit to take back: hide the More entry, by its own form. */
+  std::string menus = Get("/admin/menus", ada_).body;
+  size_t row = menus.find("<tr id=\"e-core.l-admin-more\"");
+  ASSERT_NE(std::string::npos, row) << menus;
+  size_t button = menus.find("name=\"action\" value=\"hide\"", row);
+  ASSERT_NE(std::string::npos, button);
+  std::string form = menus.substr(menus.rfind("<form", button),
+      menus.find("</form>", button) - menus.rfind("<form", button));
+  Reply hid = PostForm("/admin/menus", ada_,
+      "token=" + InputValue(form, "token", 0) + "&version=" + InputValue(form, "version", 0) +
+          "&name=core.l-admin-more&action=hide");
+  ASSERT_TRUE(Has(Messages(hid.body), "Hid ")) << Messages(hid.body);
+  std::string undo = Get("/admin/undo", ada_).body;
+  size_t at = undo.find("<h2>Menus</h2>");
+  ASSERT_NE(std::string::npos, at) << undo;
+  std::string token = InputValue(undo.substr(at), "token", 0);
+  NothingIsWrittenWithout("/admin/undo", ada_, token, "", "the undo form of a menu edit");
+  uint64_t before = Epoch();
+  Reply done = PostForm("/admin/undo", ada_, "token=" + token);
+  EXPECT_TRUE(Has(Messages(done.body), "menu change was undone")) << "CONTROL: " << Messages(done.body);
+  EXPECT_GT(Epoch(), before);
 }
 
 int main(int argc, char ** argv) {

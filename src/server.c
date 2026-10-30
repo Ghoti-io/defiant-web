@@ -1293,7 +1293,6 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
     char encoded[1024];
     size_t encoded_n = 0;
     char session_cookie[1200];
-    char admin_cookie[1200];
     char landing[64];
     struct Cookies cookies;
     int form_ok;
@@ -1309,7 +1308,6 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
       wipe(password, sizeof password);
       wipe(encoded, sizeof encoded);
       wipe(session_cookie, sizeof session_cookie);
-      wipe(admin_cookie, sizeof admin_cookie);
       goto out;
     }
     form_ok = 1;
@@ -1326,7 +1324,6 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
       wipe(username, sizeof username);
       wipe(encoded, sizeof encoded);
       wipe(session_cookie, sizeof session_cookie);
-      wipe(admin_cookie, sizeof admin_cookie);
       goto out;
     }
     rc = gdefcore_account_login(catalog, keyring, server->root, sizeof server->root,
@@ -1346,7 +1343,6 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
       }
       wipe(encoded, sizeof encoded);
       wipe(session_cookie, sizeof session_cookie);
-      wipe(admin_cookie, sizeof admin_cookie);
       goto out;
     }
     note_success(server, user_key);
@@ -1356,19 +1352,18 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
         "__Host-session=%s; Secure; HttpOnly; SameSite=Lax; Path=/", encoded);
     cookies.values[0] = session_cookie;
     cookies.values[1] = NULL;
-    /* The admin cookie is for a person who has an admin page to go to, and
-     * which one is the route's own question (nav.c): a role's name is not asked. */
-    if (gdefweb_nav_landing(catalog, request, landing, sizeof landing)) {
-      snprintf(admin_cookie, sizeof admin_cookie,
-          "__Host-admin=%s; Secure; HttpOnly; SameSite=Strict; Path=/", encoded);
-      cookies.values[1] = admin_cookie;
+    /* The one session cookie is the whole sign-in. A person who has an admin
+     * page to go to is sent to the first one, and which that is is the route's
+     * own question (nav.c): a role's name is not asked. A grant made later needs
+     * no new sign-in, because every page asks its route's check on each request. */
+    if (!gdefweb_nav_landing(catalog, request, landing, sizeof landing)) {
+      landing[0] = '\0';
     }
     gdefcore_text_free(catalog, token);
     reply_ex(server, sock, 303, "See Other", "", 0, &cookies, NULL, in.method,
-        in.path, client, cookies.values[1] != NULL ? landing : "/");
+        in.path, client, landing[0] != '\0' ? landing : "/");
     wipe(encoded, sizeof encoded);
     wipe(session_cookie, sizeof session_cookie);
-    wipe(admin_cookie, sizeof admin_cookie);
     goto out;
   }
   if (span_eq(in.method, strlen(in.method), "POST") &&
@@ -1376,8 +1371,7 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
     struct Cookies cookies;
     cookies.values[0] =
         "__Host-session=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
-    cookies.values[1] =
-        "__Host-admin=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
+    cookies.values[1] = NULL;
     reply(server, sock, 200, "OK", "", 0, &cookies, NULL, in.method, in.path,
         client);
     goto out;

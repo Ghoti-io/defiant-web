@@ -29,10 +29,16 @@ page has a permission:
 The core declares the new ones (`documentation/access.md` there) and the program
 grants them all to the `admin` role on its first start, as ordinary grants a
 changeset can take away. A page the check refuses answers as a page that does not
-exist, and a refusal never says which permission was missing. Signing in sets the
-admin cookie for anyone who has an admin page to go to and sends them to the first
+exist, and a refusal never says which permission was missing. Signing in sets one cookie,
+`__Host-session`, and sends a person who has an admin page to go to to the first
 such page (a person granted only `core.menu.edit` lands on `/admin/menus`);
-anyone else gets the session cookie alone. The menu hangs under the admin home, so a
+anyone else goes to `/`. There is no second cookie for the admin area: the session
+says who someone is, each page's own check says what they may do and is asked on
+every request, so a grant made after signing in takes effect on the next request
+with no new sign-in. The cookie is SameSite=Lax, so every state-changing admin
+request must also carry the signed form token the page gave that session for that
+purpose; a request without one, or with another form's or another sign-in's, changes
+nothing. The menu hangs under the admin home, so a
 person without `core.admin.use` reaches a page they hold the permission of but is
 not shown the menu.
 

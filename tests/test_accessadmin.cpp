@@ -226,7 +226,7 @@ TEST_F(AccessAdmin, NoOneElseSeesIt) {
   ASSERT_TRUE(Has(seen.body, "module acc"));
   /* The pages that do not exist, for each visitor, are what they are told. */
   const std::string cookies[] = {std::string(), bob_,
-      "Cookie: __Host-admin=not-a-token\r\n"};
+      "Cookie: __Host-session=not-a-token\r\n"};
   for (const std::string & cookie : cookies) {
     Reply none = Get("/admin/access", cookie);
     Reply missing = Get("/admin/nothing", cookie);

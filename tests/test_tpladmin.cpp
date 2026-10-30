@@ -800,6 +800,48 @@ TEST_F(TplAdmin, MovingToAnotherKindNeedsBothKindsAndTheNewContract) {
 /* History and revert                                                     */
 /* -------------------------------------------------------------------- */
 
+/* The real tokens with the signature tag damaged and nothing else: only the
+ * signature check refuses them, for a save and for a revert, and a revert with
+ * no token at all writes nothing either. */
+TEST_F(TplAdmin, ATokenWhoseSignatureIsDamagedWritesNothingOnSaveAndOnRevert) {
+  Open({"core.pane"});
+  auto damage = [](std::string token) {
+    for (size_t i = token.size() - 4; i < token.size(); i++) {
+      token[i] = token[i] == 'A' ? 'B' : 'A';
+    }
+    return token;
+  };
+  const std::string original = Stored("recent", "body");
+  size_t revisions = Revisions("recent");
+  const std::string page = Fresh("recent");
+  ASSERT_GT(InputValue(page, "token", 1).size(), 8u);
+  Reply bad = PostForm("/admin/templates/recent", cookie_,
+      "token=" + InputValue(page, "token", 0) + "&token=" + damage(InputValue(page, "token", 1)) +
+          "&kind=core.pane&body=" + Enc(kPaneBody) + "&confirm=recent&do=save");
+  EXPECT_TRUE(Has(bad.body, "out of date")) << "TOKEN: a save with a damaged signature";
+  EXPECT_EQ(original, Stored("recent", "body")) << "TOKEN: a save with a damaged signature wrote";
+  EXPECT_EQ(revisions, Revisions("recent"));
+  /* Something to revert. */
+  ASSERT_TRUE(Has(Act("recent", Fresh("recent"), "save", kPaneBody, "core.pane", "recent").body, "Saved."));
+  revisions = Revisions("recent");
+  Reply history = Get("/admin/templates/recent/history", cookie_);
+  const std::string token = InputValue(history.body, "token", 0);
+  ASSERT_GT(token.size(), 8u);
+  Reply none = PostForm("/admin/templates/recent/history", cookie_, "confirm=recent&do=revert");
+  EXPECT_TRUE(Has(none.body, "Not reverted")) << "TOKEN: a revert with no token";
+  Reply damaged = PostForm("/admin/templates/recent/history", cookie_,
+      "token=" + damage(token) + "&confirm=recent&do=revert");
+  EXPECT_TRUE(Has(damaged.body, "Not reverted")) << "TOKEN: a revert with a damaged signature";
+  EXPECT_EQ(kPaneBody, Stored("recent", "body")) << "TOKEN: a revert wrote";
+  EXPECT_EQ(revisions, Revisions("recent"));
+  /* CONTROL: the token as it was given. */
+  Reply sent = PostRaw("/admin/templates/recent/history", cookie_,
+      "token=" + token + "&confirm=recent&do=revert");
+  EXPECT_EQ(303, sent.status);
+  EXPECT_EQ(original, Stored("recent", "body"));
+  EXPECT_EQ(revisions + 1, Revisions("recent"));
+}
+
 TEST_F(TplAdmin, HistoryListsRevisionsAndRevertRestoresTheOldBody) {
   Open({"core.pane"});
   const std::string original = Stored("recent", "body");
