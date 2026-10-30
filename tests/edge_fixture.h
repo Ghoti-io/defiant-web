@@ -32,6 +32,8 @@
 #include <ghoti.io/defiant-web/defiant-web.h>
 #include <ghoti.io/defiant-core/access.h>
 #include <ghoti.io/defiant-core/account.h>
+#include <ghoti.io/defiant-core/adminarea.h>
+#include <ghoti.io/defiant-core/layout.h>
 #include <ghoti.io/defiant-core/form.h>
 #include <ghoti.io/defiant-core/module.h>
 #include <ghoti.io/defiant-core/template.h>
@@ -525,7 +527,13 @@ class Edge : public ::testing::Test {
     return out;
   }
 
-  void InstallKit(const char * id) {
+  /* The kit, and (unless @p pages is false) the administrator's grants of the
+   * admin pages that need no permission a test is about: the area, the post,
+   * the front page, undo, the roles' undo and the matrix. The permissions of the
+   * templates, the menus and the settings stay granted to nobody, so the tests
+   * of those pages keep their control. A program's first start grants all of
+   * them (gdefcore_admin_seed()); a test of that passes false. */
+  void InstallKit(const char * id, bool pages = true) {
     GDEFCORE_Catalog * catalog = NULL;
     uint8_t * bytes = NULL;
     size_t n = 0;
@@ -534,6 +542,18 @@ class Edge : public ::testing::Test {
     ASSERT_EQ(GDEFCORE_OK, gdefcore_render_kit(catalog, &bytes, &n));
     ASSERT_EQ(GDEFCORE_OK, gdefcore_render_install(catalog, bytes, n));
     gdefcore_text_free(catalog, (char *)bytes);
+    if (pages) {
+      ASSERT_EQ(GDEFCORE_OK, gdefcore_admin_declare(catalog));
+      ASSERT_EQ(GDEFCORE_OK, gdefcore_layout_declare(catalog));
+      for (const char * label : {GDEFCORE_ADMIN_USE_LABEL, GDEFCORE_ADMIN_UNDO_LABEL,
+               GDEFCORE_POST_WRITE_LABEL, GDEFCORE_ROLE_REVERT_LABEL,
+               GDEFCORE_ACCESS_READ_LABEL, GDEFCORE_LAYOUT_EDIT_DISPLAY_LABEL,
+               GDEFCORE_LAYOUT_EDIT_RULE_LABEL}) {
+        ASSERT_EQ(GDEFCORE_OK,
+            gdefcore_access_grant(catalog, "admin", 5, label, strlen(label),
+                "core.role", 9));
+      }
+    }
     gdefcore_catalog_destroy(catalog);
   }
 

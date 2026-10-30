@@ -39,6 +39,7 @@
 #include <ghoti.io/defiant-web/defiant-web.h>
 #include <ghoti.io/defiant-core/access.h>
 #include <ghoti.io/defiant-core/account.h>
+#include <ghoti.io/defiant-core/adminarea.h>
 #include <ghoti.io/defiant-core/entity.h>
 #include <ghoti.io/defiant-core/inst.h>
 #include <ghoti.io/defiant-core/render.h>
@@ -257,6 +258,13 @@ int main(void) {
     goto done;
   }
   gdefcore_text_free(catalog, (char *)kit);
+  /* The first administrator's grants, once: the role holds a grant for each admin
+   * page and is a bypass of none, and a start that finds them done changes
+   * nothing, so a grant someone revoked stays revoked. */
+  if (gdefcore_admin_seed(catalog) != GDEFCORE_OK) {
+    fprintf(stderr, "defiant: cannot grant the first administrator\n");
+    goto done;
+  }
   gdefcore_catalog_destroy(catalog);
   catalog = NULL;
   if (first_admin(inst, id, root) != 0) {

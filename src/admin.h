@@ -54,9 +54,6 @@ int gdefweb_admin_static(const char * path, const char ** body, size_t * len,
 
 int gdefweb_admin_path(const char * path);
 
-int gdefweb_admin_is_admin(GDEFCORE_Catalog * catalog,
-    GDEFCORE_Request * request);
-
 /* Bind the queue of the session the cookie carries to the request, so the
  * messages widget of a page (a public one with a layout that places it) shows
  * the messages the session was left. A cookie that carries no live session
@@ -65,9 +62,13 @@ void gdefweb_admin_bind_messages(GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * cookie);
 
-int gdefweb_admin_allowed(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
-    GDEFCORE_Keyring * keyring, const uint8_t * root, size_t root_len,
-    const char * cookie);
+/* Whether the admin cookie carries a live session, and so who the request is
+ * from: the principal is bound to the request. That is authentication and only
+ * that. What the person may do is decided by each page's own route check
+ * (nav.h), never by a role they hold. */
+int gdefweb_admin_authenticated(GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * cookie);
 
 int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc,
     GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,

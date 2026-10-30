@@ -39,7 +39,7 @@ plant_control 'testSettingsadmin' '*'
 # who reaches the area.
 PLANT_NEED_TEXT='refused.body'
 plant settings-route-without-permission src/nav.c testSettingsadmin SettingsAdmin.TheSettingsPagesAreThereOnlyForWhoMayFollowTheirRoute \
-  '#define PERM_SETTINGS "core.settings.edit"' \
+  '#define PERM_SETTINGS GDEFCORE_SETTINGS_EDIT' \
   '#define PERM_SETTINGS NULL'
 
 # The pages of a module are not in the table: it cannot place a page.

@@ -63,6 +63,17 @@ int gdefweb_nav_follows(GDEFCORE_Routes * routes, GDEFCORE_Request * request,
     const char * path, const char * machine);
 
 /**
+ * @brief The first page of the admin area the request may follow, for where a
+ * sign-in leads. Writes its path into @p out (NUL-terminated) and returns 1;
+ * returns 0 when the request may follow no admin page, and @p out is then
+ * empty. It is the route's own check that answers, for each page in turn, so
+ * a person granted one page's permission lands on that page and a person
+ * granted none lands nowhere in the area.
+ */
+int gdefweb_nav_landing(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    char * out, size_t cap);
+
+/**
  * @brief The navigation of the page at @p path as HTML: the session's
  * messages, if it was left any (drawing them claims them, so a page shows them
  * once), the admin menu, and the breadcrumbs and tabs when the page has them,

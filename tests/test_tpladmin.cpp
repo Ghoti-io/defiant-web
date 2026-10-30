@@ -414,8 +414,11 @@ TEST_F(TplAdmin, NotGrantedIsLikeNotFound) {
   Open({});
   /* Admin, signed in, and granted nothing: the permission is held by no one. */
   Reply list = Get("/admin/templates", cookie_);
-  EXPECT_EQ(200, list.status);
-  EXPECT_TRUE(Has(list.body, "There are no templates you may edit."));
+  Reply nothing = Get("/admin/no-such-page", cookie_);
+  /* The list page is the route's own: with nothing to edit it is not there. */
+  EXPECT_EQ(nothing.status, list.status);
+  EXPECT_EQ(nothing.body, list.body);
+  EXPECT_FALSE(Has(list.body, "There are no templates you may edit."));
   for (const char * name : {"layout", "recent", "entity", "Pane", "Page"}) {
     EXPECT_FALSE(Has(list.body, name)) << name;
   }

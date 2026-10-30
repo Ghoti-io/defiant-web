@@ -70,8 +70,9 @@ plant explain-unescaped src/admin.c testAccessadmin AccessAdmin.HostileTextIsEsc
 # The page answers a POST as it answers a GET.
 PLANT_NEED_TEXT='Granted by'
 plant post-accepted src/admin.c testAccessadmin AccessAdmin.ReadOnly \
-  '    rc = is_get ? access_page(alloc, catalog, request, out)
-                : unknown_admin(method, out);' \
+  '    rc = is_get && gdefweb_nav_follows(routes, request, path, "core.admin-access")
+             ? access_page(alloc, catalog, request, out)
+             : unknown_admin(method, out);' \
   '    rc = access_page(alloc, catalog, request, out);'
 
 # A module's rows are left off the page.
@@ -92,8 +93,9 @@ plant module-rows-dropped src/admin.c testAccessadmin AccessAdmin.TheAdministrat
 # the defect never built in.
 PLANT_NEED_TEXT=
 plant_stale stale-object src/admin.c testAccessadmin AccessAdmin.ReadOnly \
-  '    rc = is_get ? access_page(alloc, catalog, request, out)
-                : unknown_admin(method, out);' \
+  '    rc = is_get && gdefweb_nav_follows(routes, request, path, "core.admin-access")
+             ? access_page(alloc, catalog, request, out)
+             : unknown_admin(method, out);' \
   '    rc = access_page(alloc, catalog, request, out);'
 
 plant_finish

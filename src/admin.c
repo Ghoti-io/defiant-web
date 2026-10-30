@@ -30,8 +30,10 @@
 
 #include <ghoti.io/cutil/allocator.h>
 #include <ghoti.io/defiant-core/access.h>
+#include <ghoti.io/defiant-core/adminarea.h>
 #include <ghoti.io/defiant-core/entity.h>
 #include <ghoti.io/defiant-core/form.h>
+#include <ghoti.io/defiant-core/layout.h>
 #include <ghoti.io/defiant-core/menu.h>
 #include <ghoti.io/defiant-core/message.h>
 #include <ghoti.io/defiant-core/render.h>
@@ -640,37 +642,9 @@ static int form_pair(const char * body, size_t n, const char * name, char * out,
   return -1;
 }
 
-int gdefweb_admin_is_admin(GDEFCORE_Catalog * catalog,
-    GDEFCORE_Request * request) {
-  const char * id;
-  size_t n = 0;
-  char ** roles = NULL;
-  size_t count = 0;
-  size_t i;
-  int yes = 0;
-  if (catalog == NULL || request == NULL) {
-    return 0;
-  }
-  id = gdefcore_request_principal(request, &n);
-  if (id == NULL || n == 0) {
-    return 0;
-  }
-  if (gdefcore_access_principal_roles(catalog, id, n, &roles, &count) !=
-      GDEFCORE_OK) {
-    return 0;
-  }
-  for (i = 0; i < count; i++) {
-    if (strcmp(roles[i], "admin") == 0) {
-      yes = 1;
-    }
-  }
-  gdefcore_access_free(catalog, roles, count);
-  return yes;
-}
-
-int gdefweb_admin_allowed(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
-    GDEFCORE_Keyring * keyring, const uint8_t * root, size_t root_len,
-    const char * cookie) {
+int gdefweb_admin_authenticated(GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * cookie) {
   char encoded[1200];
   unsigned char raw[768];
   size_t raw_n = 0;
@@ -684,7 +658,7 @@ int gdefweb_admin_allowed(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request
   }
   if (gdefcore_account_check(catalog, request, keyring, root, root_len,
           (const char *)raw, raw_n) == GDEFCORE_OK) {
-    ok = gdefweb_admin_is_admin(catalog, request);
+    ok = 1;
   }
   wipe(raw, sizeof raw);
   wipe(encoded, sizeof encoded);
@@ -1011,6 +985,9 @@ static int save_panes(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
   if (rc != GDEFCORE_OK) {
     return -1;
   }
+  /* The write asks the same decision the page did: the layouts, for this
+   * principal (a grant of the rules alone does not edit a display). */
+  gdefcore_changeset_set_request(cs, request);
   rc = gdefcore_entity_save(cs, id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, &value, 1);
   if (rc == GDEFCORE_OK) {
     rc = gdefcore_changeset_apply(cs, "core.display", 12);
@@ -1553,6 +1530,14 @@ fail:
   return -1;
 }
 
+/* Whether the request holds @p permission: the core's one question, asked by
+ * the action's name. The undo page covers several kinds of thing, and each is
+ * undone only by who holds what governs that kind. */
+static int holds(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    const char * permission) {
+  return gdefcore_access_permits(catalog, request, permission, strlen(permission));
+}
+
 static int undo_lines(struct Page * page, GDEFCORE_Catalog * catalog, const char * id,
     const char * label) {
   size_t count = 0;
@@ -1752,6 +1737,9 @@ static int undo_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog
   size_t name_len;
   const char * display_slots[2];
   size_t display_lens[2];
+  int may_posts = holds(catalog, request, GDEFCORE_POST_WRITE);
+  int may_front = holds(catalog, request, GDEFCORE_LAYOUT_EDIT);
+  int may_roles = holds(catalog, request, GDEFCORE_ROLE_REVERT);
   memset(&page, 0, sizeof page);
   page.alloc = alloc;
   one_value(&post_values[0], "title", "x", &slots[0], &lens[0]);
@@ -1767,7 +1755,7 @@ static int undo_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog
     page_free(&page);
     return -1;
   }
-  for (i = 0; i < count; i++) {
+  for (i = 0; may_posts && i < count; i++) {
     char title[128];
     char label[160];
     if (strlen(ids[i]) != GDEFCORE_PUBLIC_ID_LEN) {
@@ -1787,7 +1775,7 @@ static int undo_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog
   }
   gdefcore_ids_free(catalog, ids, count);
   ids = NULL;
-  if (find_front(catalog, front) == 0 &&
+  if (may_front && find_front(catalog, front) == 0 &&
       undo_form(alloc, &page, catalog, request, keyring, root, root_len, session,
           session_len, front, "Front page", display_values, 2) != 0) {
     page_free(&page);
@@ -1797,7 +1785,7 @@ static int undo_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog
     page_free(&page);
     return -1;
   }
-  for (i = 0; i < count; i++) {
+  for (i = 0; may_roles && i < count; i++) {
     char name[64];
     char label[96];
     if (strlen(ids[i]) != GDEFCORE_PUBLIC_ID_LEN) {
@@ -2007,6 +1995,15 @@ static int panes_from_post(const char * text, size_t n, char lines[][64],
   return *out_n == 0 ? -1 : 0;
 }
 
+/* The write behind the page asks the decision the page asked and may say no (a
+ * person who may edit the layout rules and not the displays reaches this page).
+ * The answer is a fixed sentence that names nothing. */
+static int front_refused(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    struct GDEFWEB_Admin_Reply * out) {
+  say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, "That change was not made.");
+  return redirect(out, "/admin/front");
+}
+
 static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * session, size_t session_len, const char * body,
@@ -2069,7 +2066,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
     if (!already && nlines < 32) {
       lines[nlines++] = "side recent";
       if (save_panes(catalog, request, front, lines, nlines) != 0) {
-        return -1;
+        return front_refused(catalog, request, out);
       }
     }
   } else if (kind == 2) {
@@ -2082,7 +2079,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       lines[nlines++] = held[i].line;
     }
     if (dropped && save_panes(catalog, request, front, lines, nlines) != 0) {
-      return -1;
+      return front_refused(catalog, request, out);
     }
   } else {
     char text[4096];
@@ -2098,7 +2095,7 @@ static int front_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       lines[i] = posted[i];
     }
     if (save_panes(catalog, request, front, lines, posted_n) != 0) {
-      return -1;
+      return front_refused(catalog, request, out);
     }
   }
   say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Saved.");
@@ -2153,15 +2150,17 @@ static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
     say(catalog, request, GDEFCORE_MESSAGE_ERROR, "Nothing was undone.");
     return redirect(out, "/admin/undo");
   }
+  /* What is undone here is what the principal holds the permission of: a
+   * post, a role, the front page. The page that offered it asked the same. */
   if (type_n == 9 && memcmp(type, "site.post", 9) == 0) {
-    allowed = 1;
+    allowed = holds(catalog, request, GDEFCORE_POST_WRITE);
   } else if (type_n == 9 && memcmp(type, "core.role", 9) == 0) {
-    allowed = 1;
+    allowed = holds(catalog, request, GDEFCORE_ROLE_REVERT);
   } else if (type_n == 12 && memcmp(type, "core.display", 12) == 0) {
     char name[64];
     if (field_copy(catalog, target, "name", name, sizeof name) == 0 &&
         strcmp(name, "front") == 0) {
-      allowed = 1;
+      allowed = holds(catalog, request, GDEFCORE_LAYOUT_EDIT);
     }
   }
   if (!allowed) {
@@ -5144,29 +5143,52 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
   (void)gdefcore_message_bind(catalog, request, keyring, root, root_len,
       (const char *)raw, raw_n);
   routes = gdefweb_nav_open(catalog);
+  /* A page is there for whoever its route's own check lets follow it, and for
+   * no one else: the session said who this is, and this says what they may do.
+   * The answer to a page the check refuses is the answer to a page that does
+   * not exist. */
   if (strcmp(path, "/admin") == 0) {
-    rc = is_get ? home_page(alloc, out) : unknown_admin(method, out);
+    rc = is_get && gdefweb_nav_follows(routes, request, path, "core.admin")
+             ? home_page(alloc, out)
+             : unknown_admin(method, out);
   } else if (strcmp(path, "/admin/more") == 0) {
-    rc = is_get ? more_page(alloc, catalog, request, routes, out)
-                : unknown_admin(method, out);
+    rc = is_get && gdefweb_nav_follows(routes, request, path, "core.admin-more")
+             ? more_page(alloc, catalog, request, routes, out)
+             : unknown_admin(method, out);
   } else if (strcmp(path, "/admin/access") == 0) {
-    rc = is_get ? access_page(alloc, catalog, request, out)
-                : unknown_admin(method, out);
+    rc = is_get && gdefweb_nav_follows(routes, request, path, "core.admin-access")
+             ? access_page(alloc, catalog, request, out)
+             : unknown_admin(method, out);
   } else if (strcmp(path, "/admin/post") == 0) {
-    rc = is_get ? post_page(alloc, catalog, request, keyring, root, root_len,
-                            (const char *)raw, raw_n, out)
-                : post_write(alloc, catalog, request, keyring, root, root_len,
-                      (const char *)raw, raw_n, body, body_len, out);
+    if (!gdefweb_nav_follows(routes, request, path, "core.admin-post")) {
+      rc = unknown_admin(method, out);
+    } else if (is_get) {
+      rc = post_page(alloc, catalog, request, keyring, root, root_len,
+          (const char *)raw, raw_n, out);
+    } else {
+      rc = post_write(alloc, catalog, request, keyring, root, root_len,
+          (const char *)raw, raw_n, body, body_len, out);
+    }
   } else if (strcmp(path, "/admin/front") == 0) {
-    rc = is_get ? front_page(alloc, catalog, request, keyring, root, root_len,
-                             (const char *)raw, raw_n, out)
-                : front_write(alloc, catalog, request, keyring, root, root_len,
-                      (const char *)raw, raw_n, body, body_len, out);
+    if (!gdefweb_nav_follows(routes, request, path, "core.admin-front")) {
+      rc = unknown_admin(method, out);
+    } else if (is_get) {
+      rc = front_page(alloc, catalog, request, keyring, root, root_len,
+          (const char *)raw, raw_n, out);
+    } else {
+      rc = front_write(alloc, catalog, request, keyring, root, root_len,
+          (const char *)raw, raw_n, body, body_len, out);
+    }
   } else if (strcmp(path, "/admin/undo") == 0) {
-    rc = is_get ? undo_page(alloc, catalog, request, keyring, root, root_len,
-                            (const char *)raw, raw_n, out)
-                : undo_write(alloc, catalog, request, keyring, root, root_len,
-                      (const char *)raw, raw_n, body, body_len, out);
+    if (!gdefweb_nav_follows(routes, request, path, "core.admin-undo")) {
+      rc = unknown_admin(method, out);
+    } else if (is_get) {
+      rc = undo_page(alloc, catalog, request, keyring, root, root_len,
+          (const char *)raw, raw_n, out);
+    } else {
+      rc = undo_write(alloc, catalog, request, keyring, root, root_len,
+          (const char *)raw, raw_n, body, body_len, out);
+    }
   } else if (strcmp(path, "/admin/menus") == 0) {
     /* The page is there for whoever the route's own check lets follow it. */
     if (!gdefweb_nav_follows(routes, request, path, "core.admin-menus")) {
@@ -5184,8 +5206,16 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
         (const char *)raw, raw_n, routes, method, path, body, body_len, out);
   } else if (strcmp(path, "/admin/templates") == 0 ||
              starts_with(path, "/admin/templates/")) {
-    rc = tpl_route(alloc, catalog, request, keyring, root, root_len, (const char *)raw, raw_n,
+    /* The editor decides per template; whether there is an editor at all is
+     * the route's own check, so that someone who may edit none is told what a
+     * page that does not exist is told. */
+    if (!gdefweb_nav_follows(routes, request, "/admin/templates",
+            "core.admin-templates")) {
+      rc = unknown_admin(method, out);
+    } else {
+      rc = tpl_route(alloc, catalog, request, keyring, root, root_len, (const char *)raw, raw_n,
         method, path, body, body_len, out);
+    }
   } else {
     rc = unknown_admin(method, out);
   }

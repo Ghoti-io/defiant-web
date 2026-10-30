@@ -10,9 +10,33 @@ The library is LGPL-3.0-only. Public headers are `@stability free`.
 
 ## The admin pages
 
-`/admin` is the server-rendered admin, for a signed-in principal with the
-`admin` role. Every action is a signed form that answers with a 303, and none
-needs JavaScript.
+`/admin` is the server-rendered admin. Who may use a page is decided by the
+page's own route check and by nothing else: a signed-in session says who someone
+is, never what they may do, and the role named `admin` is asked nothing. Every
+page has a permission:
+
+| Page | Permission |
+|---|---|
+| `/admin`, `/admin/more` | Use the admin area (`core.admin.use`) |
+| `/admin/post` | Write posts (`core.post.write`) |
+| `/admin/front` | Edit layouts (`core.layout.edit`) |
+| `/admin/undo` | Undo changes (`core.admin.undo`), and per thing undone the permission of that thing |
+| `/admin/access` | See what is granted (`core.access.read`) |
+| `/admin/templates` | Edit templates (`core.template.edit`) |
+| `/admin/menus` | Edit menu entries and overrides (`core.menu.edit`) |
+| `/admin/settings` | Edit settings (`core.settings.edit`) |
+
+The core declares the new ones (`documentation/access.md` there) and the program
+grants them all to the `admin` role on its first start, as ordinary grants a
+changeset can take away. A page the check refuses answers as a page that does not
+exist, and a refusal never says which permission was missing. Signing in sets the
+admin cookie for anyone who has an admin page to go to and sends them to the first
+such page (a person granted only `core.menu.edit` lands on `/admin/menus`);
+anyone else gets the session cookie alone. The menu hangs under the admin home, so a
+person without `core.admin.use` reaches a page they hold the permission of but is
+not shown the menu.
+
+Every action is a signed form that answers with a 303, and none needs JavaScript.
 
 `/admin/templates` is the template editor. It lists the templates the principal
 may edit (the permission `core.template.edit`, which nobody holds until a
@@ -29,8 +53,8 @@ process's module host, and cannot take one away. The rules are in defiant-core's
 `/admin/access` is the access matrix: a read-only table of what each role and
 each enabled module grants (who grants it, the permission, the action, the
 type, the condition in plain words and a risk of low, medium or high). It is
-there for the administrator only; to anyone else it is a page that does not
-exist. Every text in it was written by someone, a module's author included, and
+there for whoever holds `core.access.read`; to anyone else it is a page that
+does not exist. Every text in it was written by someone, a module's author included, and
 is escaped. The rows and their order are defiant-core's
 (`gdefcore_access_matrix()`, `documentation/access.md`).
 
@@ -40,9 +64,8 @@ core's widgets (`documentation/menus.md` there), drawn from the admin pages as
 routes in a route table of their own, each with the permission its page already
 depends on. An entry is shown when its route's own check passes for the page's
 values, so the Templates entry is there for someone who may edit a template and
-the Menus entry for someone who may edit menus (`core.menu.edit`, which nobody
-holds until a changeset grants it); the other pages need only the administrator's
-session, which is what gates the whole area. The widgets are drawn with stored
+the Menus entry for someone who may edit menus (`core.menu.edit`); every page
+asks a permission of its own, in the table above. The widgets are drawn with stored
 templates (`menu`, `tabs`, `breadcrumbs`), so a site restyles them like any
 other.
 

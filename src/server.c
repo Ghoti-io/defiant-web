@@ -36,6 +36,7 @@
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/request.h>
 #include "admin.h"
+#include "nav.h"
 #include <ghoti.io/cutil/fiber.h>
 #include <ghoti.io/http/parser.h>
 #include <ghoti.io/http/writer.h>
@@ -1293,6 +1294,7 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
     size_t encoded_n = 0;
     char session_cookie[1200];
     char admin_cookie[1200];
+    char landing[64];
     struct Cookies cookies;
     int form_ok;
     snprintf(user_key, sizeof user_key, "u:");
@@ -1354,14 +1356,16 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
         "__Host-session=%s; Secure; HttpOnly; SameSite=Lax; Path=/", encoded);
     cookies.values[0] = session_cookie;
     cookies.values[1] = NULL;
-    if (gdefweb_admin_is_admin(catalog, request)) {
+    /* The admin cookie is for a person who has an admin page to go to, and
+     * which one is the route's own question (nav.c): a role's name is not asked. */
+    if (gdefweb_nav_landing(catalog, request, landing, sizeof landing)) {
       snprintf(admin_cookie, sizeof admin_cookie,
           "__Host-admin=%s; Secure; HttpOnly; SameSite=Strict; Path=/", encoded);
       cookies.values[1] = admin_cookie;
     }
     gdefcore_text_free(catalog, token);
     reply_ex(server, sock, 303, "See Other", "", 0, &cookies, NULL, in.method,
-        in.path, client, cookies.values[1] != NULL ? "/admin" : "/");
+        in.path, client, cookies.values[1] != NULL ? landing : "/");
     wipe(encoded, sizeof encoded);
     wipe(session_cookie, sizeof session_cookie);
     wipe(admin_cookie, sizeof admin_cookie);
@@ -1396,7 +1400,7 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
     }
   }
   if (gdefweb_admin_path(in.path) &&
-      gdefweb_admin_allowed(catalog, request, keyring, server->root,
+      gdefweb_admin_authenticated(catalog, request, keyring, server->root,
           sizeof server->root, in.cookie)) {
     struct GDEFWEB_Admin_Reply page;
     memset(&page, 0, sizeof page);

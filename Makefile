@@ -479,7 +479,7 @@ TEST_COMPILE_FLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cf
 # coverage target does, because --coverage links the gcov runtime, whose
 # mangle_path check-symbols is right to reject in a shipping library and
 # wrong to reject in an instrumented one. Spelled as text's TEST_GATES is.
-TEST_GATES ?= check-symbols check-aliasing check-seams check-noveto check-plants check-tpladmin check-nav check-layouts check-settingsadmin check-messageadmin check-menuedit check-access $(if $(filter Linux,$(OS_NAME)),check-defiant check-demo) check-sizes
+TEST_GATES ?= check-symbols check-aliasing check-seams check-noveto check-plants check-tpladmin check-nav check-adminarea check-layouts check-settingsadmin check-messageadmin check-menuedit check-access $(if $(filter Linux,$(OS_NAME)),check-defiant check-demo) check-sizes
 
 # Valgrind flags (exclude "still reachable" as it's not a leak)
 # --suppressions: see tests/valgrind.supp. It holds allocations that are
@@ -729,7 +729,7 @@ demo: $(APP_DIR)/defiant$(EXE_EXTENSION) $(APP_DIR)/defiant-demo$(EXE_EXTENSION)
 ####################################################################
 
 # General commands
-.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-seams check-noveto check-plants check-tpladmin check-nav check-layouts check-settingsadmin check-messageadmin check-menuedit check-access check-gates check-defiant check-demo demo check-sizes
+.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-seams check-noveto check-plants check-tpladmin check-nav check-adminarea check-layouts check-settingsadmin check-messageadmin check-menuedit check-access check-gates check-defiant check-demo demo check-sizes
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-valgrind test-valgrind-quiet test-watch uninstall watch
 # Debug build commands
@@ -1015,6 +1015,8 @@ check-tpladmin: ## Plants in scratch copies of the template editor turn its name
 	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-tpladmin.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 check-nav: ## Plants in scratch copies of the admin navigation turn its named tests red
 	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-nav.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
+check-adminarea: ## Plants in scratch copies of the admin area's permission gate turn its named tests red
+	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-adminarea.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 check-layouts: ## Plants in scratch copies of the server's public page turn its named tests red
 	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-layouts.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 check-messageadmin: ## Plants in scratch copies of the admin directory and the messages turn their named tests red
@@ -1028,6 +1030,10 @@ check-access: ## Plants in scratch copies of the access matrix page turn its nam
 
 check-defiant: $(APP_DIR)/defiant$(EXE_EXTENSION) ## The defiant program starts, restarts, refuses and stops
 	@LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/check-defiant.sh "$(APP_DIR)/defiant$(EXE_EXTENSION)"
+	@# The seed: a program that never grants the first administrator turns it red, at the first login.
+	@sed 's/gdefcore_admin_seed(catalog) != GDEFCORE_OK/0/' app/defiant.c > $(APP_DIR)/defiant-noseed.c
+	@$(CC) $(CFLAGS) $(INCLUDE) -o $(APP_DIR)/defiant-noseed$(EXE_EXTENSION) $(APP_DIR)/defiant-noseed.c $(LDFLAGS) $(MEMLIBRARY) $(MEM_LIBS) $(SQLITE_LIBS) $(DEP_LIBS)
+	@if LD_LIBRARY_PATH="$(TEST_LD_PATH)" tools/check-defiant.sh "$(APP_DIR)/defiant-noseed$(EXE_EXTENSION)" 2>&1 | grep -q 'FAIL: first login'; then echo "check-defiant: the program that grants the first administrator nothing turned the gate red at the first login"; else echo "check-defiant: a program that never seeds the first administrator passed the gate" >&2; exit 1; fi
 	@# The control: a program that starts nothing must turn the gate red.
 	@if tools/check-defiant.sh /bin/true >/dev/null 2>&1; then echo "check-defiant: the planted program passed the gate" >&2; exit 1; else echo "check-defiant: the planted program turned the gate red"; fi
 

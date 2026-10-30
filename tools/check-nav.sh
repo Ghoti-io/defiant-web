@@ -52,7 +52,7 @@ plant menus-page-ungated src/admin.c testNavadmin NavAdmin.TheMenusPageIsThereOn
 # the area, and the page's own check lets everyone through.
 PLANT_NEED_TEXT='/admin/menus'
 plant menus-route-without-permission src/nav.c testNavadmin NavAdmin.TheMenuIsTheCoresAndShowsWhatTheRoutesAllow \
-  '#define PERM_MENUS "core.menu.edit"' \
+  '#define PERM_MENUS GDEFCORE_MENU_EDIT' \
   '#define PERM_MENUS NULL'
 
 # The templates entry names no permission: shown to an administrator who may

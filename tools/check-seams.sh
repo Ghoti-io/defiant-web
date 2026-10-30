@@ -8,7 +8,7 @@
 # header is private: only admin.c and server.c, which routes to it, may include
 # it. nav (src/nav.c, src/nav.h) is the admin area's navigation: its routes,
 # links and the widgets that draw them. Its header is private to nav.c and the
-# admin pages that splice it in. core.c (results and the default allocator),
+# admin pages that splice it in, and server.c, which asks where a sign-in lands. core.c (results and the default allocator),
 # the public headers, the defiant program and demo under app/ and the tests use
 # the public API only.
 #
@@ -33,7 +33,7 @@ ROOT="${1:?usage: check-seams.sh <root>}"
 owners_of() {
   case "$1" in
     admin.h) printf '%s\n' 'admin.c server.c' ;;
-    nav.h) printf '%s\n' 'admin.c nav.c' ;;
+    nav.h) printf '%s\n' 'admin.c nav.c server.c' ;;
     *) printf '\n' ;;
   esac
 }
@@ -141,8 +141,6 @@ printf '%s\n' '#include "admin.h"' > "$plant/src/core.c"
 refused "core.c include of admin.h"
 rm -f "$plant/src/core.c"
 
-printf '%s\n' '#include "nav.h"' > "$plant/src/server.c"
-refused "server.c include of nav.h"
 printf '%s\n' '#include "admin.h"' > "$plant/src/server.c"
 
 printf '%s\n' '#include "nav.h"' > "$plant/src/core.c"

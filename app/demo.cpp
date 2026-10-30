@@ -355,6 +355,15 @@ int Web1(uint16_t port, const std::string & scratch) {
   Need(form_page.status == 200 && Has(form_page.body, "<form"), "no sign-in page");
   std::string cookie = Login(c, host);
   WriteFile(scratch + "/cookie", cookie);
+  /* The first administrator reaches every admin page with no grant made by
+   * hand: the program's first start gave the role what each page asks. */
+  for (const char * path : {"/admin", "/admin/more", "/admin/post", "/admin/front",
+           "/admin/undo", "/admin/access", "/admin/templates", "/admin/menus",
+           "/admin/settings"}) {
+    Reply page = c.Send("GET", host, path, cookie, std::string());
+    Need(page.status == 200 && !page.body.empty(),
+        std::string("the first administrator cannot reach ") + path);
+  }
   /* 1. write a post. */
   Reply post = c.Send("GET", host, "/admin/post", cookie, std::string());
   std::string token = InputValue(post.body, "token", 0);

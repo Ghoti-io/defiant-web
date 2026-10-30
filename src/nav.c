@@ -28,19 +28,29 @@
 
 #include <ghoti.io/cutil/allocator.h>
 #include <ghoti.io/defiant-core/access.h>
+#include <ghoti.io/defiant-core/adminarea.h>
 #include <ghoti.io/defiant-core/layout.h>
 #include <ghoti.io/defiant-core/menu.h>
 #include <ghoti.io/defiant-core/module.h>
 #include <ghoti.io/defiant-core/render.h>
+#include <ghoti.io/defiant-core/settings.h>
 #include <ghoti.io/defiant-core/template.h>
 
 #include <string.h>
 
-/* The permissions the pages already depend on. A page with none is one every
- * admin session reaches (the session itself is the admin area's gate). */
+/* The permission each page asks. Every page has one, and the route's own check
+ * is the only authorization: a session says who someone is, never what they may
+ * do. Where a page already meant a permission it keeps it (templates, menus,
+ * settings, and the layouts the front page editor edits); the pages that had
+ * none ask the ones the core declares for them (adminarea.h). */
+#define PERM_AREA GDEFCORE_ADMIN_USE
+#define PERM_POST GDEFCORE_POST_WRITE
+#define PERM_FRONT GDEFCORE_LAYOUT_EDIT
+#define PERM_UNDO GDEFCORE_ADMIN_UNDO
+#define PERM_ACCESS GDEFCORE_ACCESS_READ
 #define PERM_TEMPLATES GDEFCORE_TEMPLATE_EDIT
-#define PERM_MENUS "core.menu.edit"
-#define PERM_SETTINGS "core.settings.edit"
+#define PERM_MENUS GDEFCORE_MENU_EDIT
+#define PERM_SETTINGS GDEFCORE_SETTINGS_EDIT
 
 struct PageRoute {
   const char * name;
@@ -54,13 +64,13 @@ struct PageRoute {
 };
 
 static const struct PageRoute kPages[] = {
-    {"core.admin", "/admin", "Admin", NULL, GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
-    {"core.admin-post", "/admin/post", "Write a post", NULL, GDEFCORE_ROUTE_PAGE,
-        NULL, 0, 0},
-    {"core.admin-front", "/admin/front", "Change the front page", NULL,
+    {"core.admin", "/admin", "Admin", PERM_AREA, GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-post", "/admin/post", "Write a post", PERM_POST,
         GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
-    {"core.admin-undo", "/admin/undo", "Undo", NULL, GDEFCORE_ROUTE_PAGE, NULL, 0,
-        0},
+    {"core.admin-front", "/admin/front", "Change the front page", PERM_FRONT,
+        GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-undo", "/admin/undo", "Undo", PERM_UNDO, GDEFCORE_ROUTE_PAGE, NULL,
+        0, 0},
     {"core.admin-templates", "/admin/templates", "Edit templates", PERM_TEMPLATES,
         GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
     {"core.admin-template", "/admin/templates/:name", "Template", PERM_TEMPLATES,
@@ -77,9 +87,9 @@ static const struct PageRoute kPages[] = {
         PERM_SETTINGS, GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
     {"core.admin-settings-core-site", "/admin/settings/core/site", "Site",
         PERM_SETTINGS, GDEFCORE_ROUTE_TAB, "core.admin-settings-core", 1, 0},
-    {"core.admin-more", "/admin/more", "More", NULL, GDEFCORE_ROUTE_PAGE, NULL, 0,
-        0},
-    {"core.admin-access", "/admin/access", "What is granted", NULL,
+    {"core.admin-more", "/admin/more", "More", PERM_AREA, GDEFCORE_ROUTE_PAGE, NULL,
+        0, 0},
+    {"core.admin-access", "/admin/access", "What is granted", PERM_ACCESS,
         GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
 };
 
@@ -213,6 +223,37 @@ int gdefweb_nav_follows(GDEFCORE_Routes * routes, GDEFCORE_Request * request,
   return allowed;
 }
 
+int gdefweb_nav_landing(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    char * out, size_t cap) {
+  GDEFCORE_Routes * routes;
+  size_t i;
+  int found = 0;
+  if (out == NULL || cap == 0) {
+    return 0;
+  }
+  out[0] = '\0';
+  if (catalog == NULL || request == NULL) {
+    return 0;
+  }
+  routes = gdefweb_nav_open(catalog);
+  if (routes == NULL) {
+    return 0;
+  }
+  for (i = 0; i < sizeof kPages / sizeof kPages[0] && !found; i++) {
+    size_t n = strlen(kPages[i].path);
+    if (kPages[i].kind != GDEFCORE_ROUTE_PAGE || strchr(kPages[i].path, ':') != NULL ||
+        n + 1 > cap) {
+      continue;
+    }
+    if (gdefweb_nav_follows(routes, request, kPages[i].path, kPages[i].name)) {
+      memcpy(out, kPages[i].path, n + 1);
+      found = 1;
+    }
+  }
+  gdefweb_nav_close(routes);
+  return found;
+}
+
 /* Append @p s to the result, growing it. */
 static int grow_add(const GDEFWEB_Allocator * alloc, char ** p, size_t * n,
     size_t * cap, const char * s, size_t len) {
@@ -331,7 +372,11 @@ char * gdefweb_nav_html(const GDEFWEB_Allocator * alloc,
   if (n == base) {
     /* No templates to draw with: the one way home every page had. */
     static const char kHome[] = "<p><a href=\"/admin\">Home</a></p>";
-    if (grow_add(alloc, &p, &n, &cap, kHome, sizeof kHome - 1) != 0) {
+    static const char kSite[] = "<p><a href=\"/\">Home</a></p>";
+    /* Home is the admin home only for who may follow it. */
+    int admin_home = gdefweb_nav_follows(routes, request, "/admin", "core.admin");
+    if (grow_add(alloc, &p, &n, &cap, admin_home ? kHome : kSite,
+            (admin_home ? sizeof kHome : sizeof kSite) - 1) != 0) {
       gcu_allocator_free(alloc, p);
       return NULL;
     }
