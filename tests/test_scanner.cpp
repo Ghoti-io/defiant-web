@@ -323,9 +323,13 @@ TEST_F(Scan, EveryRoute) {
         PostAt(host, "/login", std::string(), "username=ada&password=secret"));
     Check(label + " POST /logout (no token)", PostAt(host, "/logout", admin[i], ""));
     {
-      std::string signout = LogoutToken(GetAt(host, "/admin", admin[i]).body);
+      /* A sign-in of its own: signing out ends the session on the server, and the
+       * writes below still need this one. */
+      std::string leaving = CookiesFor(host, "ada", "secret");
+      ASSERT_FALSE(leaving.empty());
+      std::string signout = LogoutToken(GetAt(host, "/admin", leaving).body);
       ASSERT_FALSE(signout.empty());
-      Reply out = PostAt(host, "/logout", admin[i], "token=" + signout);
+      Reply out = PostAt(host, "/logout", leaving, "token=" + signout);
       Check(label + " POST /logout (signed)", out);
       EXPECT_EQ(303, out.status);
     }

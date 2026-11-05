@@ -56,10 +56,29 @@ anything is created.
 
 **Signing out.** Every signed-in admin page carries a "Sign out" form that posts
 to `/logout` with a signed token bound to that session, made for that purpose.
-`/logout` checks the Origin and the token. A request without one, with a damaged
-one, one signed for a different sign-in or for another form, or from another origin, is
-answered 403 and the session is left as it was. A signed request clears the
-cookie and answers 303 to `/login`.
+`/logout` checks the Origin first: a request from another origin, or with none,
+is answered 403 and sets nothing, whatever its cookie is.
+
+- *A live session.* The token is required. A request without one, with a damaged
+  one, or with one signed for a different sign-in or another form, is answered
+  403 and the session is left as it was. With the token, the session is **ended
+  on the server**, not only forgotten by the browser: the server asks the core to
+  revoke this one session (`gdefcore_account_session_revoke`), so the token stops
+  working at once for every later request, wherever it was copied, on the public
+  pages as on the admin ones. Only this session ends. The person's other
+  sign-ins (another browser, another device) and everyone else's are not touched;
+  signing out of all of them is a separate act (`gdefcore_account_logout_everywhere`),
+  which sign-out does not do. The answer is 303 to `/login` with the cookie
+  cleared, carrying exactly the attributes it was set with.
+- *A cookie that names no live session* (absent, damaged, expired, or already
+  revoked or ended). There is nothing to forge and nothing to end, so no token is
+  asked for and the server changes nothing; the answer is still 303 to `/login`
+  with the clearing cookie, so a dead cookie is not left in the browser. A second
+  sign-out of a session already signed out is this case.
+- *When the session cannot be ended.* If the core cannot record the revocation, or
+  the store cannot say whether the session is live, the answer is 500 with a note
+  that the person is still signed in, and the cookie is **not** cleared: nothing
+  is reported as signed out that is not. Trying again is safe.
 
 The library is LGPL-3.0-only. Public headers are `@stability free`.
 

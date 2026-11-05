@@ -74,9 +74,30 @@ int gdefweb_admin_authenticated(GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * session);
 
-/* Whether a POST to /logout carries a token that this session's pages signed
- * for signing out. The Origin is checked by the caller. */
-int gdefweb_admin_logout_allowed(GDEFCORE_Catalog * catalog,
+/* What a POST to /logout comes to. The Origin is the caller's check and has been
+ * made. */
+enum GDEFWEB_Signout {
+  /* The session was live and is now ended on the server: the caller clears the
+   * cookie and sends the person to the sign-in page. */
+  GDEFWEB_SIGNOUT_ENDED = 0,
+  /* The cookie names no live session (absent, damaged, expired, revoked, or
+   * ended by an older epoch). There is nothing to end and nothing was changed;
+   * the caller still clears the cookie, so a dead one is not left in the
+   * browser. No token is asked for, because there is no session to forge. */
+  GDEFWEB_SIGNOUT_NO_SESSION = 1,
+  /* The session is live and the request does not carry its signed sign-out
+   * token: answer 403 and change nothing. */
+  GDEFWEB_SIGNOUT_REFUSED = 2,
+  /* The session could not be ended, or could not be told from a live one (the
+   * storage failed): nothing is known to have changed, the cookie is not
+   * cleared, and the person is told they are still signed in. */
+  GDEFWEB_SIGNOUT_FAILED = 3
+};
+
+/* Sign out: end the one session the cookie names, and no other sign-in of the
+ * person, through gdefcore_account_session_revoke(). A live session needs the
+ * signed token its own page carried. */
+enum GDEFWEB_Signout gdefweb_admin_signout(GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * session, const char * body, size_t body_len,
     const char * ctype);

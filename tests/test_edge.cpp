@@ -27,8 +27,13 @@
 #include "edge_fixture.h"
 
 #include <ghoti.io/defiant-storage/model.h>
+#include <ghoti.io/defiant-storage-sqlite/model.h>
 
 #include "size_structs.h"
+
+#include <filesystem>
+#include <system_error>
+#include <thread>
 
 
 TEST_F(Edge, EmptyListenBindsNothing) {
@@ -576,7 +581,6 @@ TEST_F(Edge, LogoutNeedsTheSignedTokenOfTheSessionsOwnPage) {
       {"another form's token", cookie, "token=" + other_form, "http://site.example"},
       {"the token under another name", cookie, "csrf=" + token, "http://site.example"},
       {"a token signed for a different sign-in", CookieLine(bob), "token=" + token, "http://site.example"},
-      {"no session with a good token", std::string(), "token=" + token, "http://site.example"},
       {"a foreign Origin with a good token", cookie, "token=" + token, "http://evil.example"},
   };
   for (const Refused & c : cases) {
@@ -584,8 +588,11 @@ TEST_F(Edge, LogoutNeedsTheSignedTokenOfTheSessionsOwnPage) {
     Reply r = PostRaw("/logout", c.cookie, c.body, c.origin);
     EXPECT_EQ(403, r.status) << "LOGOUT: " << c.label;
     EXPECT_TRUE(HeaderAll(r, "Set-Cookie").empty()) << "LOGOUT: " << c.label;
-    /* Nothing was ended: the same cookie still signs in, and the token still works. */
+    /* Nothing was ended: the same cookie still signs in, and the token still works.
+     * Core is asked too: a session the server only seemed to keep is not alive. */
     EXPECT_TRUE(Has(Get("/admin", cookie).body, "Sign out")) << "LOGOUT: " << c.label;
+    EXPECT_TRUE(SessionLive(id, cookie)) << "LOGOUT: " << c.label;
+    EXPECT_TRUE(SessionLive(id, CookieLine(bob))) << "LOGOUT: " << c.label;
   }
   /* No Origin header at all is refused as a foreign one is. */
   Reply bare = Ask(Req("POST", "/logout", "site.example",
@@ -603,6 +610,268 @@ TEST_F(Edge, LogoutNeedsTheSignedTokenOfTheSessionsOwnPage) {
   Reply out = PostRaw("/logout", cookie, "token=" + token);
   EXPECT_EQ(303, out.status);
   EXPECT_TRUE(Has(HeaderValue(out, "Set-Cookie"), "Max-Age=0"));
+  EXPECT_FALSE(SessionLive(id, cookie)) << "SIGNOUT: the token signed out and the session lives";
+}
+
+/* Signing out ends the session on the server, not only in the browser: core
+ * refuses the token afterwards, wherever it was copied, and no other sign-in of
+ * the person or anyone else is touched. */
+TEST_F(Edge, SigningOutEndsThisSessionAndNoOther) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  Site(id);
+  AddUser(id, "bob", "hunter2");
+  std::string first = CookieLine(Login("ada", "secret"));
+  std::string second = CookieLine(Login("ada", "secret"));
+  std::string other = CookieLine(Login("bob", "hunter2"));
+  std::string anonymous_admin = Get("/admin", std::string()).body;
+  std::string anonymous_front = Get("/hello-title", std::string()).body;
+  std::string token = LogoutToken(Get("/admin", first).body);
+  ASSERT_FALSE(token.empty());
+  ASSERT_TRUE(SessionLive(id, first));
+  ASSERT_TRUE(SessionLive(id, second));
+  ASSERT_TRUE(SessionLive(id, other));
+  size_t before = Revoked(id);
+  Reply out = PostRaw("/logout", first, "token=" + token);
+  EXPECT_EQ(303, out.status);
+  EXPECT_EQ("/login", HeaderValue(out, "Location"));
+  ASSERT_EQ((size_t)1, HeaderAll(out, "Set-Cookie").size());
+  EXPECT_TRUE(Has(HeaderValue(out, "Set-Cookie"), "Max-Age=0"));
+  /* The revocation is in core: the token, as it was copied, is refused there. */
+  GDEFCORE_Result rc = GDEFCORE_ERR_INTERNAL;
+  EXPECT_FALSE(SessionLive(id, first, &rc)) << "SIGNOUT: core still lets the session in";
+  EXPECT_EQ(GDEFCORE_OK, rc) << "SIGNOUT: a revoked session is anonymous, not an error";
+  EXPECT_EQ(before + 1, Revoked(id)) << "SIGNOUT: the revocation is not on core's list";
+  /* The old cookie, replayed, gets the signed-out answer on an admin page and on
+   * a public one. */
+  Reply admin = Get("/admin", first);
+  EXPECT_FALSE(Has(admin.body, "Sign out")) << "SIGNOUT: the old cookie still signs in";
+  EXPECT_EQ(Get("/admin", std::string()).status, admin.status);
+  EXPECT_EQ(anonymous_admin, admin.body);
+  EXPECT_EQ(anonymous_front, Get("/hello-title", first).body);
+  EXPECT_FALSE(Has(Get("/admin/post", first).body, "Sign out"));
+  /* The token the old session's page carried signs nothing else out. */
+  EXPECT_EQ(403, PostRaw("/logout", second, "token=" + token).status);
+  /* No other sign-in was ended: the same person's other sign-in, and another
+   * person's. */
+  EXPECT_TRUE(SessionLive(id, second)) << "SIGNOUT: the person's other sign-in ended";
+  EXPECT_TRUE(SessionLive(id, other)) << "SIGNOUT: another person's session ended";
+  EXPECT_TRUE(Has(Get("/admin", second).body, "Sign out"));
+  /* A second sign-out with the old cookie is the dead-cookie answer: the cookie
+   * is cleared and nothing is written. */
+  before = Revoked(id);
+  Reply again = PostRaw("/logout", first, "token=" + token);
+  EXPECT_EQ(303, again.status);
+  EXPECT_EQ("/login", HeaderValue(again, "Location"));
+  EXPECT_EQ(HeaderValue(out, "Set-Cookie"), HeaderValue(again, "Set-Cookie"));
+  EXPECT_EQ(before, Revoked(id)) << "SIGNOUT: a second sign-out wrote";
+  /* The other sign-in can end itself, and then both are gone. */
+  Reply second_out = PostRaw("/logout", second,
+      "token=" + LogoutToken(Get("/admin", second).body));
+  EXPECT_EQ(303, second_out.status);
+  EXPECT_FALSE(SessionLive(id, second));
+  EXPECT_TRUE(SessionLive(id, other));
+  /* A new sign-in after signing out is a new session. */
+  std::string later = CookieLine(Login("ada", "secret"));
+  EXPECT_TRUE(SessionLive(id, later));
+  EXPECT_NE(first, later);
+}
+
+/* A cookie that names no live session cannot be forged against, so signing out
+ * with it needs no token and changes nothing; but it must not leave a dead cookie
+ * in the browser, so it is cleared all the same. */
+TEST_F(Edge, SigningOutWithoutALiveSessionStillClearsTheCookie) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  Site(id);
+  std::string live = CookieLine(Login("ada", "secret"));
+  std::string kept = CookieLine(Login("ada", "secret"));
+  std::string token = LogoutToken(Get("/admin", live).body);
+  ASSERT_FALSE(token.empty());
+  /* The answer to a signed-in sign-out is the one every dead cookie must match:
+   * the clearing line with the attributes the cookie was set with. */
+  Reply ended = PostRaw("/logout", live, "token=" + token);
+  ASSERT_EQ(303, ended.status);
+  std::string clearing = HeaderValue(ended, "Set-Cookie");
+  ASSERT_TRUE(Has(clearing, "Max-Age=0"));
+  /* An expired session: a real token that lived one second. */
+  std::string expired;
+  {
+    GDEFCORE_Catalog * catalog = NULL;
+    GDEFCORE_Keyring * keyring;
+    char * made = NULL;
+    size_t made_n = 0;
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_inst_catalog_open(inst_, id, strlen(id), &catalog));
+    keyring = gdefcore_inst_tenant_keyring(inst_, id, strlen(id));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_account_login(catalog, keyring, root_, sizeof root_, "ada", 3,
+            "secret", 6, 1, &made, &made_n));
+    expired = CookieOfToken(made, made_n);
+    gdefcore_text_free(catalog, made);
+    gdefcore_catalog_destroy(catalog);
+  }
+  std::string damaged = kept;
+  {
+    size_t at = damaged.find('=') + 1 + 40;
+    damaged[at] = damaged[at] == 'A' ? 'B' : 'A';
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+  ASSERT_FALSE(SessionLive(id, expired)) << "the one-second session is still alive";
+  struct Dead {
+    const char * label;
+    std::string cookie;
+    std::string body;
+  };
+  const Dead cases[] = {
+      {"an absent cookie", std::string(), ""},
+      {"a revoked session", live, ""},
+      {"a revoked session with its old token", live, "token=" + token},
+      {"an expired session", expired, ""},
+      {"a damaged session", damaged, ""},
+      {"a cookie that is not base64", "Cookie: " + cookie_name_ + "=!!not*base64!!\r\n", ""},
+      {"a cookie of nothing", "Cookie: " + cookie_name_ + "=\r\n", ""},
+      {"a cookie that is too short", "Cookie: " + cookie_name_ + "=AAAA\r\n", ""},
+      {"a session cookie of the other policy's name", "Cookie: session=" +
+           kept.substr(kept.find('=') + 1), ""},
+      {"no token with a bad body", std::string(), "token=garbage"},
+  };
+  for (const Dead & c : cases) {
+    SCOPED_TRACE(c.label);
+    size_t before = Revoked(id);
+    Reply r = PostRaw("/logout", c.cookie, c.body);
+    EXPECT_EQ(303, r.status) << "DEAD: " << c.label;
+    EXPECT_EQ("/login", HeaderValue(r, "Location")) << "DEAD: " << c.label;
+    ASSERT_EQ((size_t)1, HeaderAll(r, "Set-Cookie").size()) << "DEAD: " << c.label;
+    EXPECT_EQ(clearing, HeaderValue(r, "Set-Cookie")) << "DEAD: " << c.label;
+    EXPECT_EQ(before, Revoked(id)) << "DEAD: " << c.label << " wrote";
+    /* Nothing of anyone else was touched. */
+    EXPECT_TRUE(SessionLive(id, kept)) << "DEAD: " << c.label << " ended another sign-in";
+  }
+  /* The Origin still decides first: a foreign one, or none, is refused and sets
+   * nothing, for a dead cookie as for a live one. */
+  for (const Dead & c : cases) {
+    SCOPED_TRACE(c.label);
+    Reply foreign = PostRaw("/logout", c.cookie, c.body, "http://evil.example");
+    EXPECT_EQ(403, foreign.status) << "ORIGIN: " << c.label;
+    EXPECT_TRUE(HeaderAll(foreign, "Set-Cookie").empty()) << "ORIGIN: " << c.label;
+    Reply bare = Ask(Req("POST", "/logout", "site.example",
+                         (std::string("Content-Type: application/x-www-form-urlencoded\r\n") +
+                             c.cookie).c_str(),
+                         c.body.c_str()),
+        20000);
+    EXPECT_EQ(403, bare.status) << "ORIGIN: no Origin, " << c.label;
+    EXPECT_TRUE(HeaderAll(bare, "Set-Cookie").empty()) << "ORIGIN: no Origin, " << c.label;
+  }
+  /* A foreign Origin with a live session and its good token: refused, and the
+   * session is kept (the same case the refusal test has, asked of core). */
+  Reply foreign_live = PostRaw("/logout", kept, "token=" + LogoutToken(Get("/admin", kept).body),
+      "http://evil.example");
+  EXPECT_EQ(403, foreign_live.status);
+  EXPECT_TRUE(HeaderAll(foreign_live, "Set-Cookie").empty());
+  EXPECT_TRUE(SessionLive(id, kept)) << "ORIGIN: a foreign request ended a session";
+  /* A GET never signs anyone out, live or dead. */
+  EXPECT_TRUE(HeaderAll(Get("/logout", live), "Set-Cookie").empty());
+}
+
+/* When the session cannot be ended, the person is told so and the cookie is not
+ * cleared; and when the store cannot say whether the session is live, the cookie
+ * is not taken for a dead one. Either would otherwise look like a sign-out. */
+namespace {
+struct Faults {
+  bool fail_get = false;
+  bool fail_put = false;
+  GDEFSTOR_Result (*get)(void *, void *, const char *, size_t, const char *, size_t,
+      const char *, size_t, const GDEFSTOR_ModelVisitor *) = NULL;
+  GDEFSTOR_Result (*put)(void *, void *, const GDEFSTOR_ModelRecord *) = NULL;
+};
+Faults g_faults;
+
+bool IsRevocation(const char * ns, size_t n) {
+  static const char kPrefix[] = "core.session.revoked";
+  return n >= sizeof kPrefix - 1 && memcmp(ns, kPrefix, sizeof kPrefix - 1) == 0;
+}
+
+GDEFSTOR_Result FaultGet(void * ctx, void * txn, const char * tenant, size_t tenant_len,
+    const char * ns, size_t ns_len, const char * key, size_t key_len,
+    const GDEFSTOR_ModelVisitor * visitor) {
+  if (g_faults.fail_get && IsRevocation(ns, ns_len)) {
+    return GDEFSTOR_ERR_IO;
+  }
+  return g_faults.get(ctx, txn, tenant, tenant_len, ns, ns_len, key, key_len, visitor);
+}
+
+GDEFSTOR_Result FaultPut(void * ctx, void * txn, const GDEFSTOR_ModelRecord * r) {
+  if (g_faults.fail_put && IsRevocation(r->ns, r->ns_len)) {
+    return GDEFSTOR_ERR_IO;
+  }
+  return g_faults.put(ctx, txn, r);
+}
+}  // namespace
+
+TEST_F(Edge, SigningOutThatCannotEndTheSessionIsNotASignOut) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  char tmpl[] = "/tmp/gdefweb-signout-XXXXXX";
+  GDEFSSQLITE_ModelOptions options;
+  GDEFSTOR_ModelBackend backend;
+  ASSERT_NE(nullptr, mkdtemp(tmpl));
+  std::string dir = tmpl;
+  /* The tenant's site store is a SQLite one whose revocation list can be made
+   * unreadable or unwritable; every other read and write is the real one. */
+  gdefcore_inst_destroy(inst_);
+  inst_ = NULL;
+  gdefstor_store_destroy(site_);
+  site_ = NULL;
+  g_faults = Faults();
+  gdefssqlite_model_options_default(&options);
+  options.synchronous = GDEFSSQLITE_SYNC_OFF;
+  ASSERT_EQ(GDEFSSQLITE_OK, gdefssqlite_model_backend(dir.c_str(), &options, NULL, &backend));
+  g_faults.get = backend.record_get;
+  g_faults.put = backend.record_put;
+  backend.record_get = FaultGet;
+  backend.record_put = FaultPut;
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_store_open(&backend, NULL, NULL, &site_));
+  ASSERT_EQ(GDEFCORE_OK,
+      gdefcore_inst_open(registry_, site_, root_, sizeof root_, "", 0, NULL, &inst_));
+  Site(id);
+  std::string cookie = CookieLine(Login("ada", "secret"));
+  std::string token = LogoutToken(Get("/admin", cookie).body);
+  ASSERT_FALSE(token.empty());
+  ASSERT_TRUE(SessionLive(id, cookie));
+  struct Failing {
+    const char * label;
+    bool get;
+    bool put;
+  };
+  const Failing cases[] = {
+      {"the revocation cannot be written", false, true},
+      {"the revocation list cannot be read", true, false},
+  };
+  for (const Failing & c : cases) {
+    SCOPED_TRACE(c.label);
+    g_faults.fail_get = c.get;
+    g_faults.fail_put = c.put;
+    Reply r = PostRaw("/logout", cookie, "token=" + token);
+    EXPECT_EQ(500, r.status) << "FAILED: " << c.label;
+    EXPECT_TRUE(HeaderAll(r, "Set-Cookie").empty())
+        << "FAILED: " << c.label << ": the cookie was cleared though the session was not ended";
+    EXPECT_TRUE(Has(r.body, "still signed in")) << "FAILED: " << c.label;
+    g_faults.fail_get = false;
+    g_faults.fail_put = false;
+    /* The session was not ended, and the person can try again. */
+    EXPECT_TRUE(SessionLive(id, cookie)) << "FAILED: " << c.label;
+  }
+  /* A dead cookie while the list cannot be read is not told from a live one: the
+   * store cannot say, so the cookie is kept and the person is told to try again. */
+  g_faults.fail_get = true;
+  Reply unknown = PostRaw("/logout", cookie, "");
+  EXPECT_EQ(500, unknown.status) << "FAILED: an unreadable list was taken for a dead session";
+  EXPECT_TRUE(HeaderAll(unknown, "Set-Cookie").empty());
+  g_faults.fail_get = false;
+  Reply out = PostRaw("/logout", cookie, "token=" + token);
+  EXPECT_EQ(303, out.status) << "FAILED: the retry did not sign out";
+  EXPECT_FALSE(SessionLive(id, cookie));
+  g_faults = Faults();
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
 }
 
 TEST_F(Edge, Throttle) {

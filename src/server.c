@@ -1472,13 +1472,29 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
       span_eq(in.path, strlen(in.path), "/logout")) {
     struct Cookies cookies;
     /* Signing out is a state change like any other: the Origin was checked
-     * above, and the signed token the session's own page carried is checked
-     * here. Without it the session is left as it was. */
-    if (!gdefweb_admin_logout_allowed(catalog, request, keyring, server->root,
-            sizeof server->root, session_value, in.body, in.body_len, in.ctype)) {
+     * above. A live session also needs the signed token its own page carried,
+     * and is then ended on the server (this session only), not only forgotten by
+     * the browser. A cookie that names no live session has nothing to forge and
+     * nothing to end: it is cleared all the same, and the server changes
+     * nothing. */
+    switch (gdefweb_admin_signout(catalog, request, keyring, server->root,
+        sizeof server->root, session_value, in.body, in.body_len, in.ctype)) {
+    case GDEFWEB_SIGNOUT_REFUSED:
       reply(server, sock, 403, "Forbidden", "", 0, NULL, NULL, in.method, in.path,
           client);
       goto out;
+    case GDEFWEB_SIGNOUT_FAILED: {
+      /* Not signed out, and not told they are: no cookie is cleared. */
+      static const char kBody[] =
+          "Signing out failed and you are still signed in. Please try again.\n";
+      reply(server, sock, 500, "Internal Server Error", kBody, sizeof kBody - 1,
+          NULL, "text/plain; charset=utf-8", in.method, in.path, client);
+      goto out;
+    }
+    case GDEFWEB_SIGNOUT_ENDED:
+    case GDEFWEB_SIGNOUT_NO_SESSION:
+    default:
+      break;
     }
     /* The clearing cookie is the cookie, with the attributes it was set with. */
     if (cookie_line(server, "", 1, set_line, sizeof set_line) != 0) {

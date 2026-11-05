@@ -39,6 +39,7 @@
 #include <ghoti.io/defiant-core/template.h>
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-storage-memory/memory.h>
+#include <ghoti.io/defiant-storage/model.h>
 #include <ghoti.io/cutil/fiber.h>
 #include <ghoti.io/security/sha256.h>
 
@@ -714,6 +715,112 @@ class Edge : public ::testing::Test {
     Publish(id, "hello-title", "Hello Title");
   }
 
+
+  /* The bytes of the session token in a Cookie header line ("Cookie: name=value"),
+   * as the server reads them (URL-safe base64, no padding). Empty when the value
+   * is not that. */
+  static std::string TokenOfCookie(const std::string & cookie_line) {
+    static const char kTab[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    size_t eq = cookie_line.find('=');
+    size_t end = cookie_line.find("\r\n");
+    std::string value;
+    std::string out;
+    uint32_t acc = 0;
+    int bits = 0;
+    if (eq == std::string::npos) {
+      return out;
+    }
+    value = cookie_line.substr(eq + 1, end == std::string::npos ? std::string::npos
+                                                                : end - eq - 1);
+    for (char c : value) {
+      const char * at = strchr(kTab, c);
+      if (c == '\0' || at == NULL) {
+        return std::string();
+      }
+      acc = (acc << 6) | (uint32_t)(at - kTab);
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        out.push_back((char)((acc >> bits) & 0xffu));
+      }
+    }
+    return out;
+  }
+
+  /* The Cookie header line that carries @p token. */
+  std::string CookieOfToken(const char * token, size_t n) {
+    static const char kTab[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    std::string value;
+    uint32_t acc = 0;
+    int bits = 0;
+    for (size_t i = 0; i < n; i++) {
+      acc = (acc << 8) | (uint32_t)(unsigned char)token[i];
+      bits += 8;
+      while (bits >= 6) {
+        bits -= 6;
+        value.push_back(kTab[(acc >> bits) & 63u]);
+      }
+    }
+    if (bits > 0) {
+      value.push_back(kTab[(acc << (6 - bits)) & 63u]);
+    }
+    return "Cookie: " + cookie_name_ + "=" + value + "\r\n";
+  }
+
+  /* What core says of the session a Cookie line carries: whether the check binds
+   * a principal (the session is live). @p rc, if given, receives the check's
+   * result. This asks core and not the server, so a cleared cookie cannot stand
+   * in for an ended session. */
+  bool SessionLive(const char * id, const std::string & cookie_line,
+      GDEFCORE_Result * rc = NULL) {
+    GDEFCORE_Catalog * catalog = NULL;
+    GDEFCORE_Request * request = NULL;
+    GDEFCORE_Keyring * keyring;
+    uint8_t storage[16];
+    std::string token = TokenOfCookie(cookie_line);
+    size_t who_n = 0;
+    GDEFCORE_Result got;
+    bool live;
+    EXPECT_EQ(GDEFCORE_OK,
+        gdefcore_inst_storage_key(inst_, id, strlen(id), storage));
+    EXPECT_EQ(GDEFCORE_OK,
+        gdefcore_inst_catalog_open(inst_, id, strlen(id), &catalog));
+    keyring = gdefcore_inst_tenant_keyring(inst_, id, strlen(id));
+    EXPECT_EQ(GDEFCORE_OK,
+        gdefcore_request_create(storage, sizeof storage, 0, 0, NULL, &request));
+    got = gdefcore_account_check(catalog, request, keyring, root_, sizeof root_,
+        token.data(), token.size());
+    live = got == GDEFCORE_OK && gdefcore_request_principal(request, &who_n) != NULL;
+    if (rc != NULL) {
+      *rc = got;
+    }
+    gdefcore_request_destroy(request);
+    gdefcore_catalog_destroy(catalog);
+    return live;
+  }
+
+  /* How many sessions the tenant has revoked: the records of its revocation list.
+   * A sign-out that changed nothing leaves it; one that ended a session adds one. */
+  size_t Revoked(const char * id) {
+    GDEFCORE_Catalog * catalog = NULL;
+    GDEFSTOR_RecordList * list = NULL;
+    static const char kNs[] = "core.session.revoked";
+    const char * tenant;
+    size_t tenant_n = 0;
+    size_t n;
+    EXPECT_EQ(GDEFCORE_OK,
+        gdefcore_inst_catalog_open(inst_, id, strlen(id), &catalog));
+    tenant = (const char *)gdefcore_catalog_tenant(catalog, &tenant_n);
+    EXPECT_EQ(GDEFSTOR_OK,
+        gdefstor_record_list(site_, tenant, tenant_n, kNs, sizeof kNs - 1, "", 0, 0,
+            GDEFSTOR_RECORD_MAX_PAGE, &list));
+    n = gdefstor_record_list_count(list);
+    gdefstor_record_list_free(list);
+    gdefcore_catalog_destroy(catalog);
+    return n;
+  }
 
   /* A second account that holds no role. */
   void AddUser(const char * id, const char * name, const char * pass) {

@@ -5047,7 +5047,7 @@ static int signout_form(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
  * carries a token that verifies for this session and was signed for sign-out.
  * No token, a damaged one, one signed for a different sign-in or another form, is no. The
  * Origin is the caller's check. */
-int gdefweb_admin_logout_allowed(GDEFCORE_Catalog * catalog,
+static int logout_allowed(GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * session, const char * body, size_t body_len,
     const char * ctype) {
@@ -5080,6 +5080,52 @@ int gdefweb_admin_logout_allowed(GDEFCORE_Catalog * catalog,
   wipe(raw, sizeof raw);
   wipe(sraw, sizeof sraw);
   return ok;
+}
+
+enum GDEFWEB_Signout gdefweb_admin_signout(GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, const char * body, size_t body_len,
+    const char * ctype) {
+  unsigned char raw[768];
+  size_t raw_n = 0;
+  size_t who_n = 0;
+  GDEFCORE_Result rc;
+  enum GDEFWEB_Signout out;
+  if (catalog == NULL || request == NULL || keyring == NULL) {
+    return GDEFWEB_SIGNOUT_FAILED;
+  }
+  /* A cookie that is absent or does not decode names no session. */
+  if (session_raw(session, raw, sizeof raw, &raw_n) != 0) {
+    return GDEFWEB_SIGNOUT_NO_SESSION;
+  }
+  /* Whether the session is live is core's answer, asked afresh here: a live one
+   * binds the principal to the request. A token core refuses as invalid (a bad
+   * tag, another tenant, expired) and one it accepts but no longer lets in (an
+   * older epoch, a revoked session) are both a session that is already over. A
+   * failure to find out is neither, and must not be taken for a dead session,
+   * or the cookie would be cleared while the token still worked once the store
+   * came back. */
+  rc = gdefcore_account_check(catalog, request, keyring, root, root_len,
+      (const char *)raw, raw_n);
+  if (rc != GDEFCORE_OK && rc != GDEFCORE_ERR_INVALID) {
+    wipe(raw, sizeof raw);
+    return GDEFWEB_SIGNOUT_FAILED;
+  }
+  if (rc != GDEFCORE_OK || gdefcore_request_principal(request, &who_n) == NULL) {
+    wipe(raw, sizeof raw);
+    return GDEFWEB_SIGNOUT_NO_SESSION;
+  }
+  if (!logout_allowed(catalog, request, keyring, root, root_len, session, body,
+          body_len, ctype)) {
+    wipe(raw, sizeof raw);
+    return GDEFWEB_SIGNOUT_REFUSED;
+  }
+  /* This session only. Anything but success is not a sign-out. */
+  rc = gdefcore_account_session_revoke(catalog, request, keyring, root, root_len,
+      (const char *)raw, raw_n);
+  out = rc == GDEFCORE_OK ? GDEFWEB_SIGNOUT_ENDED : GDEFWEB_SIGNOUT_FAILED;
+  wipe(raw, sizeof raw);
+  return out;
 }
 
 /*

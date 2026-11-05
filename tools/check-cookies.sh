@@ -6,7 +6,7 @@
 # turns its test red, by name (site-admin story 15).
 #
 # The gates are Edge.CookiePolicy*, Edge.PlainHttpCookieIsRefusedOffLoopback and
-# Edge.LogoutNeedsTheSignedTokenOfTheSessionsOwnPage, through the real server.
+# Edge.LogoutNeedsTheSignedTokenOfTheSessionsOwnPage and Edge.SigningOut* (site-admin story 16), through the real server.
 # Each plant is an exact text edit to a scratch copy of this library; nothing is
 # planted in the library. The copy is built, the test program is run, and the
 # named test must be among the failures, with the named text in its message. A
@@ -22,7 +22,7 @@ set -u
 
 . "$(dirname "$0")/plant-load.sh"
 PLANT_TAG=check-cookies
-PLANT_RUN_FILTER='Edge.CookiePolicy*:Edge.PlainHttp*:Edge.Logout*:Edge.Login:Edge.Cookie:Edge.AdminCookies'
+PLANT_RUN_FILTER='Edge.CookiePolicy*:Edge.PlainHttp*:Edge.Logout*:Edge.SigningOut*:Edge.Login:Edge.Cookie:Edge.AdminCookies'
 PLANT_TREE_DIRS='src include tests tools pkgconfig documentation examples app'
 
 plant_hook_control() { # exe filter
@@ -43,6 +43,9 @@ plant_control 'testEdge' "$PLANT_RUN_FILTER"
 COOKIES=Edge.CookiePolicyShapesTheCookieAndItsClearing
 LOOPBACK=Edge.PlainHttpCookieIsRefusedOffLoopback
 LOGOUT=Edge.LogoutNeedsTheSignedTokenOfTheSessionsOwnPage
+REVOKES=Edge.SigningOutEndsThisSessionAndNoOther
+DEAD=Edge.SigningOutWithoutALiveSessionStillClearsTheCookie
+FAILS=Edge.SigningOutThatCannotEndTheSessionIsNotASignOut
 
 # A server created with no options, or with the default options, is Lax.
 PLANT_NEED_TEXT='COOKIE:'
@@ -112,9 +115,9 @@ plant either-cookie-name-is-a-session src/server.c testEdge $COOKIES \
 
 # /logout does not ask for the token.
 PLANT_NEED_TEXT='LOGOUT:'
-plant logout-token-not-required src/server.c testEdge $LOGOUT \
-  '    if (!gdefweb_admin_logout_allowed(' \
-  '    if (0 && !gdefweb_admin_logout_allowed('
+plant logout-token-not-required src/admin.c testEdge $LOGOUT \
+  '  if (!logout_allowed(catalog, request, keyring, root, root_len, session, body,' \
+  '  if (0 && !logout_allowed(catalog, request, keyring, root, root_len, session, body,'
 
 # /logout takes the token of any form of the session, not the one made for it.
 PLANT_NEED_TEXT='LOGOUT:'
@@ -137,5 +140,55 @@ plant page-offers-no-signout-form src/admin.c testEdge $LOGOUT \
   /* The sign-out form goes last' \
   '  form_len = 0;
   /* The sign-out form goes last'
+
+
+# Sign-out clears the cookie and does not end the session on the server.
+PLANT_NEED_TEXT='SIGNOUT:'
+plant signout-clears-the-cookie-but-does-not-revoke src/admin.c testEdge $REVOKES \
+  '  rc = gdefcore_account_session_revoke(catalog, request, keyring, root, root_len,
+      (const char *)raw, raw_n);' \
+  '  rc = GDEFCORE_OK;'
+
+# A session that cannot be told from a live one is answered 403 instead of cleared.
+PLANT_NEED_TEXT='DEAD:'
+plant dead-session-signout-answered-403 src/admin.c testEdge $DEAD \
+  '  if (rc != GDEFCORE_OK || gdefcore_request_principal(request, &who_n) == NULL) {
+    wipe(raw, sizeof raw);
+    return GDEFWEB_SIGNOUT_NO_SESSION;' \
+  '  if (rc != GDEFCORE_OK || gdefcore_request_principal(request, &who_n) == NULL) {
+    wipe(raw, sizeof raw);
+    return GDEFWEB_SIGNOUT_REFUSED;'
+
+# A dead session's sign-out is answered 303 but leaves the dead cookie in the browser.
+PLANT_NEED_TEXT='DEAD:'
+plant dead-session-cookie-not-cleared src/server.c testEdge $DEAD \
+  '    case GDEFWEB_SIGNOUT_ENDED:
+    case GDEFWEB_SIGNOUT_NO_SESSION:' \
+  '    case GDEFWEB_SIGNOUT_ENDED:
+      break;
+    case GDEFWEB_SIGNOUT_NO_SESSION:
+      reply_ex(server, sock, 303, "See Other", "", 0, NULL, NULL, in.method,
+          in.path, client, "/login");
+      goto out;'
+
+# A dead session's sign-out skips the Origin check.
+PLANT_NEED_TEXT='ORIGIN:'
+plant dead-session-signout-skips-the-origin-check src/server.c testEdge $DEAD \
+  '  if (state_change && !origin_good) {' \
+  '  if (state_change && !origin_good &&
+      !(span_eq(in.path, strlen(in.path), "/logout") &&
+          gdefcore_request_principal(request, &(size_t){0}) == NULL)) {'
+
+# A session the store cannot answer for is taken for a dead one and its cookie cleared.
+PLANT_NEED_TEXT='FAILED:'
+plant unreadable-store-taken-for-a-dead-session src/admin.c testEdge $FAILS \
+  '  if (rc != GDEFCORE_OK && rc != GDEFCORE_ERR_INVALID) {' \
+  '  if (0 && rc != GDEFCORE_OK && rc != GDEFCORE_ERR_INVALID) {'
+
+# A sign-out whose revocation failed is reported as done.
+PLANT_NEED_TEXT='FAILED:'
+plant failed-revocation-reported-as-signed-out src/admin.c testEdge $FAILS \
+  '  out = rc == GDEFCORE_OK ? GDEFWEB_SIGNOUT_ENDED : GDEFWEB_SIGNOUT_FAILED;' \
+  '  out = GDEFWEB_SIGNOUT_ENDED;'
 
 plant_finish
