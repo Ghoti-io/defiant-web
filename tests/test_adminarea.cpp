@@ -414,7 +414,7 @@ TEST_F(AdminArea, UndoOffersAndUndoesOnlyWhatTheViewerHoldsThePermissionOf) {
   Reply bare = Get("/admin/undo", undoer);
   EXPECT_EQ(200, bare.status);
   EXPECT_TRUE(Has(bare.body, "<h1>") || Has(bare.body, "Undo") || !bare.body.empty());
-  EXPECT_FALSE(Has(bare.body, "<form")) << "UNDO: the page offers what the viewer may not undo\n" << bare.body;
+  EXPECT_FALSE(Has(WithoutSignout(bare.body), "<form")) << "UNDO: the page offers what the viewer may not undo\n" << bare.body;
   /* CONTROL: with the permission to write posts, the post is offered. */
   Person("writer", "writers", {GDEFCORE_ADMIN_UNDO_LABEL, GDEFCORE_POST_WRITE_LABEL});
   std::string writer;
@@ -509,6 +509,19 @@ TEST_F(AdminArea, WritingAPostNeedsTheSignedFormOfThisSession) {
   std::string token = InputValue(Get("/admin/post", ada_).body, "token", 0);
   const std::string rest = "&title=Sneak+Post&summary=s&body=b";
   NothingIsWrittenWithout("/admin/post", ada_, token, rest, "the post form");
+  /* A token of this very session that was signed for another form verifies and
+   * is for something else. */
+  std::string other = FormToken(Get("/admin/front", ada_).body, "Remove recent posts");
+  ASSERT_GT(other.size(), 8u);
+  uint64_t held = Epoch();
+  PostRaw("/admin/post", ada_, "token=" + other + rest);
+  EXPECT_EQ(held, Epoch()) << "TOKEN: the post form wrote on the token of another form";
+  /* And the undo form's token for the very post, which targets a post and
+   * carries post fields: only what it says it is for tells it from this form's. */
+  std::string undo_of_post = UndoToken(Get("/admin/undo", ada_).body, "Post Hello Title");
+  ASSERT_GT(undo_of_post.size(), 8u);
+  PostRaw("/admin/post", ada_, "token=" + undo_of_post + "&title=Undo+Token+Post&summary=s&body=b");
+  EXPECT_EQ(held, Epoch()) << "TOKEN: the post form wrote on the undo form's token";
   uint64_t before = Epoch();
   Reply done = PostForm("/admin/post", ada_, "token=" + token + rest);
   EXPECT_TRUE(Has(Messages(done.body), "Saved.")) << "CONTROL: " << Messages(done.body);

@@ -60,12 +60,45 @@ grep -q "memory backend" "$W/c.log" || fail "memory run not announced"
 [ "$(login mem mem-pass-3 | cut -c1-3)" = 303 ] || fail "memory login"
 stop || fail "stop after the memory run did not exit 0"
 
+# The cookie policy: secure unless told otherwise, and relaxed only by name.
+cookie_of() { # cookie_of <user> <password>: the Set-Cookie line of a login
+  curl -s -D - -o /dev/null -X POST -H "Origin: http://127.0.0.1:$PORT" \
+    --data-urlencode "username=$1" --data-urlencode "password=$2" \
+    "http://127.0.0.1:$PORT/login" | tr -d '\r' | sed -n 's/^[Ss]et-[Cc]ookie: //p'
+}
+policy() { # policy <label> <expected cookie pattern> <env assignments...>
+  local label=$1 want=$2; shift 2
+  start "$W/p.log" DEFIANT_ADMIN_USER=pol DEFIANT_ADMIN_PASSWORD=pol-pass-4 "$@" \
+    || { fail "$label: start"; return; }
+  local got
+  got=$(cookie_of pol pol-pass-4)
+  printf '%s\n' "$got" | grep -Eq "$want" || fail "$label: the session cookie is: $got"
+  [ "$(printf '%s\n' "$got" | wc -l)" = 1 ] || fail "$label: more than one cookie"
+  stop || fail "$label: stop did not exit 0"
+}
+policy "default cookie" '^__Host-session=[^;]+; Secure; HttpOnly; SameSite=Strict; Path=/$'
+policy "lax cookie" '^__Host-session=[^;]+; Secure; HttpOnly; SameSite=Lax; Path=/$' \
+  DEFIANT_COOKIE_SAMESITE=lax
+policy "plain loopback cookie" '^session=[^;]+; HttpOnly; SameSite=Strict; Path=/$' \
+  DEFIANT_COOKIE_TRANSPORT=plain-loopback
+
 # Refusals.
 env DEFIANT_LISTEN=127.0.0.1:0 DEFIANT_DATA="$W/other" "$PROG" >/dev/null 2>"$W/d.log"
 [ $? = 2 ] && grep -q DEFIANT_SECRET "$W/d.log" || fail "data without a secret was not refused by name"
 env DEFIANT_LISTEN=127.0.0.1:0 DEFIANT_DATA="$W/third" DEFIANT_SECRET="$SECRET" "$PROG" >/dev/null 2>"$W/e.log"
 [ $? = 2 ] && grep -q DEFIANT_ADMIN_USER "$W/e.log" || fail "a first start with no admin was not refused by name"
-grep -rq "first-pass-1\|other-pass-2\|mem-pass-3" "$W"/*.log && fail "a password reached a log"
+# The plain-HTTP cookie is refused off loopback, before anything is made; and a
+# setting that is neither of its two words is refused by name.
+env DEFIANT_LISTEN=0.0.0.0:0 DEFIANT_COOKIE_TRANSPORT=plain-loopback DEFIANT_DATA="$W/refused" \
+  DEFIANT_SECRET="$SECRET" DEFIANT_ADMIN_USER=x DEFIANT_ADMIN_PASSWORD=x-pass-5 \
+  "$PROG" >/dev/null 2>"$W/f.log"
+[ $? = 2 ] && grep -q DEFIANT_COOKIE_TRANSPORT "$W/f.log" || fail "plain-loopback on 0.0.0.0 was not refused by name"
+[ ! -e "$W/refused" ] || fail "a refused start made its data directory"
+env DEFIANT_LISTEN=127.0.0.1:0 DEFIANT_COOKIE_SAMESITE=none "$PROG" >/dev/null 2>"$W/g.log"
+[ $? = 2 ] && grep -q DEFIANT_COOKIE_SAMESITE "$W/g.log" || fail "an unknown SameSite word was not refused by name"
+env DEFIANT_LISTEN=127.0.0.1:0 DEFIANT_COOKIE_TRANSPORT=plain "$PROG" >/dev/null 2>"$W/h.log"
+[ $? = 2 ] && grep -q DEFIANT_COOKIE_TRANSPORT "$W/h.log" || fail "an unknown transport word was not refused by name"
+grep -rq "first-pass-1\|other-pass-2\|mem-pass-3\|pol-pass-4\|x-pass-5" "$W"/*.log && fail "a password reached a log"
 
 [ "$fails" = 0 ] && echo "check-defiant: the program starts, restarts, refuses and stops" && exit 0
 exit 1

@@ -28,13 +28,15 @@
 
 #include <ghoti.io/defiant-storage/model.h>
 
+#include "size_structs.h"
+
 
 TEST_F(Edge, EmptyListenBindsNothing) {
   GDEFCORE_Inst_Config * config = NULL;
   SetEnv("DEFIANT_LISTEN", "");
   UnsetEnv("DEFIANT_TRUSTED_PROXIES");
   ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_config_load(NULL, &config));
-  ASSERT_EQ(GDEFWEB_OK, gdefweb_server_create(config, NULL, &server_));
+  ASSERT_EQ(GDEFWEB_OK, gdefweb_server_create(config, NULL, NULL, &server_));
   gdefcore_inst_config_destroy(config);
   ASSERT_EQ(GDEFWEB_OK, gdefweb_server_listen(server_));
   EXPECT_EQ(0, gdefweb_server_accepting(server_));
@@ -177,7 +179,7 @@ TEST_F(Edge, ReadyBeforeOpen) {
   SetEnv("DEFIANT_LISTEN", "127.0.0.1:0");
   UnsetEnv("DEFIANT_TRUSTED_PROXIES");
   ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_config_load(NULL, &config));
-  ASSERT_EQ(GDEFWEB_OK, gdefweb_server_create(config, NULL, &server_));
+  ASSERT_EQ(GDEFWEB_OK, gdefweb_server_create(config, NULL, NULL, &server_));
   gdefcore_inst_config_destroy(config);
   ASSERT_EQ(GDEFWEB_OK, gdefweb_server_listen(server_));
   closed = Ask(Req("GET", "/ready", "anywhere.example",
@@ -210,7 +212,7 @@ TEST_F(Edge, Cookie) {
   EXPECT_NE(std::string::npos, cookie.find("__Host-session="));
   EXPECT_NE(std::string::npos, cookie.find("Secure"));
   EXPECT_NE(std::string::npos, cookie.find("HttpOnly"));
-  EXPECT_NE(std::string::npos, cookie.find("SameSite=Lax"));
+  EXPECT_NE(std::string::npos, cookie.find("SameSite=Strict"));
   EXPECT_NE(std::string::npos, cookie.find("Path=/"));
   EXPECT_EQ(std::string::npos, cookie.find("Domain="));
   logged = Ask(Req("GET", "/hello-title", "site.example",
@@ -398,52 +400,209 @@ TEST_F(Edge, Login) {
   EXPECT_NE(std::string::npos, cookie.find("__Host-session="));
   EXPECT_NE(std::string::npos, cookie.find("Secure"));
   EXPECT_NE(std::string::npos, cookie.find("HttpOnly"));
-  EXPECT_NE(std::string::npos, cookie.find("SameSite=Lax"));
+  EXPECT_NE(std::string::npos, cookie.find("SameSite=Strict"));
   EXPECT_NE(std::string::npos, cookie.find("Path=/"));
 }
 
-TEST_F(Edge, Logout) {
+/* The cookie policies the server can be given: the secure default, Lax, and the
+ * plain-HTTP one for a loopback listener, each with the cookie it must set. */
+namespace {
+
+struct Policy {
+  const char * label;
+  bool use_options;
+  GDEFWEB_Cookie_SameSite same_site;
+  GDEFWEB_Cookie_Transport transport;
+  const char * name;
+  bool secure;
+  const char * same_site_text;
+};
+
+const Policy kPolicies[] = {
+    {"no options", false, GDEFWEB_COOKIE_SAME_SITE_STRICT,
+        GDEFWEB_COOKIE_TRANSPORT_SECURE, "__Host-session", true, "Strict"},
+    {"default options", true, GDEFWEB_COOKIE_SAME_SITE_STRICT,
+        GDEFWEB_COOKIE_TRANSPORT_SECURE, "__Host-session", true, "Strict"},
+    {"lax", true, GDEFWEB_COOKIE_SAME_SITE_LAX, GDEFWEB_COOKIE_TRANSPORT_SECURE,
+        "__Host-session", true, "Lax"},
+    {"plain loopback", true, GDEFWEB_COOKIE_SAME_SITE_STRICT,
+        GDEFWEB_COOKIE_TRANSPORT_PLAIN_LOOPBACK, "session", false, "Strict"},
+    {"plain loopback and lax", true, GDEFWEB_COOKIE_SAME_SITE_LAX,
+        GDEFWEB_COOKIE_TRANSPORT_PLAIN_LOOPBACK, "session", false, "Lax"},
+};
+
+/* The attributes after the value, as the policy must give them. */
+std::string Attributes(const Policy & p) {
+  return std::string(p.secure ? "; Secure" : "") + "; HttpOnly; SameSite=" +
+      p.same_site_text + "; Path=/";
+}
+
+}  // namespace
+
+TEST_F(Edge, CookiePolicyOptionsAreHeldToTheirSize) {
+  GDEFWEB_Server_Options o;
+  gdefweb_server_options_default(&o);
+  EXPECT_EQ(sizeof o, o.size);
+  EXPECT_EQ(GDEFWEB_COOKIE_SAME_SITE_STRICT, o.same_site);
+  EXPECT_EQ(GDEFWEB_COOKIE_TRANSPORT_SECURE, o.transport);
+  /* A value outside either enumeration is not a policy. */
+  o.same_site = (GDEFWEB_Cookie_SameSite)7;
+  EXPECT_EQ(GDEFWEB_ERR_INVALID, TryCreate(&o, "127.0.0.1:0"));
+  gdefweb_server_options_default(&o);
+  o.transport = (GDEFWEB_Cookie_Transport)9;
+  EXPECT_EQ(GDEFWEB_ERR_INVALID, TryCreate(&o, "127.0.0.1:0"));
+  size_structs::Run("tests/test_edge.cpp",
+      {{"GDEFWEB_Server_Options", [&](size_t size) -> bool {
+         GDEFWEB_Server_Options probe;
+         gdefweb_server_options_default(&probe);
+         probe.size = size;
+         return TryCreate(&probe, "127.0.0.1:0") == GDEFWEB_OK;
+       }}});
+}
+
+TEST_F(Edge, PlainHttpCookieIsRefusedOffLoopback) {
+  GDEFWEB_Server_Options plain;
+  gdefweb_server_options_default(&plain);
+  plain.transport = GDEFWEB_COOKIE_TRANSPORT_PLAIN_LOOPBACK;
+  /* Everything that is not a loopback address, the neighbours of one, and no
+   * listener at all (nothing says where it would be reached from). */
+  for (const char * listen : {"0.0.0.0:0", "192.0.2.10:8080", "10.0.0.1:80",
+           "128.0.0.1:80", "126.255.255.255:80", "[::]:0", "[2001:db8::1]:80",
+           "[::2]:80", "[::ffff:127.0.0.1]:80", "[::1:0:0:0:1]:80", ""}) {
+    EXPECT_EQ(GDEFWEB_ERR_INSECURE, TryCreate(&plain, listen)) << "LOOPBACK: " << listen;
+  }
+  plain.same_site = GDEFWEB_COOKIE_SAME_SITE_LAX;
+  EXPECT_EQ(GDEFWEB_ERR_INSECURE, TryCreate(&plain, "0.0.0.0:0")) << "LOOPBACK: lax";
+  /* The loopback addresses are accepted. */
+  for (const char * listen : {"127.0.0.1:0", "127.255.255.254:80", "[::1]:0"}) {
+    EXPECT_EQ(GDEFWEB_OK, TryCreate(&plain, listen)) << "LOOPBACK: " << listen;
+  }
+  /* The secure policy has no such condition: a public listener is what it is for. */
+  EXPECT_EQ(GDEFWEB_OK, TryCreate(NULL, "0.0.0.0:0"));
+  gdefweb_server_options_default(&plain);
+  EXPECT_EQ(GDEFWEB_OK, TryCreate(&plain, "192.0.2.10:8080"));
+  EXPECT_EQ(GDEFWEB_OK, TryCreate(&plain, ""));
+  EXPECT_NE(std::string(gdefweb_result_string(GDEFWEB_ERR_INSECURE)),
+      std::string(gdefweb_result_string(GDEFWEB_ERR_INVALID)));
+}
+
+TEST_F(Edge, CookiePolicyShapesTheCookieAndItsClearing) {
   char id[GDEFCORE_PUBLIC_ID_LEN + 1];
-  Reply logged;
-  Reply refused;
-  Reply cleared;
-  std::string cookie;
-  Listen(NULL);
-  ASSERT_EQ(GDEFCORE_OK,
-      gdefcore_inst_tenant_create(inst_, "site.example", 12, "", 0, id));
-  InstallKit(id);
-  Publish(id, "hello-title", "Hello Title");
-  logged = Ask(Req("POST", "/login", "site.example",
-                   "Origin: http://site.example\r\n"
-                   "Content-Type: application/x-www-form-urlencoded\r\n",
-                   "username=ada&password=secret"),
+  bool first = true;
+  for (const Policy & p : kPolicies) {
+    SCOPED_TRACE(p.label);
+    GDEFWEB_Server_Options options;
+    gdefweb_server_options_default(&options);
+    options.same_site = p.same_site;
+    options.transport = p.transport;
+    if (!first) {
+      gdefweb_server_destroy(server_);
+      server_ = NULL;
+    }
+    ListenWith(NULL, p.use_options ? &options : NULL);
+    if (first) {
+      ASSERT_EQ(GDEFCORE_OK,
+          gdefcore_inst_tenant_create(inst_, "site.example", 12, "", 0, id));
+      InstallKit(id);
+      Publish(id, "hello-title", "Hello Title");
+      first = false;
+    }
+    Reply login = Login("ada", "secret");
+    ASSERT_EQ(303, login.status);
+    ASSERT_EQ((size_t)1, HeaderAll(login, "Set-Cookie").size());
+    std::string line = HeaderValue(login, "Set-Cookie");
+    std::string pair = CookiePair(login, p.name);
+    ASSERT_FALSE(pair.empty()) << "COOKIE: no session cookie in: " << line;
+    /* Exactly the documented cookie, and no other attribute. */
+    EXPECT_EQ(pair + Attributes(p), line) << "COOKIE: " << p.label;
+    EXPECT_EQ(p.secure, Has(line, "Secure")) << "COOKIE: " << p.label;
+    EXPECT_EQ(p.secure, line.compare(0, 7, "__Host-") == 0) << "COOKIE: " << p.label;
+    std::string cookie = "Cookie: " + pair + "\r\n";
+    std::string page = Get("/admin", cookie).body;
+    ASSERT_TRUE(Has(page, "Sign out")) << "COOKIE: the cookie does not sign in";
+    std::string token = LogoutToken(page);
+    ASSERT_FALSE(token.empty()) << "LOGOUT: the page carries no sign-out token";
+    /* The session is the cookie of the one name the policy gives: the other
+     * policy's name, with the same value, is nothing. */
+    std::string other = p.secure ? "session" : "__Host-session";
+    std::string stranger = "Cookie: " + other + "=" + pair.substr(pair.find('=') + 1) + "\r\n";
+    EXPECT_FALSE(Has(Get("/admin", stranger).body, "Sign out"))
+        << "COOKIE: a cookie of the other name signed in";
+    /* Signing out clears the cookie with the attributes it was set with. */
+    Reply out = PostRaw("/logout", cookie, "token=" + token);
+    EXPECT_EQ(303, out.status);
+    EXPECT_EQ("/login", HeaderValue(out, "Location"));
+    ASSERT_EQ((size_t)1, HeaderAll(out, "Set-Cookie").size());
+    EXPECT_EQ(std::string(p.name) + "=" + Attributes(p) + "; Max-Age=0",
+        HeaderValue(out, "Set-Cookie"))
+        << "COOKIE: the clearing cookie differs from the one set";
+    /* The same attributes, in the same order, that the cookie was set with. */
+    std::string clearing = HeaderValue(out, "Set-Cookie");
+    EXPECT_EQ(line.substr(line.find(';')) + "; Max-Age=0",
+        clearing.substr(clearing.find(';')))
+        << "COOKIE: the clearing cookie differs from the one set";
+  }
+}
+
+TEST_F(Edge, LogoutNeedsTheSignedTokenOfTheSessionsOwnPage) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  Site(id);
+  AddUser(id, "bob", "hunter2");
+  Reply ada = Login("ada", "secret");
+  Reply bob = Login("bob", "hunter2");
+  std::string cookie = CookieLine(ada);
+  std::string page = Get("/admin", cookie).body;
+  std::string token = LogoutToken(page);
+  ASSERT_FALSE(token.empty()) << "LOGOUT: the page that offers signing out carries no token";
+  EXPECT_TRUE(Has(page, "<form method=\"post\" action=\"/logout\">"));
+  /* Another form's token, signed for this very session. */
+  std::string other_form = FormToken(Get("/admin/front", cookie).body, "Remove recent posts");
+  ASSERT_FALSE(other_form.empty());
+  std::string damaged = token;
+  damaged[damaged.size() / 2] = damaged[damaged.size() / 2] == 'A' ? 'B' : 'A';
+  std::string truncated = token.substr(0, token.size() - 3);
+  struct Refused {
+    const char * label;
+    std::string cookie;
+    std::string body;
+    const char * origin;
+  };
+  const Refused cases[] = {
+      {"no token", cookie, "", "http://site.example"},
+      {"an empty token", cookie, "token=", "http://site.example"},
+      {"a token of nothing", cookie, "token=AAAA", "http://site.example"},
+      {"a damaged token", cookie, "token=" + damaged, "http://site.example"},
+      {"a truncated token", cookie, "token=" + truncated, "http://site.example"},
+      {"another form's token", cookie, "token=" + other_form, "http://site.example"},
+      {"the token under another name", cookie, "csrf=" + token, "http://site.example"},
+      {"a token signed for a different sign-in", CookieLine(bob), "token=" + token, "http://site.example"},
+      {"no session with a good token", std::string(), "token=" + token, "http://site.example"},
+      {"a foreign Origin with a good token", cookie, "token=" + token, "http://evil.example"},
+  };
+  for (const Refused & c : cases) {
+    SCOPED_TRACE(c.label);
+    Reply r = PostRaw("/logout", c.cookie, c.body, c.origin);
+    EXPECT_EQ(403, r.status) << "LOGOUT: " << c.label;
+    EXPECT_TRUE(HeaderAll(r, "Set-Cookie").empty()) << "LOGOUT: " << c.label;
+    /* Nothing was ended: the same cookie still signs in, and the token still works. */
+    EXPECT_TRUE(Has(Get("/admin", cookie).body, "Sign out")) << "LOGOUT: " << c.label;
+  }
+  /* No Origin header at all is refused as a foreign one is. */
+  Reply bare = Ask(Req("POST", "/logout", "site.example",
+                       (std::string("Content-Type: application/x-www-form-urlencoded\r\n") +
+                           cookie).c_str(),
+                       ("token=" + token).c_str()),
       20000);
-  cookie = HeaderValue(logged, "Set-Cookie");
-  refused = Ask(Req("POST", "/logout", "site.example",
-                    (std::string("Cookie: ") + cookie + "\r\n").c_str(), ""),
-      5000);
-  EXPECT_EQ(403, refused.status);
-  EXPECT_EQ(std::string::npos, HeaderValue(refused, "Set-Cookie").find("Max-Age=0"));
-  refused = Ask(Req("POST", "/logout", "site.example",
-                    (std::string("Origin: http://evil.example\r\nCookie: ") +
-                        cookie + "\r\n")
-                        .c_str(),
-                    ""),
-      5000);
-  cleared = Ask(Req("POST", "/logout", "site.example",
-                    (std::string("Origin: http://site.example\r\nCookie: ") +
-                        cookie + "\r\n")
-                        .c_str(),
-                    ""),
-      5000);
-  EXPECT_EQ(std::string::npos, HeaderValue(refused, "Set-Cookie").find("Max-Age=0"));
-  EXPECT_EQ(403, refused.status);
-  EXPECT_NE(std::string::npos, HeaderValue(cleared, "Set-Cookie").find("__Host-session="));
-  EXPECT_NE(std::string::npos, HeaderValue(cleared, "Set-Cookie").find("Max-Age=0"));
-  EXPECT_NE(std::string::npos, HeaderValue(cleared, "Set-Cookie").find("Secure"));
-  EXPECT_NE(std::string::npos, HeaderValue(cleared, "Set-Cookie").find("HttpOnly"));
-  EXPECT_NE(std::string::npos, HeaderValue(cleared, "Set-Cookie").find("SameSite=Lax"));
-  EXPECT_NE(std::string::npos, HeaderValue(cleared, "Set-Cookie").find("Path=/"));
+  EXPECT_EQ(403, bare.status) << "LOGOUT: no Origin";
+  EXPECT_TRUE(HeaderAll(bare, "Set-Cookie").empty());
+  EXPECT_TRUE(Has(Get("/admin", cookie).body, "Sign out"));
+  /* A GET does not sign anyone out. */
+  Reply get = Get("/logout", cookie);
+  EXPECT_TRUE(HeaderAll(get, "Set-Cookie").empty());
+  /* The token the page gave does. */
+  Reply out = PostRaw("/logout", cookie, "token=" + token);
+  EXPECT_EQ(303, out.status);
+  EXPECT_TRUE(Has(HeaderValue(out, "Set-Cookie"), "Max-Age=0"));
 }
 
 TEST_F(Edge, Throttle) {
@@ -533,8 +692,8 @@ TEST_F(Edge, AdminFirstScreen) {
   EXPECT_TRUE(Has(home.body, "href=\"/admin/front\""));
   EXPECT_TRUE(Has(home.body, "href=\"/admin/undo\""));
   EXPECT_TRUE(Has(home.body, "href=\"/admin/more\""));
-  EXPECT_FALSE(Has(home.body, "<form"));
-  EXPECT_FALSE(Has(home.body, "<input"));
+  EXPECT_FALSE(Has(WithoutSignout(home.body), "<form"));
+  EXPECT_FALSE(Has(WithoutSignout(home.body), "<input"));
   ExpectSecurity(home);
   for (const char * path : {"/admin/post", "/admin/front", "/admin/undo", "/admin/more"}) {
     Reply page = Get(path, cookie);
@@ -551,7 +710,7 @@ TEST_F(Edge, AdminFirstScreen) {
   Reply more = Get("/admin/more", cookie);
   EXPECT_TRUE(Has(more.body, "<h2>core</h2>"));
   EXPECT_FALSE(Has(more.body, "enant"));
-  EXPECT_FALSE(Has(more.body, "<form"));
+  EXPECT_FALSE(Has(WithoutSignout(more.body), "<form"));
   Reply post = Get("/admin/post", cookie);
   EXPECT_TRUE(Has(post.body, "<form"));
   EXPECT_FALSE(Has(post.body, "id=\"panes\""));
@@ -596,7 +755,7 @@ TEST_F(Edge, AdminCookies) {
   Reply admin = Login("ada", "secret");
   Reply bob = Login("bob", "hunter2");
   std::string session = SetCookieLine(admin, "__Host-session");
-  EXPECT_TRUE(Has(session, "SameSite=Lax"));
+  EXPECT_TRUE(Has(session, "SameSite=Strict"));
   EXPECT_TRUE(Has(session, "Secure"));
   EXPECT_TRUE(Has(session, "HttpOnly"));
   EXPECT_TRUE(Has(session, "Path=/"));
@@ -606,11 +765,8 @@ TEST_F(Edge, AdminCookies) {
   EXPECT_EQ((size_t)1, HeaderAll(admin, "Set-Cookie").size());
   EXPECT_EQ((size_t)1, HeaderAll(bob, "Set-Cookie").size());
   EXPECT_FALSE(SetCookieLine(bob, "__Host-session").empty());
-  Reply out = Ask(Req("POST", "/logout", "site.example",
-                      (std::string("Origin: http://site.example\r\n") + CookieLine(admin))
-                          .c_str(),
-                      ""),
-      5000);
+  Reply out = PostRaw("/logout", CookieLine(admin),
+      "token=" + LogoutToken(Get("/admin", CookieLine(admin)).body));
   EXPECT_TRUE(Has(SetCookieLine(out, "__Host-session"), "Max-Age=0"));
   EXPECT_EQ((size_t)1, HeaderAll(out, "Set-Cookie").size());
 }

@@ -54,13 +54,17 @@ int gdefweb_admin_static(const char * path, const char ** body, size_t * len,
 
 int gdefweb_admin_path(const char * path);
 
-/* Bind the queue of the session the cookie carries to the request, so the
+/* In these, @p session is the value of the session cookie, which the server
+ * took from the request under the name its cookie policy gives (server.c), and
+ * not the Cookie header: a cookie of any other name is not a session.
+ *
+ * Bind the queue of the session to the request, so the
  * messages widget of a page (a public one with a layout that places it) shows
- * the messages the session was left. A cookie that carries no live session
+ * the messages the session was left. A value that carries no live session
  * binds nothing, and the widget draws nothing. */
 void gdefweb_admin_bind_messages(GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
-    size_t root_len, const char * cookie);
+    size_t root_len, const char * session);
 
 /* Whether the session cookie carries a live session, and so who the request is
  * from: the principal is bound to the request. That is authentication and only
@@ -68,12 +72,19 @@ void gdefweb_admin_bind_messages(GDEFCORE_Catalog * catalog,
  * (nav.h), never by a role they hold. */
 int gdefweb_admin_authenticated(GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
-    size_t root_len, const char * cookie);
+    size_t root_len, const char * session);
+
+/* Whether a POST to /logout carries a token that this session's pages signed
+ * for signing out. The Origin is checked by the caller. */
+int gdefweb_admin_logout_allowed(GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, const char * body, size_t body_len,
+    const char * ctype);
 
 int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc,
     GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
     GDEFCORE_Keyring * keyring, const uint8_t * root, size_t root_len,
-    const char * method, const char * path, const char * cookie,
+    const char * method, const char * path, const char * session,
     const char * body, size_t body_len, const char * ctype,
     struct GDEFWEB_Admin_Reply * out);
 

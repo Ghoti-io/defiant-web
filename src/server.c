@@ -75,6 +75,8 @@ struct GDEFWEB_Server {
   GDEFCORE_Host * host;
   uint8_t root[GDEFCORE_ACCOUNT_ROOT_LEN];
   int has_root;
+  GDEFWEB_Cookie_SameSite same_site;
+  GDEFWEB_Cookie_Transport transport;
   GCU_Fiber * fiber;
   GCU_Loop_Op op;
   struct Attempt attempts[kAttempts];
@@ -140,19 +142,79 @@ static int setting(const GDEFCORE_Inst_Config * config, const char * name,
       &source) == GDEFCORE_OK;
 }
 
+static int parse_listen(const char * text, size_t n, GCU_Socket_Address * out);
+
+void gdefweb_server_options_default(GDEFWEB_Server_Options * out) {
+  if (out == NULL) {
+    return;
+  }
+  memset(out, 0, sizeof *out);
+  out->size = sizeof *out;
+  out->same_site = GDEFWEB_COOKIE_SAME_SITE_STRICT;
+  out->transport = GDEFWEB_COOKIE_TRANSPORT_SECURE;
+}
+
+/* Whether the address is one only this machine can reach: 127.0.0.0/8 or ::1.
+ * An IPv4-mapped IPv6 address is not accepted; name 127.x.x.x. */
+static int address_is_loopback(const GCU_Socket_Address * addr) {
+  size_t i;
+  if (addr->family == GCU_SOCKET_IPV4) {
+    return addr->bytes[0] == 127u;
+  }
+  if (addr->family == GCU_SOCKET_IPV6) {
+    for (i = 0; i < 15; i++) {
+      if (addr->bytes[i] != 0u) {
+        return 0;
+      }
+    }
+    return addr->bytes[15] == 1u;
+  }
+  return 0;
+}
+
+/* Whether the listener is a loopback address. A listener that binds nothing, or
+ * one that does not parse, is not. */
+static int listen_is_loopback(const char * listen, size_t listen_len) {
+  GCU_Socket_Address addr;
+  if (listen_len == 0 || !parse_listen(listen, listen_len, &addr)) {
+    return 0;
+  }
+  return address_is_loopback(&addr);
+}
+
 GDEFWEB_Result gdefweb_server_create(const GDEFCORE_Inst_Config * config,
-    const GDEFWEB_Allocator * allocator, GDEFWEB_Server ** out) {
+    const GDEFWEB_Server_Options * options, const GDEFWEB_Allocator * allocator,
+    GDEFWEB_Server ** out) {
   const char * listen = NULL;
   const char * proxies = NULL;
   size_t listen_len = 0;
   size_t proxies_len = 0;
+  GDEFWEB_Server_Options chosen;
   GDEFWEB_Server * server;
   if (config == NULL || out == NULL) {
     return GDEFWEB_ERR_INVALID;
   }
+  gdefweb_server_options_default(&chosen);
+  if (options != NULL) {
+    if (options->size != sizeof *options ||
+        (options->same_site != GDEFWEB_COOKIE_SAME_SITE_STRICT &&
+            options->same_site != GDEFWEB_COOKIE_SAME_SITE_LAX) ||
+        (options->transport != GDEFWEB_COOKIE_TRANSPORT_SECURE &&
+            options->transport != GDEFWEB_COOKIE_TRANSPORT_PLAIN_LOOPBACK)) {
+      return GDEFWEB_ERR_INVALID;
+    }
+    chosen = *options;
+  }
   if (!setting(config, "DEFIANT_LISTEN", &listen, &listen_len) ||
       !setting(config, "DEFIANT_TRUSTED_PROXIES", &proxies, &proxies_len)) {
     return GDEFWEB_ERR_INVALID;
+  }
+  /* A cookie that may travel over plain HTTP is for a listener only this machine
+   * can reach. Anything else, and a server with no listener to judge by, is
+   * refused here and not later, so no server exists to serve it. */
+  if (chosen.transport == GDEFWEB_COOKIE_TRANSPORT_PLAIN_LOOPBACK &&
+      !listen_is_loopback(listen, listen_len)) {
+    return GDEFWEB_ERR_INSECURE;
   }
   allocator = allocator == NULL ? gdefweb_allocator_default() : allocator;
   server = (GDEFWEB_Server *)mem_alloc(allocator, sizeof *server);
@@ -161,6 +223,8 @@ GDEFWEB_Result gdefweb_server_create(const GDEFCORE_Inst_Config * config,
   }
   memset(server, 0, sizeof *server);
   server->alloc = allocator;
+  server->same_site = chosen.same_site;
+  server->transport = chosen.transport;
   server->listen = dup_n(allocator, listen, listen_len);
   server->proxies = dup_n(allocator, proxies, proxies_len);
   server->listen_len = listen_len;
@@ -656,10 +720,13 @@ static int b64_decode(const char * in, unsigned char * out, size_t cap,
   return 0;
 }
 
-static int cookie_token(const char * cookie, char * out, size_t cap) {
-  static const char kName[] = "__Host-session=";
+/* The value of the cookie called @p name (without the `=`), or -1. A cookie of
+ * another name is never read for it: with the `__Host-` name, a plain `session`
+ * cookie that another host of the domain managed to set is not a session. */
+static int cookie_token(const char * cookie, const char * name, char * out,
+    size_t cap) {
   const char * p = cookie;
-  size_t nlen = sizeof kName - 1;
+  size_t nlen = strlen(name);
   if (cookie == NULL) {
     return -1;
   }
@@ -667,9 +734,9 @@ static int cookie_token(const char * cookie, char * out, size_t cap) {
     while (*p == ' ' || *p == ';') {
       p += 1;
     }
-    if (strncmp(p, kName, nlen) == 0) {
+    if (strncmp(p, name, nlen) == 0 && p[nlen] == '=') {
       size_t i = 0;
-      p += nlen;
+      p += nlen + 1;
       while (p[i] != '\0' && p[i] != ';') {
         i += 1;
       }
@@ -879,6 +946,27 @@ static int write_all(GDEFWEB_Server * server, GCU_Socket * sock, const void * da
 struct Cookies {
   const char * values[2];
 };
+
+/* The one session cookie's name under the server's policy. A browser ignores a
+ * `__Host-` cookie that is not Secure, so the plain-HTTP mode cannot carry it. */
+static const char * cookie_name(const GDEFWEB_Server * server) {
+  return server->transport == GDEFWEB_COOKIE_TRANSPORT_SECURE ? "__Host-session"
+                                                               : "session";
+}
+
+/* The Set-Cookie line that sets the session cookie to @p value, or, with
+ * @p clear, the one that removes it. Both come from here, so a cookie is always
+ * cleared with exactly the attributes it was set with: Secure (when the policy
+ * has it), HttpOnly, SameSite as the policy says, Path=/ and no Domain. */
+static int cookie_line(const GDEFWEB_Server * server, const char * value, int clear,
+    char * out, size_t cap) {
+  int n = snprintf(out, cap, "%s=%s;%s HttpOnly; SameSite=%s; Path=/%s",
+      cookie_name(server), value,
+      server->transport == GDEFWEB_COOKIE_TRANSPORT_SECURE ? " Secure;" : "",
+      server->same_site == GDEFWEB_COOKIE_SAME_SITE_LAX ? "Lax" : "Strict",
+      clear ? "; Max-Age=0" : "");
+  return n < 0 || (size_t)n >= cap ? -1 : 0;
+}
 
 static int reply_ex(GDEFWEB_Server * server, GCU_Socket * sock, int status,
     const char * reason, const void * body, size_t body_len,
@@ -1135,6 +1223,9 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
   int origin_good;
   char user_key[kAttemptKey];
   char addr_key[kAttemptKey];
+  char session_value[1024];
+  char set_line[1200];
+  session_value[0] = '\0';
   peer_text(peer, peer_addr, sizeof peer_addr);
   snprintf(client, sizeof client, "%s", peer_addr);
   memset(&in, 0, sizeof in);
@@ -1251,17 +1342,22 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
         in.method, in.path, client);
     goto out;
   }
+  /* The session is the cookie of the one name the policy gives. A cookie of the
+   * other name is not read: with the secure policy a plain `session` cookie,
+   * which a sibling host could set, is nothing. */
   if (in.cookie[0] != '\0') {
-    char encoded[1024];
     unsigned char raw[768];
     size_t raw_n = 0;
-    if (cookie_token(in.cookie, encoded, sizeof encoded) == 0 &&
-        b64_decode(encoded, raw, sizeof raw, &raw_n) == 0) {
+    if (cookie_token(in.cookie, cookie_name(server), session_value,
+            sizeof session_value) != 0) {
+      session_value[0] = '\0';
+    }
+    if (session_value[0] != '\0' &&
+        b64_decode(session_value, raw, sizeof raw, &raw_n) == 0) {
       (void)gdefcore_account_check(catalog, request, keyring, server->root,
           sizeof server->root, (const char *)raw, raw_n);
       wipe(raw, sizeof raw);
     }
-    wipe(encoded, sizeof encoded);
   }
   state_change = span_eq(in.method, strlen(in.method), "POST") ||
       span_eq(in.method, strlen(in.method), "PUT") ||
@@ -1348,8 +1444,14 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
     note_success(server, user_key);
     (void)gdefcore_account_check(catalog, request, keyring, server->root,
         sizeof server->root, token, token_n);
-    snprintf(session_cookie, sizeof session_cookie,
-        "__Host-session=%s; Secure; HttpOnly; SameSite=Lax; Path=/", encoded);
+    if (cookie_line(server, encoded, 0, session_cookie, sizeof session_cookie) != 0) {
+      gdefcore_text_free(catalog, token);
+      reply(server, sock, 500, "Internal Server Error", "", 0, NULL, NULL,
+          in.method, in.path, client);
+      wipe(encoded, sizeof encoded);
+      wipe(session_cookie, sizeof session_cookie);
+      goto out;
+    }
     cookies.values[0] = session_cookie;
     cookies.values[1] = NULL;
     /* The one session cookie is the whole sign-in. A person who has an admin
@@ -1369,11 +1471,25 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
   if (span_eq(in.method, strlen(in.method), "POST") &&
       span_eq(in.path, strlen(in.path), "/logout")) {
     struct Cookies cookies;
-    cookies.values[0] =
-        "__Host-session=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
+    /* Signing out is a state change like any other: the Origin was checked
+     * above, and the signed token the session's own page carried is checked
+     * here. Without it the session is left as it was. */
+    if (!gdefweb_admin_logout_allowed(catalog, request, keyring, server->root,
+            sizeof server->root, session_value, in.body, in.body_len, in.ctype)) {
+      reply(server, sock, 403, "Forbidden", "", 0, NULL, NULL, in.method, in.path,
+          client);
+      goto out;
+    }
+    /* The clearing cookie is the cookie, with the attributes it was set with. */
+    if (cookie_line(server, "", 1, set_line, sizeof set_line) != 0) {
+      reply(server, sock, 500, "Internal Server Error", "", 0, NULL, NULL,
+          in.method, in.path, client);
+      goto out;
+    }
+    cookies.values[0] = set_line;
     cookies.values[1] = NULL;
-    reply(server, sock, 200, "OK", "", 0, &cookies, NULL, in.method, in.path,
-        client);
+    reply_ex(server, sock, 303, "See Other", "", 0, &cookies, NULL, in.method,
+        in.path, client, "/login");
     goto out;
   }
   if (span_eq(in.method, strlen(in.method), "GET") &&
@@ -1395,11 +1511,11 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
   }
   if (gdefweb_admin_path(in.path) &&
       gdefweb_admin_authenticated(catalog, request, keyring, server->root,
-          sizeof server->root, in.cookie)) {
+          sizeof server->root, session_value)) {
     struct GDEFWEB_Admin_Reply page;
     memset(&page, 0, sizeof page);
     if (gdefweb_admin_serve(server->alloc, catalog, request, keyring,
-            server->root, sizeof server->root, in.method, in.path, in.cookie,
+            server->root, sizeof server->root, in.method, in.path, session_value,
             in.body, in.body_len, in.ctype, &page) != 0) {
       reply(server, sock, 500, "Internal Server Error", "", 0, NULL, NULL,
           in.method, in.path, client);
@@ -1420,7 +1536,7 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
     /* A signed-in session is shown the messages it was left, if the layout
      * places the messages widget. */
     gdefweb_admin_bind_messages(catalog, request, keyring, server->root,
-        sizeof server->root, in.cookie);
+        sizeof server->root, session_value);
     /* The route trie of the modules enabled for this tenant: their routes, and
      * the contributors that choose a page's layout. The kernel's own
      * contributor, which offers the site's rules, is in every table. */
@@ -1468,6 +1584,7 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
   reply(server, sock, 404, "Not Found", "", 0, NULL, NULL, in.method, in.path,
       client);
 out:
+  wipe(session_value, sizeof session_value);
   gdefcore_request_destroy(request);
   gdefcore_catalog_destroy(catalog);
   gdefcore_inst_text_free(server->inst, placement);

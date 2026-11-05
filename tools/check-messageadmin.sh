@@ -59,7 +59,7 @@ PLANT_NEED_TEXT='class="main"'
 plant public-page-not-bound src/server.c testMessageadmin \
   MessageAdmin.APublicPageThatPlacesTheWidgetShowsTheSessionItsMessageOnce \
   '    gdefweb_admin_bind_messages(catalog, request, keyring, server->root,
-        sizeof server->root, in.cookie);' \
+        sizeof server->root, session_value);' \
   '    (void)0;'
 
 # A save redirects and says nothing.

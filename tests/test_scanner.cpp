@@ -321,7 +321,14 @@ TEST_F(Scan, EveryRoute) {
         PostAt(host, "/login", std::string(), "username=bob&password=hunter2"));
     Check(label + " POST /login (admin)",
         PostAt(host, "/login", std::string(), "username=ada&password=secret"));
-    Check(label + " POST /logout", PostAt(host, "/logout", admin[i], ""));
+    Check(label + " POST /logout (no token)", PostAt(host, "/logout", admin[i], ""));
+    {
+      std::string signout = LogoutToken(GetAt(host, "/admin", admin[i]).body);
+      ASSERT_FALSE(signout.empty());
+      Reply out = PostAt(host, "/logout", admin[i], "token=" + signout);
+      Check(label + " POST /logout (signed)", out);
+      EXPECT_EQ(303, out.status);
+    }
     Check(label + " POST /admin/post (foreign origin)",
         PostAt(host, "/admin/post", admin[i], "x=1", "http://evil.example"));
     Check(label + " POST /anything (anon)", PostAt(host, "/no-such", std::string(), "x=1"));

@@ -6,6 +6,61 @@ HTTP adapter for Defiant. It accepts one listener, reads HTTP/1.1, and calls
 `DEFIANT_LISTEN` is the address. An empty value binds nothing. `/alive` and
 `/ready` are answered before a tenant is chosen.
 
+## The session cookie
+
+Signing in sets one cookie and nothing else holds a session. A server made with
+no options sets exactly
+
+    __Host-session=<token>; Secure; HttpOnly; SameSite=Strict; Path=/
+
+`Secure` keeps it to HTTPS, `HttpOnly` keeps it from scripts, and the
+`__Host-` prefix with `Path=/` and no `Domain` makes a browser accept it only
+from this host and refuse one set for it by a sibling host of the domain. The
+server reads only the cookie of that name. Signing out (below) clears it with
+the attributes it was set with.
+
+`gdefweb_server_create()` takes the cookie policy as `GDEFWEB_Server_Options`
+(start from `gdefweb_server_options_default()`; NULL is the same thing). Each
+relaxation is a named option, and each is limited to where it is needed:
+
+| Option | Value | Cookie | When it is for |
+|---|---|---|---|
+| `same_site` | `GDEFWEB_COOKIE_SAME_SITE_STRICT` (default) | `SameSite=Strict` | Everything that can be Strict |
+| `same_site` | `GDEFWEB_COOKIE_SAME_SITE_LAX` | `SameSite=Lax` | A deployment whose people arrive by links from other sites (see below) |
+| `transport` | `GDEFWEB_COOKIE_TRANSPORT_SECURE` (default) | `__Host-session`, `Secure` | Every deployment, including one behind a proxy that ends TLS |
+| `transport` | `GDEFWEB_COOKIE_TRANSPORT_PLAIN_LOOPBACK` | `session`, no `Secure` | Development over plain HTTP on the same machine |
+
+A browser ignores a `__Host-` cookie that is not `Secure`, so the plain-HTTP
+mode cannot keep the prefix and sets `session`. Because that cookie is readable
+by anyone who can see the connection, creation fails with
+`GDEFWEB_ERR_INSECURE` unless `DEFIANT_LISTEN` is a loopback address (127.0.0.0/8
+or `[::1]`); a server with no listener is refused too, since nothing says where
+it would be reached from. A server behind a TLS-terminating proxy listens on
+loopback and keeps the secure policy: the browser's connection is HTTPS, which
+is what `Secure` is about.
+
+**Why Strict, and what to do about it.** With `SameSite=Strict` a browser does
+not send the cookie on a request that started on another site. A person who
+follows a link to a page of this site from an email, a chat or another web page
+arrives signed out on that first request, and signed in on the next, because
+the next starts from this site. If that is wrong for a deployment (the front
+page of a signed-in people's site, say), choose Lax: the cookie is then sent on
+a top-level navigation by GET from anywhere. Nothing that changes anything
+depends on SameSite either way: every state-changing request is checked for its
+Origin and for the signed form token the session's own page carried.
+
+The `defiant` program reads `DEFIANT_COOKIE_SAMESITE` (`strict` or `lax`) and
+`DEFIANT_COOKIE_TRANSPORT` (`secure` or `plain-loopback`); anything else, or
+`plain-loopback` on a listener that is not loopback, is refused at start before
+anything is created.
+
+**Signing out.** Every signed-in admin page carries a "Sign out" form that posts
+to `/logout` with a signed token bound to that session, made for that purpose.
+`/logout` checks the Origin and the token. A request without one, with a damaged
+one, one signed for a different sign-in or for another form, or from another origin, is
+answered 403 and the session is left as it was. A signed request clears the
+cookie and answers 303 to `/login`.
+
 The library is LGPL-3.0-only. Public headers are `@stability free`.
 
 ## The admin pages
@@ -35,9 +90,9 @@ such page (a person granted only `core.menu.edit` lands on `/admin/menus`);
 anyone else goes to `/`. There is no second cookie for the admin area: the session
 says who someone is, each page's own check says what they may do and is asked on
 every request, so a grant made after signing in takes effect on the next request
-with no new sign-in. The cookie is SameSite=Lax, so every state-changing admin
-request must also carry the signed form token the page gave that session for that
-purpose; a request without one, or with another form's or another sign-in's, changes
+with no new sign-in. Every state-changing admin request must also carry the signed
+form token the page gave that session for that purpose, whatever the cookie's
+SameSite; a request without one, or with another form's or another sign-in's, changes
 nothing. The menu hangs under the admin home, so a
 person without `core.admin.use` reaches a page they hold the permission of but is
 not shown the menu.
@@ -135,6 +190,9 @@ are shown to fail, by name, when a defect is planted in a scratch copy of the
 server), `check-tpladmin` (the same for the template editor), `check-nav` (the same for the
 admin navigation and the menus page), `check-settingsadmin` (the same for the settings pages), `check-messageadmin` (the same for the
 admin directory and the messages a save leaves), `check-access` (the same
-for the access matrix page), and on Linux
+for the access matrix page), `check-adminarea` (the same for the permission gate of the admin
+area and for the signature check of every write), `check-cookies` (the same for the cookie
+policy and for signing out), `check-sizes` (every struct with a size member is probed),
+and on Linux
 `check-defiant` and `check-demo`. The scanner uses
 `defiant-test`, which has to be installed in the same prefix.

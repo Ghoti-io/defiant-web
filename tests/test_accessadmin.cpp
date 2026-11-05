@@ -195,7 +195,7 @@ TEST_F(AccessAdmin, TheAdministratorSeesRoleAndModuleRows) {
   /* It is a link from the More page, and the page itself links home. */
   EXPECT_TRUE(Has(Get("/admin/more", admin_).body, "href=\"/admin/access\""));
   EXPECT_TRUE(Has(page.body, "href=\"/admin\""));
-  EXPECT_FALSE(Has(page.body, "<form"));
+  EXPECT_FALSE(Has(WithoutSignout(page.body), "<form"));
   EXPECT_FALSE(Has(page.body, " style="));
   /* No internal id is shown (the response scanner's rule). */
   EXPECT_TRUE(ScansClean(page.body));

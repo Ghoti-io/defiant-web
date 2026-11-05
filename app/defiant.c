@@ -30,6 +30,12 @@
  *                           memory backend and nothing is kept
  *   DEFIANT_ADMIN_USER      the first admin, used only when the default
  *   DEFIANT_ADMIN_PASSWORD  tenant has no account
+ *   DEFIANT_COOKIE_SAMESITE `strict` (the default) or `lax`: the session
+ *                           cookie's SameSite attribute
+ *   DEFIANT_COOKIE_TRANSPORT `secure` (the default) or `plain-loopback`: the
+ *                           latter serves the cookie over plain HTTP for
+ *                           development, and the program refuses to start
+ *                           unless DEFIANT_LISTEN is a loopback address
  */
 
 #ifndef _WIN32
@@ -212,6 +218,8 @@ int main(void) {
   GDEFSTOR_KeyStore * keys = NULL;
   GDEFCORE_Inst * inst = NULL;
   GDEFWEB_Server * server = NULL;
+  GDEFWEB_Server_Options options;
+  GDEFWEB_Result create_rc;
   GDEFCORE_Catalog * catalog = NULL;
   uint8_t root[GDEFCORE_ACCOUNT_ROOT_LEN];
   char id[GDEFCORE_PUBLIC_ID_LEN + 1];
@@ -240,6 +248,36 @@ int main(void) {
       gdefcore_inst_config_destroy(config);
       return 2;
     }
+  }
+  /* The cookie policy is settled before anything is opened or made, so that a
+   * refusal leaves no data behind. */
+  gdefweb_server_options_default(&options);
+  if (env("DEFIANT_COOKIE_SAMESITE") != NULL) {
+    if (strcmp(env("DEFIANT_COOKIE_SAMESITE"), "lax") == 0) {
+      options.same_site = GDEFWEB_COOKIE_SAME_SITE_LAX;
+    } else if (strcmp(env("DEFIANT_COOKIE_SAMESITE"), "strict") != 0) {
+      fprintf(stderr, "defiant: DEFIANT_COOKIE_SAMESITE is strict or lax\n");
+      goto done;
+    }
+  }
+  if (env("DEFIANT_COOKIE_TRANSPORT") != NULL) {
+    if (strcmp(env("DEFIANT_COOKIE_TRANSPORT"), "plain-loopback") == 0) {
+      options.transport = GDEFWEB_COOKIE_TRANSPORT_PLAIN_LOOPBACK;
+    } else if (strcmp(env("DEFIANT_COOKIE_TRANSPORT"), "secure") != 0) {
+      fprintf(stderr, "defiant: DEFIANT_COOKIE_TRANSPORT is secure or plain-loopback\n");
+      goto done;
+    }
+  }
+  create_rc = gdefweb_server_create(config, &options, NULL, &server);
+  if (create_rc == GDEFWEB_ERR_INSECURE) {
+    fprintf(stderr,
+        "defiant: DEFIANT_COOKIE_TRANSPORT=plain-loopback needs DEFIANT_LISTEN "
+        "to be a loopback address (127.x.x.x or ::1)\n");
+    goto done;
+  }
+  if (create_rc != GDEFWEB_OK) {
+    fprintf(stderr, "defiant: cannot create the server\n");
+    goto done;
   }
   if (data != NULL && ensure_dir(data) != 0) {
     goto done;
@@ -271,8 +309,7 @@ int main(void) {
     goto done;
   }
   forget("DEFIANT_ADMIN_PASSWORD");
-  if (gdefweb_server_create(config, NULL, &server) != GDEFWEB_OK ||
-      gdefweb_server_set_inst(server, inst, root, sizeof root) != GDEFWEB_OK ||
+  if (gdefweb_server_set_inst(server, inst, root, sizeof root) != GDEFWEB_OK ||
       gdefweb_server_listen(server) != GDEFWEB_OK) {
     fprintf(stderr, "defiant: cannot start the listener\n");
     goto done;

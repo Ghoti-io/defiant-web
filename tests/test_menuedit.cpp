@@ -235,8 +235,9 @@ class MenuEditor : public Edge {
 
   std::string Script() { return Get("/defiant.js", std::string()).body; }
 
-  /* The form that adds an entry: the last one on the page. */
-  static std::string AddForm(const std::string & page) {
+  /* The form that adds an entry: the last one on the page but the sign-out form. */
+  static std::string AddForm(const std::string & whole) {
+    std::string page = WithoutSignout(whole);
     size_t at = page.rfind("<form");
     return page.substr(at, page.find("</form>", at) - at);
   }

@@ -76,7 +76,6 @@ plant role-name-check-reintroduced src/admin.c testAdminarea AdminArea.OneGrantR
   '    ok = 1;
   }
   wipe(raw, sizeof raw);
-  wipe(encoded, sizeof encoded);
   return ok;' \
   '    size_t plant_n = 0;
     const char * plant_id = gdefcore_request_principal(request, &plant_n);
@@ -95,7 +94,6 @@ plant role-name-check-reintroduced src/admin.c testAdminarea AdminArea.OneGrantR
     }
   }
   wipe(raw, sizeof raw);
-  wipe(encoded, sizeof encoded);
   return ok;'
 
 # The undo page names no permission: every admin session reaches it.
@@ -161,15 +159,11 @@ plant front-saved-without-the-request src/admin.c testAdminarea AdminArea.TheFro
   '  rc = gdefcore_entity_save(cs, id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, &value, 1);'
 
 # Gate 2: a grant made after sign-in opens its page with no new sign-in. The
-# authentication reads a second cookie again (put together so as not to name it).
+# session is read from a second cookie again (put together so as not to name it).
 PLANT_NEED_TEXT='LATE:'
-plant second-cookie-required-again src/admin.c testAdminarea AdminArea.AGrantMadeAfterSignInOpensItsPageOnTheNextRequestWithNoNewSignIn \
-  '  if (cookie_named(cookie, "__Host-session", encoded, sizeof encoded) != 0) {
-    return 0;
-  }' \
-  '  if (cookie_named(cookie, "__Host-" "admin", encoded, sizeof encoded) != 0) {
-    return 0;
-  }'
+plant second-cookie-required-again src/server.c testAdminarea AdminArea.AGrantMadeAfterSignInOpensItsPageOnTheNextRequestWithNoNewSignIn \
+  '    if (cookie_token(in.cookie, cookie_name(server), session_value,' \
+  '    if (cookie_token(in.cookie, "__Host-" "admin", session_value,'
 
 # The session cookie is withheld from a person who has no admin page to go to at
 # the moment they sign in, which is what the second cookie did.
@@ -196,11 +190,37 @@ plant menu-undo-written-without-the-signature-check src/admin.c testAdminarea \
       token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
       form_len != 9 || memcmp(form_id, "menu-undo", 9) != 0) {'
 
-# The post form has no plant here: its own check above the core is a second
-# layer, because gdefcore_form_resign() verifies the token's signature again
-# before anything is written (the core's gate plants that one), so removing the
-# web check alone changes nothing a request can see. The test of the post form
-# (WritingAPostNeedsTheSignedFormOfThisSession) still runs in every control.
+# The post form has one check of the token's signature, and it is the core's:
+# gdefcore_form_resign() opens the token against this session before anything
+# is signed or written. (The endpoint used to check it a second time first,
+# which hid the first from every test: removing either changed nothing a
+# request could see. The second one is gone.) This plant is that check gone:
+# the token is not opened, a fresh one is signed from what it says, and a
+# request whose token is not genuine writes.
+PLANT_NEED_TEXT='TOKEN:'
+plant post-written-without-the-signature-check src/admin.c testAdminarea \
+  AdminArea.WritingAPostNeedsTheSignedFormOfThisSession \
+  '  if (gdefcore_form_resign(catalog, request, keyring, root, root_len, session,
+          session_len, (const char *)raw, raw_n, values, nvalues, &resigned,
+          &resigned_n) != GDEFCORE_OK ||' \
+  '  if (gdefcore_form_sign(catalog, request, keyring, root, root_len, session,
+          session_len, form_id, form_len, target, GDEFCORE_PUBLIC_ID_LEN, "en", 2,
+          values, nvalues, NULL, 0, &resigned, &resigned_n) != GDEFCORE_OK ||'
+
+# The post form takes the token of another form of this very session: the
+# front page's, which verifies, and says it is for something else.
+PLANT_NEED_TEXT='TOKEN:'
+plant post-written-on-another-forms-token src/admin.c testAdminarea \
+  AdminArea.WritingAPostNeedsTheSignedFormOfThisSession \
+  '      form_len != 4 || memcmp(form_id, "post", 4) != 0 ||
+      !base_matches(catalog, target, base)) {
+    wipe(token, sizeof token);
+    wipe(raw, sizeof raw);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, "Not saved.");' \
+  '      !base_matches(catalog, target, base)) {
+    wipe(token, sizeof token);
+    wipe(raw, sizeof raw);
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, "Not saved.");'
 
 PLANT_NEED_TEXT='TOKEN:'
 plant front-saved-without-the-signature-check src/admin.c testAdminarea \

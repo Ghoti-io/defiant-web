@@ -322,6 +322,28 @@ std::string FormToken(const std::string & page, const char * label) {
   return InputValue(page.substr(form, at - form), "token", 0);
 }
 
+/* The page without its sign-out form, which every signed-in admin page carries
+ * and which is not what a test of the page's own forms is about. */
+std::string WithoutSignout(std::string page) {
+  size_t at = page.find("<form method=\"post\" action=\"/logout\">");
+  if (at != std::string::npos) {
+    size_t end = page.find("</form>", at);
+    if (end != std::string::npos) {
+      page.erase(at, end + 7 - at);
+    }
+  }
+  return page;
+}
+
+/* The token of the sign-out form a signed-in page carries, or "". */
+std::string LogoutToken(const std::string & page) {
+  size_t at = page.find("action=\"/logout\"");
+  if (at == std::string::npos) {
+    return std::string();
+  }
+  return InputValue(page.substr(at), "token", 0);
+}
+
 /* The token of the undo form that carries @p label. */
 std::string UndoToken(const std::string & page, const char * label) {
   size_t at = page.find(label);
@@ -362,6 +384,7 @@ class Edge : public ::testing::Test {
   GDEFCORE_Inst * inst_;
   GDEFCORE_Host * host_ = NULL;
   GDEFWEB_Server * server_;
+  std::string cookie_name_ = "__Host-session";
   uint8_t root_[GDEFCORE_ACCOUNT_ROOT_LEN];
   std::string saved_listen_;
   std::string saved_proxies_;
@@ -427,6 +450,31 @@ class Edge : public ::testing::Test {
   }
 
   void Listen(const char * proxies) {
+    ListenWith(proxies, NULL);
+  }
+
+  /* The result of creating a server with @p options at @p listen, which is
+   * destroyed again. Nothing about the fixture's own server changes. */
+  GDEFWEB_Result TryCreate(const GDEFWEB_Server_Options * options, const char * listen) {
+    GDEFCORE_Inst_Config * config = NULL;
+    GDEFWEB_Server * made = NULL;
+    GDEFWEB_Result rc;
+    SetEnv("DEFIANT_LISTEN", listen);
+    UnsetEnv("DEFIANT_TRUSTED_PROXIES");
+    EXPECT_EQ(GDEFCORE_OK, gdefcore_inst_config_load(NULL, &config));
+    rc = gdefweb_server_create(config, options, NULL, &made);
+    gdefcore_inst_config_destroy(config);
+    if (rc == GDEFWEB_OK) {
+      gdefweb_server_destroy(made);
+    } else {
+      EXPECT_EQ(nullptr, made);
+    }
+    return rc;
+  }
+
+  /* As Listen(), with the cookie policy @p options (NULL: the defaults). The
+   * session cookie then has the name that policy gives. */
+  void ListenWith(const char * proxies, const GDEFWEB_Server_Options * options) {
     GDEFCORE_Inst_Config * config = NULL;
     SetEnv("DEFIANT_LISTEN", "127.0.0.1:0");
     if (proxies == NULL) {
@@ -434,8 +482,12 @@ class Edge : public ::testing::Test {
     } else {
       SetEnv("DEFIANT_TRUSTED_PROXIES", proxies);
     }
+    cookie_name_ = options != NULL &&
+            options->transport == GDEFWEB_COOKIE_TRANSPORT_PLAIN_LOOPBACK
+        ? "session"
+        : "__Host-session";
     ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_config_load(NULL, &config));
-    ASSERT_EQ(GDEFWEB_OK, gdefweb_server_create(config, NULL, &server_));
+    ASSERT_EQ(GDEFWEB_OK, gdefweb_server_create(config, options, NULL, &server_));
     gdefcore_inst_config_destroy(config);
     ASSERT_EQ(GDEFWEB_OK,
         gdefweb_server_set_inst(server_, inst_, root_, sizeof root_));
@@ -622,7 +674,7 @@ class Edge : public ::testing::Test {
 
   /* The Cookie header line for a login: the one session cookie. */
   std::string CookieLine(const Reply & login) {
-    return "Cookie: " + CookiePair(login, "__Host-session") + "\r\n";
+    return "Cookie: " + CookiePair(login, cookie_name_.c_str()) + "\r\n";
   }
 
   Reply Get(const char * path, const std::string & cookie) {

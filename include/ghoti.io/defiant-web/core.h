@@ -47,6 +47,7 @@ typedef enum GDEFWEB_Result {
   GDEFWEB_ERR_INVALID,     ///< A caller argument is wrong, or a missing row.
   GDEFWEB_ERR_INTERNAL,    ///< A library invariant failed.
   GDEFWEB_ERR_BUSY,        ///< A call cannot proceed because one is already running.
+  GDEFWEB_ERR_INSECURE,    ///< A policy that is not secure was asked for where it is not allowed.
   GDEFWEB_RESULT_COUNT     ///< Not a result. Closes the string table.
 } GDEFWEB_Result;
 

@@ -33,7 +33,10 @@
 
 #define GDEFWEB_Allocator GHOTIIO_DEFWEB(GDEFWEB_Allocator)
 #define GDEFWEB_Result GHOTIIO_DEFWEB(GDEFWEB_Result)
+#define GDEFWEB_Cookie_SameSite GHOTIIO_DEFWEB(GDEFWEB_Cookie_SameSite)
+#define GDEFWEB_Cookie_Transport GHOTIIO_DEFWEB(GDEFWEB_Cookie_Transport)
 #define GDEFWEB_Server GHOTIIO_DEFWEB(GDEFWEB_Server)
+#define GDEFWEB_Server_Options GHOTIIO_DEFWEB(GDEFWEB_Server_Options)
 
 #define gdefweb_allocator_default GHOTIIO_DEFWEB(gdefweb_allocator_default)
 #define gdefweb_result_string GHOTIIO_DEFWEB(gdefweb_result_string)
@@ -45,6 +48,7 @@
 #define gdefweb_server_listen GHOTIIO_DEFWEB(gdefweb_server_listen)
 #define gdefweb_server_local GHOTIIO_DEFWEB(gdefweb_server_local)
 #define gdefweb_server_loop GHOTIIO_DEFWEB(gdefweb_server_loop)
+#define gdefweb_server_options_default GHOTIIO_DEFWEB(gdefweb_server_options_default)
 #define gdefweb_server_serving GHOTIIO_DEFWEB(gdefweb_server_serving)
 #define gdefweb_server_set_host GHOTIIO_DEFWEB(gdefweb_server_set_host)
 #define gdefweb_server_set_inst GHOTIIO_DEFWEB(gdefweb_server_set_inst)

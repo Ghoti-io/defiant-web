@@ -537,39 +537,6 @@ static char * b64_encode(const GDEFWEB_Allocator * alloc, const unsigned char * 
   return out;
 }
 
-static int cookie_named(const char * cookie, const char * name, char * out,
-    size_t cap) {
-  size_t nlen;
-  const char * p;
-  if (cookie == NULL || name == NULL) {
-    return -1;
-  }
-  nlen = strlen(name);
-  p = cookie;
-  while (*p != '\0') {
-    while (*p == ' ' || *p == ';') {
-      p += 1;
-    }
-    if (strncmp(p, name, nlen) == 0 && p[nlen] == '=') {
-      size_t i = 0;
-      p += nlen + 1;
-      while (p[i] != '\0' && p[i] != ';') {
-        i += 1;
-      }
-      if (i == 0 || i >= cap) {
-        return -1;
-      }
-      memcpy(out, p, i);
-      out[i] = '\0';
-      return 0;
-    }
-    while (*p != '\0' && *p != ';') {
-      p += 1;
-    }
-  }
-  return -1;
-}
-
 static int hex_nibble(char c) {
   if (c >= '0' && c <= '9') {
     return c - '0';
@@ -644,16 +611,12 @@ static int form_pair(const char * body, size_t n, const char * name, char * out,
 
 int gdefweb_admin_authenticated(GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
-    size_t root_len, const char * cookie) {
-  char encoded[1200];
+    size_t root_len, const char * session) {
   unsigned char raw[768];
   size_t raw_n = 0;
   int ok = 0;
-  if (cookie_named(cookie, "__Host-session", encoded, sizeof encoded) != 0) {
-    return 0;
-  }
-  if (b64_decode(encoded, raw, sizeof raw, &raw_n) != 0) {
-    wipe(encoded, sizeof encoded);
+  if (session == NULL || session[0] == '\0' ||
+      b64_decode(session, raw, sizeof raw, &raw_n) != 0) {
     return 0;
   }
   if (gdefcore_account_check(catalog, request, keyring, root, root_len,
@@ -661,7 +624,6 @@ int gdefweb_admin_authenticated(GDEFCORE_Catalog * catalog,
     ok = 1;
   }
   wipe(raw, sizeof raw);
-  wipe(encoded, sizeof encoded);
   return ok;
 }
 
@@ -770,16 +732,12 @@ static int take_page(struct Page * page, struct GDEFWEB_Admin_Reply * out) {
   return 0;
 }
 
-static int session_raw(const char * cookie, unsigned char * raw, size_t cap,
+static int session_raw(const char * session, unsigned char * raw, size_t cap,
     size_t * out_n) {
-  char encoded[1200];
-  int rc;
-  if (cookie_named(cookie, "__Host-session", encoded, sizeof encoded) != 0) {
+  if (session == NULL || session[0] == '\0') {
     return -1;
   }
-  rc = b64_decode(encoded, raw, cap, out_n);
-  wipe(encoded, sizeof encoded);
-  return rc;
+  return b64_decode(session, raw, cap, out_n);
 }
 
 static int token_meta(const unsigned char * raw, size_t n, char * form_id,
@@ -1044,11 +1002,11 @@ static void say(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request, int kind
  * admin session. Nothing is bound for any other. */
 void gdefweb_admin_bind_messages(GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
-    size_t root_len, const char * cookie) {
+    size_t root_len, const char * session) {
   unsigned char raw[768];
   size_t raw_n = 0;
-  if (catalog == NULL || request == NULL || cookie == NULL ||
-      session_raw(cookie, raw, sizeof raw, &raw_n) != 0) {
+  if (catalog == NULL || request == NULL || session == NULL ||
+      session_raw(session, raw, sizeof raw, &raw_n) != 0) {
     return;
   }
   (void)gdefcore_message_bind(catalog, request, keyring, root, root_len,
@@ -1848,9 +1806,12 @@ static int post_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
     say(catalog, request, GDEFCORE_MESSAGE_ERROR, "Not saved.");
     return redirect(out, "/admin/post");
   }
-  if (gdefcore_form_check(catalog, request, keyring, root, root_len, session,
-          session_len, (const char *)raw, raw_n, NULL) != GDEFCORE_OK ||
-      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+  /* What the token says it is for is read here to refuse early. Whether it is
+   * genuine is settled once, by gdefcore_form_resign() below, which opens it
+   * against this session before anything is signed or written; a second
+   * signature check in this function could never be seen to matter, because
+   * that one refuses first, and so is not here. */
+  if (token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
       form_len != 4 || memcmp(form_id, "post", 4) != 0 ||
       !base_matches(catalog, target, base)) {
     wipe(token, sizeof token);
@@ -5039,17 +5000,104 @@ static int settings_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * ca
   return rc == -2 ? unknown_admin(method, out) : rc;
 }
 
+/* The form id of the token that /logout asks for. A token the admin pages signed
+ * for any other purpose does not end a session. */
+static const char kLogoutPurpose[] = "logout";
+
+/* The sign-out form: a post to /logout with the signed token, bound to this
+ * session as every form's is. The token's target is the person, who exists. The
+ * result is a string for gcu_allocator_free(). */
+static int signout_form(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, char ** out) {
+  static const char kHead[] = "<form method=\"post\" action=\"/logout\">"
+                              "<input type=\"hidden\" name=\"token\" value=\"";
+  static const char kTail[] = "\"><button type=\"submit\">Sign out</button></form>";
+  size_t who_n = 0;
+  const char * principal = gdefcore_request_principal(request, &who_n);
+  char who[GDEFCORE_PUBLIC_ID_LEN + 1];
+  char * token = NULL;
+  struct Page page;
+  if (principal == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN) {
+    return -1;
+  }
+  /* A copy: signing checks the session again, which sets the request's
+   * principal afresh. */
+  memcpy(who, principal, GDEFCORE_PUBLIC_ID_LEN);
+  who[GDEFCORE_PUBLIC_ID_LEN] = '\0';
+  if (sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          kLogoutPurpose, who, NULL, 0, &token) != 0) {
+    return -1;
+  }
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  if (page_str(&page, kHead) != 0 || page_esc(&page, token, strlen(token)) != 0 ||
+      page_str(&page, kTail) != 0) {
+    gcu_allocator_free(alloc, token);
+    page_free(&page);
+    return -1;
+  }
+  gcu_allocator_free(alloc, token);
+  *out = page.p;
+  page.p = NULL;
+  return 0;
+}
+
+/* Whether the request is a sign-out the session's own page offered: its body
+ * carries a token that verifies for this session and was signed for sign-out.
+ * No token, a damaged one, one signed for a different sign-in or another form, is no. The
+ * Origin is the caller's check. */
+int gdefweb_admin_logout_allowed(GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, const char * body, size_t body_len,
+    const char * ctype) {
+  unsigned char sraw[768];
+  size_t sraw_n = 0;
+  char token[4096];
+  size_t token_n = 0;
+  unsigned char raw[3072];
+  size_t raw_n = 0;
+  char form_id[32];
+  size_t form_len = 0;
+  char target[GDEFCORE_PUBLIC_ID_LEN + 1];
+  uint64_t base = 0;
+  int ok = 0;
+  if (catalog == NULL || request == NULL || ctype == NULL ||
+      strncmp(ctype, "application/x-www-form-urlencoded", 33) != 0 ||
+      session_raw(session, sraw, sizeof sraw, &sraw_n) != 0) {
+    return 0;
+  }
+  if (form_pair(body, body_len, "token", token, sizeof token, &token_n) == 0 &&
+      b64_decode(token, raw, sizeof raw, &raw_n) == 0 &&
+      gdefcore_form_check(catalog, request, keyring, root, root_len,
+          (const char *)sraw, sraw_n, (const char *)raw, raw_n, NULL) == GDEFCORE_OK &&
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) == 0 &&
+      form_len == sizeof kLogoutPurpose - 1 &&
+      memcmp(form_id, kLogoutPurpose, form_len) == 0) {
+    ok = 1;
+  }
+  wipe(token, sizeof token);
+  wipe(raw, sizeof raw);
+  wipe(sraw, sizeof sraw);
+  return ok;
+}
+
 /*
  * The navigation goes where the page left its marker: the admin menu, and the
  * breadcrumbs and tabs where the page has them, drawn by the core's widgets
  * (nav.c). A page with no marker (the sign-in page, a redirect) is as it was.
  */
 static int nav_splice(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
-    GDEFCORE_Routes * routes, GDEFCORE_Request * request, const char * path,
-    struct GDEFWEB_Admin_Reply * out) {
+    GDEFCORE_Routes * routes, GDEFCORE_Request * request, GDEFCORE_Keyring * keyring,
+    const uint8_t * root, size_t root_len, const char * session, size_t session_len,
+    const char * path, struct GDEFWEB_Admin_Reply * out) {
   static const char kMark[] = GDEFWEB_NAV_MARK;
   char * html;
   size_t html_len = 0;
+  char * out_form = NULL;
+  size_t form_len;
+  const char * close_at;
+  size_t mid;
   char * at;
   char * joined;
   size_t head;
@@ -5062,11 +5110,18 @@ static int nav_splice(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   if (at == NULL) {
     return 0;
   }
+  /* The way out is offered with the navigation, and carries the token that
+   * /logout asks for. */
+  if (signout_form(alloc, catalog, request, keyring, root, root_len, session,
+          session_len, &out_form) != 0) {
+    return -1;
+  }
   html = gdefweb_nav_html(alloc, catalog, routes, request, path, &html_len);
   if (html == NULL) {
     static const char kHome[] = "<p><a href=\"/admin\">Home</a></p>";
     html = (char *)gcu_allocator_malloc(alloc, sizeof kHome);
     if (html == NULL) {
+      gcu_allocator_free(alloc, out_form);
       return -1;
     }
     memcpy(html, kHome, sizeof kHome);
@@ -5074,19 +5129,34 @@ static int nav_splice(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   }
   head = (size_t)(at - out->body);
   tail = out->len - head - (sizeof kMark - 1);
-  joined = (char *)gcu_allocator_malloc(alloc, head + html_len + tail + 1);
+  form_len = strlen(out_form);
+  /* The sign-out form goes last in the body, after the page's own forms, so that
+   * the order of the forms a page offers is the page's. A page with no closing
+   * tag has it where the navigation is. */
+  close_at = strstr(at + sizeof kMark - 1, "</body>");
+  mid = close_at != NULL ? (size_t)(close_at - (at + sizeof kMark - 1)) : 0;
+  joined = (char *)gcu_allocator_malloc(alloc, head + html_len + form_len + tail + 1);
   if (joined == NULL) {
     gcu_allocator_free(alloc, html);
+    gcu_allocator_free(alloc, out_form);
     return -1;
   }
   memcpy(joined, out->body, head);
   memcpy(joined + head, html, html_len);
-  memcpy(joined + head + html_len, at + sizeof kMark - 1, tail);
-  joined[head + html_len + tail] = '\0';
+  if (close_at != NULL) {
+    memcpy(joined + head + html_len, at + sizeof kMark - 1, mid);
+    memcpy(joined + head + html_len + mid, out_form, form_len);
+    memcpy(joined + head + html_len + mid + form_len, close_at, tail - mid);
+  } else {
+    memcpy(joined + head + html_len, out_form, form_len);
+    memcpy(joined + head + html_len + form_len, at + sizeof kMark - 1, tail);
+  }
+  joined[head + html_len + form_len + tail] = '\0';
   gcu_allocator_free(alloc, html);
+  gcu_allocator_free(alloc, out_form);
   gcu_allocator_free(alloc, out->body);
   out->body = joined;
-  out->len = head + html_len + tail;
+  out->len = head + html_len + form_len + tail;
   return 0;
 }
 
@@ -5107,7 +5177,7 @@ static int unknown_admin(const char * method, struct GDEFWEB_Admin_Reply * out) 
 
 int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
-    size_t root_len, const char * method, const char * path, const char * cookie,
+    size_t root_len, const char * method, const char * path, const char * session,
     const char * body, size_t body_len, const char * ctype,
     struct GDEFWEB_Admin_Reply * out) {
   unsigned char raw[768];
@@ -5135,7 +5205,7 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
     out->len = 0;
     return 0;
   }
-  if (session_raw(cookie, raw, sizeof raw, &raw_n) != 0) {
+  if (session_raw(session, raw, sizeof raw, &raw_n) != 0) {
     return -1;
   }
   /* The session's messages are drawn by the navigation of whatever page is
@@ -5220,10 +5290,12 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
     rc = unknown_admin(method, out);
   }
   if (rc == 0 && routes != NULL) {
-    rc = nav_splice(alloc, catalog, routes, request, path, out);
+    rc = nav_splice(alloc, catalog, routes, request, keyring, root, root_len,
+        (const char *)raw, raw_n, path, out);
   } else if (rc == 0) {
     /* No table: the pages still have their one way home. */
-    rc = nav_splice(alloc, catalog, NULL, request, path, out);
+    rc = nav_splice(alloc, catalog, NULL, request, keyring, root, root_len,
+        (const char *)raw, raw_n, path, out);
   }
   gdefweb_nav_close(routes);
   wipe(raw, sizeof raw);

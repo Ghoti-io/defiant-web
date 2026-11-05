@@ -165,7 +165,7 @@ TEST_F(NavAdmin, TheMenuIsTheCoresAndShowsWhatTheRoutesAllow) {
                                      "href=\"/admin/more\">More"))
       << MenuOf(more.body);
   EXPECT_TRUE(Has(more.body, "<h2>core</h2>")) << "the directory is the menu, grouped by module";
-  EXPECT_FALSE(Has(more.body, "<form"));
+  EXPECT_FALSE(Has(WithoutSignout(more.body), "<form"));
   EXPECT_TRUE(ScansClean(home.body));
   ExpectSecurity(home);
 }

@@ -135,7 +135,7 @@ TEST_F(Tenants, SessionAtOtherTenant) {
       ExpectStranger(kHostA, path, GetAt(kHostA, path, cb), "B's session at A");
     }
   }
-  /* The Lax session cookie alone, which is all a plain page reads. */
+  /* The session cookie alone, which is all a plain page reads. */
   std::string lax_a = "Cookie: " + CookiePair(LoginAt(kHostA, "ada", "secret"), "__Host-session") + "\r\n";
   ExpectStranger(kHostB, "/admin", GetAt(kHostB, "/admin", lax_a), "A's lax session at B");
   /* A's cookie sent to B's sign-in page does not skip the form. */

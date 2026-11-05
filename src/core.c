@@ -54,6 +54,8 @@ const char * gdefweb_result_string(GDEFWEB_Result result) {
     return "Internal error";
   case GDEFWEB_ERR_BUSY:
     return "Busy";
+  case GDEFWEB_ERR_INSECURE:
+    return "Not allowed without a secure connection";
   case GDEFWEB_RESULT_COUNT:
   default:
     return "Unknown error";
