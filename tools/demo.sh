@@ -6,12 +6,21 @@
 # An editor writes a post and drags a widget; a day passes and the editor
 # undoes the drag; a person is erased and the earlier snapshot is restored
 # without bringing them back; a second tenant on the same process sees
-# nothing of it. Each step prints one line. The first failure stops the run
+# nothing of it. Then, with requests arriving all the time, the site's title, a
+# menu entry, a template and a widget are changed through the admin forms; every
+# request is counted, none may fail, none may show half of a change, the process
+# stays the same and nothing is compiled that no request ran; and the session is
+# signed out. Each step prints one line. The first failure stops the run
 # and exits non-zero.
 #
 # GHOTI_DEMO_PLANT=ledger restores the backup pair trusting its own ledger
 # alone (the key set into a key store of its own, the live ledger never read)
 # and the rows through the storage import, and the run must fail at step 5.
+#
+# GHOTI_DEMO_PLANT is only the demo's own. A defect in the library the program
+# loads (a template, the title, a menu or the widget placement read once and
+# kept) is planted in a copy of that library by the suite's
+# tools/check-demo-plants.sh, which runs this script against the copy.
 #
 # Linux only: the day passes through an LD_PRELOAD clock.
 set -u
@@ -47,6 +56,7 @@ stop() { kill -INT "$PID"; wait "$PID"; local rc=$?; PID=; return $rc; }
 step() { "$@" || { echo "demo: stopped at the first failing step" >&2; exit 1; }; }
 
 mkdir -p "$W/scratch"
+step "$DEMO" selftest
 # Day one.
 step start 0
 step "$DEMO" web1 "$PORT" "$W/scratch"
@@ -60,4 +70,9 @@ step "$DEMO" operator2 "$W/data" "$W/scratch"
 step start 90000
 step "$DEMO" web3 "$PORT" "$W/scratch"
 step stop
-echo "demo: six steps passed"
+# The site draws its name, then the site is changed while it runs and requests flow.
+step "$DEMO" operator3 "$W/data" "$W/scratch"
+step start 90000
+step "$DEMO" flow "$PORT" "$PID" "$W/log"
+step stop
+echo "demo: every step passed"

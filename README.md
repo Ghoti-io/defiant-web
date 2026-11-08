@@ -54,6 +54,13 @@ The `defiant` program reads `DEFIANT_COOKIE_SAMESITE` (`strict` or `lax`) and
 `plain-loopback` on a listener that is not loopback, is refused at start before
 anything is created.
 
+Where the platform has `SIGUSR1`, the program answers it with one line on
+standard error, `defiant: stats compiled=N rendered=M`: the template bodies it
+has compiled and the ones it has run since it started. A stored template is read
+and compiled each time a page is drawn, so an edit shows on the very next
+request and nothing is built ahead; the two counts move together, and a program
+that compiled ahead of its requests would show the first ahead of the second.
+
 **Signing out.** Every signed-in admin page carries a "Sign out" form that posts
 to `/logout` with a signed token bound to that session, made for that purpose.
 `/logout` checks the Origin first: a request from another origin, or with none,
@@ -216,5 +223,9 @@ for the access matrix page), `check-adminarea` (the same for the permission gate
 area and for the signature check of every write), `check-cookies` (the same for the cookie
 policy and for signing out), `check-sizes` (every struct with a size member is probed),
 and on Linux
-`check-defiant` and `check-demo`. The scanner uses
+`check-defiant` and `check-demo`. `make demo` also changes the
+site's title, a menu entry, a template and a widget while requests keep arriving,
+and requires that none fails, that none shows half of a change and that the
+process and its compile counts are those of a program that rebuilt nothing.
+The scanner uses
 `defiant-test`, which has to be installed in the same prefix.

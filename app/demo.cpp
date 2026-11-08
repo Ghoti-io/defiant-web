@@ -32,7 +32,17 @@
  *
  * The web stages speak HTTP to the program, with the cutil loop as the
  * client. The operator stages open the data directory directly, so they run
- * while the program is stopped. The first failing step prints one line and
+ * while the program is stopped.
+ *
+ *   defiant-demo selftest                 the half-state check is shown to see
+ *   defiant-demo operator3 DATA SCRATCH   the site name placed on the front page
+ *   defiant-demo flow PORT PID LOG  change the site while requests flow
+ *
+ * The flow stage keeps four readers' requests arriving while the title, a menu
+ * entry, a template and a widget are each changed through the admin forms, counts
+ * every request, and checks that each response was a whole of one state of the
+ * site. It reads the program's process and its counters (SIGUSR1) because the
+ * browser cannot show those. The first failing step prints one line and
  * exits 1. GHOTI_DEMO_PLANT=ledger makes the restore trust the snapshot's ledger alone.
  */
 
@@ -55,11 +65,18 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include <signal.h>
+#include <unistd.h>
+
 #include <chrono>
 #include <fstream>
 #include <iterator>
+#include <list>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -344,6 +361,366 @@ std::string Login(Client & c, const std::string & host) {
   Need(!session.empty(), "an admin login set no session cookie");
   return session;
 }
+
+/* ---- the flow: requests that keep arriving while the site is changed ---- */
+
+double Now() {
+  return std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+/* One response of a request that flows, and what it showed. */
+struct Obs {
+  int kind;      /* 0: the public front page, 1: the admin home */
+  double t0;     /* when the request was made */
+  double t1;     /* when its response was taken */
+  std::map<std::string, std::string> shown;
+};
+
+/* One change, as the browser flow made it: from the moment its post was sent to
+ * the moment its answer was taken. */
+struct Window {
+  double issued = 0;
+  double done = 0;
+};
+
+typedef std::map<std::string, std::string> Shown;
+
+std::string Between(const std::string & page, const std::string & open,
+    const std::string & close) {
+  size_t at = page.find(open);
+  if (at == std::string::npos) {
+    return "<none>";
+  }
+  at += open.size();
+  size_t end = page.find(close, at);
+  return end == std::string::npos ? std::string("<none>") : page.substr(at, end - at);
+}
+
+/* What the public front page shows of the parts the changes touch: the site
+ * name and its tagline (one setting form), the two markers an edited template
+ * prints (one template), and where the recent posts are (one layout). */
+Shown PublicShown(const std::string & page) {
+  Shown s;
+  s["title"] = Between(page, "<span class=\"site-name\">", "</span>");
+  s["tagline"] = Between(page, "<span class=\"tagline\">", "</span>");
+  s["template.top"] = Between(page, "<span class=\"edit-a\">", "</span>");
+  s["template.bottom"] = Between(page, "<span class=\"edit-b\">", "</span>");
+  std::string region = PostRegion(page);
+  s["widget"] = region.empty() ? std::string("<none>") : region;
+  return s;
+}
+
+/* What the admin home shows of the menu: the whole of it, in order. */
+Shown AdminShown(const std::string & page) {
+  Shown s;
+  s["menu"] = Between(page, "<nav class=\"admin-menu\">", "</nav>");
+  return s;
+}
+
+/*
+ * Whether each response was a whole: the states of the site are the numbered
+ * points between its changes (0 is before the first, N after the last), and
+ * @p states[k] is what every part showed at point k. A response is a whole when
+ * one point explains everything it showed, and that point is neither older than
+ * a change that had already been answered when the request was made nor newer
+ * than a change that had not yet been sent when the response was taken. Returns
+ * one sentence for the first response that is not, or an empty string.
+ */
+std::string FirstHalfState(const std::vector<Obs> & obs, const std::vector<Window> & changes,
+    const std::vector<Shown> & states) {
+  const size_t n = changes.size();
+  for (const Obs & o : obs) {
+    size_t lo = 0;
+    size_t hi = 0;
+    for (size_t k = 0; k < n; k++) {
+      if (changes[k].done < o.t0) {
+        lo = k + 1;
+      }
+      if (changes[k].issued < o.t1) {
+        hi = k + 1;
+      }
+    }
+    std::set<size_t> common;
+    for (size_t k = 0; k <= n; k++) {
+      common.insert(k);
+    }
+    std::string odd;
+    for (const auto & part : o.shown) {
+      std::set<size_t> own;
+      for (size_t k = 0; k <= n; k++) {
+        auto at = states[k].find(part.first);
+        if (at != states[k].end() && at->second == part.second) {
+          own.insert(k);
+        }
+      }
+      if (own.empty() && odd.empty()) {
+        odd = part.first + " showed \"" + part.second + "\", which no state of the site had";
+      }
+      std::set<size_t> keep;
+      for (size_t k : common) {
+        if (own.count(k) != 0) {
+          keep.insert(k);
+        }
+      }
+      common.swap(keep);
+    }
+    if (!odd.empty()) {
+      return odd;
+    }
+    if (common.empty()) {
+      std::string parts;
+      for (const auto & part : o.shown) {
+        parts += (parts.empty() ? "" : ", ") + part.first;
+      }
+      return "a page showed parts of different states (" + parts + ") in one response";
+    }
+    bool inside = false;
+    for (size_t k : common) {
+      inside = inside || (k >= lo && k <= hi);
+    }
+    if (!inside) {
+      return *common.rbegin() < lo
+                 ? "a request made after change " + std::to_string(lo) +
+                       " was answered still showed the state before it"
+                 : "a response showed the state after change " +
+                       std::to_string(*common.begin()) + ", which had not been sent";
+    }
+  }
+  return std::string();
+}
+
+/* The request text, for the client and for the flow. */
+std::string BuildRequest(const std::string & method, const std::string & host,
+    const std::string & path, const std::string & cookie, const std::string & body) {
+  std::string req = method + " " + path + " HTTP/1.1\r\nHost: " + host + "\r\n";
+  if (method == "POST") {
+    req += "Origin: http://" + host + "\r\n"
+           "Content-Type: application/x-www-form-urlencoded\r\n"
+           "Content-Length: " + std::to_string(body.size()) + "\r\n";
+  }
+  if (!cookie.empty()) {
+    req += "Cookie: " + cookie + "\r\n";
+  }
+  return req + "\r\n" + body;
+}
+
+bool ParseReply(const std::string & raw, Reply * r) {
+  size_t blank = raw.find("\r\n\r\n");
+  if (raw.compare(0, 9, "HTTP/1.1 ") != 0 || blank == std::string::npos) {
+    return false;
+  }
+  r->status = atoi(raw.c_str() + 9);
+  r->headers = raw.substr(0, blank);
+  size_t line = r->headers.find("\r\n");
+  if (line != std::string::npos) {
+    r->headers = r->headers.substr(line + 2);
+  }
+  r->body = raw.substr(blank + 4);
+  return true;
+}
+
+/*
+ * Requests that keep arriving while the site is changed. Several readers, each
+ * with a request always in flight, share one loop with the editor's requests;
+ * every request is counted, and a reader's response is kept with the times it
+ * was made and taken and what it showed. The program serves one connection at a
+ * time, so the readers wait behind the editor's request in its queue and the
+ * editor's waits behind theirs; the check does not rely on that.
+ */
+class Flow {
+ public:
+  Flow(uint16_t port, const std::string & host) : port_(port), host_(host) {
+    if (gcu_loop_create(&loop_, NULL) != GCU_LOOP_OK) {
+      Fail("the flow could not create an event loop");
+    }
+  }
+  ~Flow() {
+    for (Job & j : jobs_) {
+      if (j.fiber != NULL && gcu_fiber_is_finished(j.fiber)) {
+        gcu_fiber_destroy(j.fiber);
+      }
+    }
+    gcu_loop_destroy(loop_);
+  }
+
+  /* An editor's request, made while the readers go on. @p expect holds the
+   * statuses that are an answer (200, or the redirect a form is answered with);
+   * anything else is a failed request and stops the run. */
+  Reply Do(const std::string & method, const std::string & path,
+      const std::string & cookie, const std::string & body,
+      const std::set<int> & expect, Window * window = NULL) {
+    Job * j = Submit(method, path, cookie, body, -1);
+    if (window != NULL) {
+      window->issued = j->t0;
+    }
+    while (!j->ex.done) {
+      Pump();
+    }
+    double taken = Now();
+    Reply r;
+    bool parsed = !j->ex.fail && ParseReply(j->ex.response, &r);
+    Retire(j);
+    sent_ += 1;
+    if (window != NULL) {
+      window->done = taken;
+    }
+    if (!parsed || expect.count(r.status) == 0) {
+      failed_ += 1;
+      Fail(method + " " + path + " was not answered as it should be (" +
+           (parsed ? "status " + std::to_string(r.status) : std::string("no reply")) + ")");
+    }
+    return r;
+  }
+
+  void StartReaders(const std::string & admin_cookie) {
+    admin_cookie_ = admin_cookie;
+    running_ = true;
+    for (int i = 0; i < kReaders; i++) {
+      Submit("GET", i % 2 == 0 ? "/" : "/admin", i % 2 == 0 ? std::string() : admin_cookie_,
+          std::string(), i % 2);
+    }
+  }
+
+  /* Let the readers go on until @p n more responses have been taken. */
+  void Soak(size_t n) {
+    size_t target = taken_ + n;
+    double end = Now() + 30;
+    while (taken_ < target) {
+      Pump();
+      Need(Now() < end, "the readers' requests were not answered");
+    }
+  }
+
+  /* No new reader request; wait for the ones in flight. */
+  void StopReaders() {
+    running_ = false;
+    double end = Now() + 30;
+    for (;;) {
+      bool any = false;
+      for (const Job & j : jobs_) {
+        any = any || j.reader >= 0;
+      }
+      if (!any) {
+        return;
+      }
+      Pump();
+      Need(Now() < end, "the readers' last requests were not answered");
+    }
+  }
+
+  const std::vector<Obs> & Observed() const { return obs_; }
+  size_t Sent() const { return sent_; }
+  size_t ReaderSent() const { return reader_sent_; }
+  size_t Failed() const { return failed_; }
+
+ private:
+  static const int kReaders = 4;
+
+  struct Job {
+    Exchange ex;
+    GCU_Fiber * fiber = NULL;
+    double t0 = 0;
+    int reader = -1; /* the kind of page a reader asks for, or -1 for the editor */
+    std::string path;
+  };
+
+  Job * Submit(const std::string & method, const std::string & path,
+      const std::string & cookie, const std::string & body, int reader) {
+    jobs_.emplace_back();
+    Job & j = jobs_.back();
+    j.reader = reader;
+    j.path = path;
+    j.ex.loop = loop_;
+    j.ex.port = port_;
+    j.ex.request = BuildRequest(method, host_, path, cookie, body);
+    j.ex.done = 0;
+    j.ex.fail = 1;
+    j.t0 = Now();
+    if (gcu_fiber_create(&j.fiber, ClientFiber, &j.ex, GCU_FIBER_DEFAULT_STACK_SIZE, NULL) !=
+            GCU_FIBER_OK ||
+        gcu_fiber_switch_to(j.fiber) != GCU_FIBER_OK) {
+      Fail("the flow could not start a request");
+    }
+    return &j;
+  }
+
+  void Retire(Job * job) {
+    for (auto it = jobs_.begin(); it != jobs_.end(); ++it) {
+      if (&*it == job) {
+        if (it->fiber != NULL && gcu_fiber_is_finished(it->fiber)) {
+          gcu_fiber_destroy(it->fiber);
+        }
+        jobs_.erase(it);
+        return;
+      }
+    }
+  }
+
+  /* A reader's response: counted, and kept with what it showed. */
+  void Take(Job & j, double taken) {
+    Reply r;
+    bool parsed = !j.ex.fail && ParseReply(j.ex.response, &r);
+    sent_ += 1;
+    reader_sent_ += 1;
+    taken_ += 1;
+    const char * mark = j.reader == 0 ? "class=\"main\"" : "admin-menu";
+    if (!parsed || r.status != 200 || !Has(r.body, mark)) {
+      failed_ += 1;
+      Fail("a request to " + j.path + " failed while the site was being changed (" +
+           (parsed ? "status " + std::to_string(r.status) : std::string("no reply")) + ")");
+    }
+    Obs o;
+    o.kind = j.reader;
+    o.t0 = j.t0;
+    o.t1 = taken;
+    o.shown = j.reader == 0 ? PublicShown(r.body) : AdminShown(r.body);
+    obs_.push_back(o);
+  }
+
+  void Pump() {
+    if (gcu_loop_run_once(loop_, 5) != GCU_LOOP_OK) {
+      Fail("the flow's event loop failed");
+    }
+    double now = Now();
+    for (auto it = jobs_.begin(); it != jobs_.end();) {
+      Job & j = *it;
+      if (!j.ex.done) {
+        if (now - j.t0 > 30) {
+          Fail("a request to " + j.path + " did not finish");
+        }
+        ++it;
+        continue;
+      }
+      if (j.reader < 0) {
+        ++it;
+        continue;
+      }
+      int kind = j.reader;
+      Take(j, now);
+      if (j.fiber != NULL && gcu_fiber_is_finished(j.fiber)) {
+        gcu_fiber_destroy(j.fiber);
+      }
+      it = jobs_.erase(it);
+      if (running_) {
+        Submit("GET", kind == 0 ? "/" : "/admin", kind == 0 ? std::string() : admin_cookie_,
+            std::string(), kind);
+      }
+    }
+  }
+
+  uint16_t port_;
+  std::string host_;
+  GCU_Loop * loop_ = NULL;
+  std::list<Job> jobs_;
+  std::vector<Obs> obs_;
+  std::string admin_cookie_;
+  bool running_ = false;
+  size_t sent_ = 0;
+  size_t reader_sent_ = 0;
+  size_t failed_ = 0;
+  size_t taken_ = 0;
+};
 
 /* ---- the web stages ---- */
 
@@ -644,14 +1021,424 @@ int Operator2(const std::string & data, const std::string & scratch) {
   return 0;
 }
 
+/* ---- reading the program, which is the one thing the browser cannot show ---- */
+
+/* When the process started, in the kernel's ticks: the same process has the
+ * same number for as long as it lives, and a restart cannot repeat it. */
+unsigned long long ProcessStart(long pid) {
+  std::ifstream in("/proc/" + std::to_string(pid) + "/stat");
+  std::string line;
+  std::getline(in, line);
+  size_t close = line.rfind(')');
+  Need(close != std::string::npos, "the program's process cannot be read");
+  std::istringstream rest(line.substr(close + 2));
+  std::string field;
+  for (int i = 3; i < 22; i++) {
+    rest >> field;
+  }
+  unsigned long long start = 0;
+  rest >> start;
+  Need(start != 0, "the program's start time cannot be read");
+  return start;
+}
+
+struct Counts {
+  unsigned long long compiled = 0;
+  unsigned long long run = 0;
+};
+
+size_t CountOf(const std::string & hay, const std::string & needle) {
+  size_t n = 0;
+  for (size_t at = hay.find(needle); at != std::string::npos; at = hay.find(needle, at + 1)) {
+    n += 1;
+  }
+  return n;
+}
+
+/* Ask the program for its counters (SIGUSR1) and read the line it writes. */
+Counts ProgramCounts(long pid, const std::string & log) {
+  static const char kLine[] = "defiant: stats ";
+  size_t before = CountOf(ReadFile(log), kLine);
+  Need(kill((pid_t)pid, SIGUSR1) == 0, "the program cannot be asked for its counters");
+  for (int i = 0; i < 500; i++) {
+    std::string text = ReadFile(log);
+    if (CountOf(text, kLine) > before) {
+      size_t at = text.rfind(kLine);
+      Counts c;
+      Need(sscanf(text.c_str() + at, "defiant: stats compiled=%llu rendered=%llu", &c.compiled,
+               &c.run) == 2,
+          "the program's counters were not in the form expected");
+      return c;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  std::string seen = ReadFile(log);
+  Fail("the program did not report its counters; its log ends: " +
+       seen.substr(seen.size() > 400 ? seen.size() - 400 : 0) +
+       (kill((pid_t)pid, 0) == 0 ? " [still running]" : " [gone]"));
+}
+
+/* The cost of a page, in template bodies compiled, measured alone. */
+unsigned long long CostOf(Flow & f, long pid, const std::string & log, const std::string & path,
+    const std::string & cookie) {
+  Counts a = ProgramCounts(pid, log);
+  f.Do("GET", path, cookie, std::string(), {200});
+  Counts b = ProgramCounts(pid, log);
+  Need(b.compiled - a.compiled == b.run - a.run,
+      "a request to " + path + " compiled templates it did not run");
+  return b.compiled - a.compiled;
+}
+
+/* The form in @p page whose row for @p entry has the button @p action. */
+std::string RowForm(const std::string & page, const std::string & entry,
+    const std::string & action) {
+  size_t row = page.find("<tr id=\"e-" + entry + "\"");
+  if (row == std::string::npos) {
+    return std::string();
+  }
+  size_t button = page.find("name=\"action\" value=\"" + action + "\"", row);
+  if (button == std::string::npos || button > page.find("</tr>", row)) {
+    return std::string();
+  }
+  size_t form = page.rfind("<form", button);
+  return page.substr(form, page.find("</form>", button) - form);
+}
+
+/* The post a browser makes from a menu editor form. */
+std::string MenuBody(const std::string & form, const std::string & extra) {
+  return "token=" + InputValue(form, "token", 0) + "&version=" +
+         InputValue(form, "version", 0) + extra;
+}
+
+const char kMoreEntry[] = "core.l-admin-more";
+
+/* The edited template: the recent-posts pane with a marker at its top and at
+ * its bottom, so that a half-written edit would show one and not the other. */
+const char kEditedPane[] =
+    "<% use title; use summary; %><article class=\"recent\">"
+    "<span class=\"edit-a\">demo-edit-1</span><h2><%= title %></h2>"
+    "<p><%= summary %></p><span class=\"edit-b\">demo-edit-1</span></article>";
+
+int FlowStage(uint16_t port, long pid, const std::string & log) {
+  const std::string host = "127.0.0.1:" + std::to_string(port);
+  Flow f(port, host);
+  const std::set<int> ok = {200};
+  const std::set<int> answered = {200, 303};
+  std::vector<Shown> states;   /* what every part showed at each point */
+  std::vector<Window> changes; /* the changes, in the order they were made */
+  Shown now;                   /* what every part shows now */
+
+  auto login = [&]() {
+    Reply r = f.Do("POST", "/login", std::string(),
+        std::string("username=") + kAdminUser + "&password=" + kAdminPass, {303});
+    std::string cookie = CookiePair(r, "__Host-session");
+    Need(!cookie.empty(), "a sign-in set no session cookie");
+    return cookie;
+  };
+  /* A browser follows a redirect with a GET, as the same person. */
+  auto follow = [&](const Reply & r, const std::string & cookie) {
+    if (r.status != 303) {
+      return r;
+    }
+    return f.Do("GET", Header(r, "Location"), cookie, std::string(), ok);
+  };
+  /* What the site shows now, read by two requests of the editor's own. */
+  auto look = [&](const std::string & editor) {
+    Shown s = PublicShown(f.Do("GET", "/", std::string(), std::string(), ok).body);
+    for (const auto & part : AdminShown(f.Do("GET", "/admin", editor, std::string(), ok).body)) {
+      s[part.first] = part.second;
+    }
+    return s;
+  };
+  /* A change, made by a form and answered as a browser is answered. */
+  auto change = [&](const std::string & path, const std::string & cookie,
+                    const std::string & body) {
+    Window w;
+    Reply sent = f.Do("POST", path, cookie, body, answered, &w);
+    changes.push_back(w);
+    return follow(sent, cookie);
+  };
+
+  g_step = 7;
+  /* Two sign-ins: the editor's, and the readers', so that the messages a
+   * change leaves for the editor are not drawn by the readers' pages. */
+  const std::string editor = login();
+  const std::string readers = login();
+  const unsigned long long started = ProcessStart(pid);
+  Need(CountOf(ReadFile(log), "listening on port") == 1, "the program was started more than once");
+  const Counts first = ProgramCounts(pid, log);
+  now = look(editor);
+  Need(now["title"] != "<none>",
+      "the front page does not draw the site name, which the demo's operator stage places");
+  Need(now["widget"] == "main", "the recent posts did not start in the main region");
+  Need(now["menu"].find("href=\"/admin/more\"") != std::string::npos,
+      "the admin menu has no entry for More");
+  states.push_back(now);
+  const unsigned long long cost_front = CostOf(f, pid, log, "/", std::string());
+  const unsigned long long cost_admin = CostOf(f, pid, log, "/admin", editor);
+  Need(cost_front > 0 && cost_admin > 0, "a page was drawn with no template compiled");
+
+  f.StartReaders(readers);
+  f.Soak(12);
+
+  /* 7. the site title, a setting: the title and the tagline in one save. */
+  {
+    Reply form = f.Do("GET", "/admin/settings/core/site", editor, std::string(), ok);
+    Need(!InputValue(form.body, "version", 0).empty(), "the settings page has no form");
+    follow(change("/admin/settings/core/site", editor,
+               "token=" + InputValue(form.body, "token", 0) + "&version=" +
+                   InputValue(form.body, "version", 0) + "&s.core.site_title=" +
+                   Encode("Gadget Works") + "&s.core.tagline=" + Encode("Tools and more")),
+        editor);
+    now = look(editor);
+    Need(now["title"] == "Gadget Works" && now["tagline"] == "Tools and more",
+        "the request after the title was changed does not show the new title");
+    states.push_back(now);
+    f.Soak(12);
+    Ok(7, "change the site title: the very next request shows it");
+  }
+
+  /* 8. a menu entry, renamed and then moved. */
+  {
+    g_step = 8;
+    Reply page = f.Do("GET", "/admin/menus", editor, std::string(), ok);
+    std::string form = RowForm(page.body, kMoreEntry, "rename");
+    Need(!form.empty(), "the menu editor has no rename button for More");
+    change("/admin/menus", editor,
+        MenuBody(form, std::string("&name=") + kMoreEntry + "&action=rename&label=Elsewhere"));
+    Shown renamed = look(editor);
+    Need(renamed["menu"].find("href=\"/admin/more\">Elsewhere") != std::string::npos,
+        "the request after the menu entry was renamed does not show the new name");
+    states.push_back(renamed);
+    f.Soak(12);
+    page = f.Do("GET", "/admin/menus", editor, std::string(), ok);
+    form = RowForm(page.body, kMoreEntry, "up");
+    Need(!form.empty(), "the menu editor has no up button for More");
+    change("/admin/menus", editor,
+        MenuBody(form, std::string("&name=") + kMoreEntry + "&action=up"));
+    Shown moved = look(editor);
+    Need(moved["menu"] != renamed["menu"] &&
+             moved["menu"].find("href=\"/admin/more\">Elsewhere") != std::string::npos,
+        "the request after the menu entry was moved does not show it in its new place");
+    states.push_back(moved);
+    now = moved;
+    f.Soak(12);
+    Ok(8, "rename and move a menu entry: the very next request shows each");
+  }
+
+  /* 9. a page template, edited. */
+  {
+    g_step = 9;
+    Reply page = f.Do("GET", "/admin/templates/recent", editor, std::string(), ok);
+    Need(!InputValue(page.body, "token", 1).empty(), "the template page has no save form");
+    Reply saved = change("/admin/templates/recent", editor,
+        "token=" + InputValue(page.body, "token", 0) + "&token=" +
+            InputValue(page.body, "token", 1) + "&kind=core.pane&body=" + Encode(kEditedPane) +
+            "&confirm=recent&do=save");
+    Need(Has(saved.body, "Saved."), "the template was not saved");
+    now = look(editor);
+    Need(now["template.top"] == "demo-edit-1" && now["template.bottom"] == "demo-edit-1",
+        "the request after the template was edited does not show the edit");
+    states.push_back(now);
+    f.Soak(12);
+    Ok(9, "edit a template: the very next request shows it");
+  }
+
+  /* 10. a widget, moved: taken off the page and put back, in the other region. */
+  {
+    g_step = 10;
+    Reply page = f.Do("GET", "/admin/front", editor, std::string(), ok);
+    std::string place = FormToken(page.body, "Place recent posts");
+    std::string remove = FormToken(page.body, "Remove recent posts");
+    Need(!place.empty() && !remove.empty(), "the front page editor has no place or remove form");
+    change("/admin/front", editor, "token=" + remove);
+    now = look(editor);
+    Need(now["widget"] == "<none>",
+        "the request after the widget was taken off does not show it gone");
+    states.push_back(now);
+    f.Soak(8);
+    page = f.Do("GET", "/admin/front", editor, std::string(), ok);
+    place = FormToken(page.body, "Place recent posts");
+    change("/admin/front", editor, "token=" + place);
+    now = look(editor);
+    Need(now["widget"] == "side",
+        "the request after the widget was put back does not show it in the side region");
+    states.push_back(now);
+    f.Soak(12);
+    Ok(10, "move a widget: the very next request shows it gone, then in its new region");
+  }
+
+  f.StopReaders();
+
+  /* 11. what the requests that flowed showed. */
+  g_step = 11;
+  Need(f.Failed() == 0, "a request failed");
+  for (size_t k = 0; k < changes.size(); k++) {
+    size_t during = 0;
+    for (const Obs & o : f.Observed()) {
+      during += (o.t0 < changes[k].done && o.t1 > changes[k].issued) ? 1 : 0;
+    }
+    Need(during > 0, "no request was in flight during change " + std::to_string(k + 1) +
+                         ", so the check proved nothing about it");
+  }
+  Need(states.size() == changes.size() + 1, "the flow lost count of the states of the site");
+  std::string torn = FirstHalfState(f.Observed(), changes, states);
+  Need(torn.empty(), "a half state: " + torn);
+  size_t overlapped = 0;
+  for (const Window & w : changes) {
+    for (const Obs & o : f.Observed()) {
+      overlapped += (o.t0 < w.done && o.t1 > w.issued) ? 1 : 0;
+    }
+  }
+  Ok(11, std::to_string(f.Sent()) + " requests (" + std::to_string(f.ReaderSent()) +
+             " from readers that never stopped), 0 failed, " + std::to_string(overlapped) +
+             " in flight during a change, every response a whole of one state");
+
+  /* 12. the same process, and nothing built ahead of a request. */
+  g_step = 12;
+  Need(kill((pid_t)pid, 0) == 0 && ProcessStart(pid) == started,
+      "the program's process is not the one the flow began with");
+  Need(CountOf(ReadFile(log), "listening on port") == 1, "the program was started again");
+  Counts last = ProgramCounts(pid, log);
+  Need(last.compiled - first.compiled == last.run - first.run,
+      "templates were compiled that no request ran");
+  Need(last.compiled > first.compiled, "the flow compiled nothing");
+  Counts again = ProgramCounts(pid, log);
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  Counts idle = ProgramCounts(pid, log);
+  Need(idle.compiled == again.compiled && idle.run == again.run,
+      "the program compiled templates while no request was arriving");
+  Need(CostOf(f, pid, log, "/", std::string()) == cost_front &&
+           CostOf(f, pid, log, "/admin", editor) == cost_admin,
+      "a page costs a different number of compiles after the changes");
+  Ok(12, "the same process throughout, " + std::to_string(last.compiled - first.compiled) +
+             " templates compiled for " + std::to_string(last.run - first.run) +
+             " run, none while idle, a page costs what it did");
+
+  /* 13. sign out. */
+  g_step = 13;
+  for (const std::string & cookie : {editor, readers}) {
+    Reply page = f.Do("GET", "/admin", cookie, std::string(), ok);
+    std::string token = FormToken(page.body, "Sign out");
+    Need(!token.empty(), "the admin home has no sign-out form");
+    Reply out = f.Do("POST", "/logout", cookie, "token=" + token, {303, 500});
+    Need(out.status == 303 && Header(out, "Location").find("/login") != std::string::npos,
+        "signing out was not answered with the sign-in page");
+    Need(!Has(out.body, "still signed in") && !Has(out.body, "Still signed in"),
+        "signing out reached the page that says the session is still active");
+    Reply gone = f.Do("GET", "/admin", cookie, std::string(), {200, 404});
+    Need(gone.body.empty(), "a signed-out session still opens the admin");
+  }
+  Ok(13, "sign out: the sign-in page, never the failed sign-out page, and the session is over");
+  return 0;
+}
+
+/* The check that decides whether a response was a whole is itself shown to
+ * see: pages made up to be whole pass, and a torn one, a stale one, one from
+ * the future and one of no state each fail with their own sentence. */
+int SelfTest() {
+  std::vector<Shown> states = {
+      {{"title", "old"}, {"tagline", "old"}},
+      {{"title", "new"}, {"tagline", "new"}},
+      {{"title", "new"}, {"tagline", "newer"}},
+  };
+  std::vector<Window> changes(2);
+  changes[0].issued = 10;
+  changes[0].done = 11;
+  changes[1].issued = 20;
+  changes[1].done = 21;
+  auto page = [](double t0, double t1, const char * title, const char * tagline) {
+    Obs o;
+    o.kind = 0;
+    o.t0 = t0;
+    o.t1 = t1;
+    o.shown["title"] = title;
+    o.shown["tagline"] = tagline;
+    return o;
+  };
+  auto verdict = [&](const Obs & o) {
+    return FirstHalfState(std::vector<Obs>{o}, changes, states);
+  };
+  Need(verdict(page(1, 2, "old", "old")).empty(), "a whole page before every change was refused");
+  Need(verdict(page(10.5, 10.9, "old", "old")).empty(), "a whole old page during a change was refused");
+  Need(verdict(page(10.5, 10.9, "new", "new")).empty(), "a whole new page during a change was refused");
+  Need(verdict(page(30, 31, "new", "newer")).empty(), "a whole page after every change was refused");
+  Need(Has(verdict(page(10.5, 10.9, "new", "old")), "parts of different states"),
+      "a page with the new title and the old tagline was not called torn");
+  Need(Has(verdict(page(12, 13, "old", "old")), "still showed the state before"),
+      "a page that is older than an answered change was not called stale");
+  Need(Has(verdict(page(5, 6, "new", "new")), "had not been sent"),
+      "a page that is newer than every sent change was not called early");
+  Need(Has(verdict(page(5, 6, "other", "old")), "no state of the site had"),
+      "a page of no state was not called so");
+  Ok(0, "the half-state check passes whole pages and fails a torn, a stale, an early and an unknown one");
+  return 0;
+}
+
+/* The site's name on the front page, as a site that draws it has it: the
+ * layout editor that would place it is not built, so the operator stage does,
+ * and the recent posts are in the main region beside it. */
+int Operator3(const std::string & data) {
+  Site s;
+  OpenSite(&s, data);
+  char ** ids = NULL;
+  size_t n = 0;
+  std::string front;
+  Need(gdefcore_entity_ids(s.catalog, "core.display", 12, &ids, &n) == GDEFCORE_OK,
+      "could not list the displays");
+  for (size_t i = 0; i < n && front.empty(); i++) {
+    char ** t = NULL;
+    size_t * l = NULL;
+    size_t c = 0;
+    if (gdefcore_entity_values(s.catalog, NULL, GDEFCORE_VIEW_PUBLISHED, ids[i], strlen(ids[i]),
+            "en", 2, "name", 4, &t, &l, &c) == GDEFCORE_OK) {
+      if (c > 0 && std::string(t[0], l[0]) == "front") {
+        front = ids[i];
+      }
+      gdefcore_values_free(s.catalog, t, l, c);
+    }
+  }
+  gdefcore_ids_free(s.catalog, ids, n);
+  Need(!front.empty(), "the site has no front display");
+  const char * panes[2] = {"main sitename", "main recent"};
+  size_t lens[2] = {strlen(panes[0]), strlen(panes[1])};
+  GDEFCORE_Value v;
+  memset(&v, 0, sizeof v);
+  v.size = sizeof v;
+  v.field = "panes";
+  v.field_len = 5;
+  v.texts = panes;
+  v.text_lens = lens;
+  v.count = 2;
+  GDEFCORE_Changeset * cs = NULL;
+  Need(gdefcore_changeset_prepare(s.catalog, NULL, 0, &cs) == GDEFCORE_OK &&
+           gdefcore_entity_save(cs, front.data(), front.size(), "en", 2, &v, 1) == GDEFCORE_OK &&
+           gdefcore_changeset_apply(cs, "core.display", 12) == GDEFCORE_OK,
+      "could not place the site name on the front page");
+  gdefcore_changeset_destroy(cs);
+  CloseSite(&s);
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
+  std::string mode = argc > 1 ? argv[1] : "";
+  if (mode == "selftest" && argc == 2) {
+    return SelfTest();
+  }
+  if (mode == "flow" && argc == 5) {
+    return FlowStage((uint16_t)atoi(argv[2]), atol(argv[3]), argv[4]);
+  }
+  if (mode == "operator3" && argc == 4) {
+    return Operator3(argv[2]);
+  }
   if (argc != 4) {
-    fprintf(stderr, "usage: defiant-demo web1|web2|web3 PORT SCRATCH | operator1|operator2 DATA SCRATCH\n");
+    fprintf(stderr,
+        "usage: defiant-demo selftest | web1|web2|web3 PORT SCRATCH | operator1|operator2|operator3 DATA SCRATCH |"
+        " flow PORT PID LOG\n");
     return 2;
   }
-  std::string mode = argv[1];
   if (mode == "web1") {
     return Web1((uint16_t)atoi(argv[2]), argv[3]);
   }

@@ -36,6 +36,13 @@
  *                           latter serves the cookie over plain HTTP for
  *                           development, and the program refuses to start
  *                           unless DEFIANT_LISTEN is a loopback address
+ *
+ * SIGINT and SIGTERM stop the program once the request being served is done.
+ * Where the platform has SIGUSR1, it makes the program write one line to
+ * standard error, `defiant: stats compiled=N rendered=M`: how many template
+ * bodies it has compiled and how many it has run since it started. They move
+ * together, a request at a time; a program that compiled ahead of its requests
+ * would show the first ahead of the second.
  */
 
 #ifndef _WIN32
@@ -75,11 +82,19 @@
 #define kStopWait 5
 
 static volatile sig_atomic_t g_stop = 0;
+static volatile sig_atomic_t g_stats = 0;
 
 static void on_signal(int sig) {
   (void)sig;
   g_stop = 1;
 }
+
+#ifdef SIGUSR1
+static void on_stats(int sig) {
+  (void)sig;
+  g_stats = 1;
+}
+#endif
 
 static void wipe(void * p, size_t n) {
   volatile unsigned char * b = (volatile unsigned char *)p;
@@ -329,7 +344,26 @@ int main(void) {
   }
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
+#ifdef SIGUSR1
+  {
+    /* sigaction, not signal(): with only _POSIX_C_SOURCE defined, glibc's
+     * signal() resets the handler after one delivery, and a second request
+     * for the counters would end the program. */
+    struct sigaction act;
+    memset(&act, 0, sizeof act);
+    act.sa_handler = on_stats;
+    sigemptyset(&act.sa_mask);
+    sigaction(SIGUSR1, &act, NULL);
+  }
+#endif
   for (;;) {
+    if (g_stats) {
+      g_stats = 0;
+      fprintf(stderr, "defiant: stats compiled=%llu rendered=%llu\n",
+          (unsigned long long)gdefcore_render_compile_count(),
+          (unsigned long long)gdefcore_render_run_count());
+      fflush(stderr);
+    }
     if (g_stop) {
       if (stop_at == 0) {
         stop_at = time(NULL);
