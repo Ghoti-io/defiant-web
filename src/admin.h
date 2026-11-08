@@ -49,6 +49,11 @@ const char * gdefweb_admin_csp(void);
 /* The sign-in page. @p failed adds the one sentence a refusal shows. */
 const char * gdefweb_admin_login_page(int failed);
 
+/* The page a failed sign-out answers with (500): the first line says the
+ * session is still active. A fixed page that asks nothing of the store, the
+ * catalog or the request, since the store is what failed. */
+const char * gdefweb_admin_signout_failed_page(void);
+
 int gdefweb_admin_static(const char * path, const char ** body, size_t * len,
     const char ** type);
 

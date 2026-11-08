@@ -76,9 +76,12 @@ is answered 403 and sets nothing, whatever its cookie is.
   with the clearing cookie, so a dead cookie is not left in the browser. A second
   sign-out of a session already signed out is this case.
 - *When the session cannot be ended.* If the core cannot record the revocation, or
-  the store cannot say whether the session is live, the answer is 500 with a note
-  that the person is still signed in, and the cookie is **not** cleared: nothing
-  is reported as signed out that is not. Trying again is safe.
+  the store cannot say whether the session is live, the answer is 500 with a
+  small fixed HTML page whose first line says "You are still signed in", and the
+  cookie is **not** cleared: nothing is reported as signed out that is not. The
+  page asks nothing of the store (it is what failed), carries no form (a retry
+  needs a fresh signed token), and links back to `/admin`. Trying again is safe.
+  Every response carries `Cache-Control: no-store`.
 
 The library is LGPL-3.0-only. Public headers are `@stability free`.
 

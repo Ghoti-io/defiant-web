@@ -191,4 +191,23 @@ plant failed-revocation-reported-as-signed-out src/admin.c testEdge $FAILS \
   '  out = rc == GDEFCORE_OK ? GDEFWEB_SIGNOUT_ENDED : GDEFWEB_SIGNOUT_FAILED;' \
   '  out = GDEFWEB_SIGNOUT_ENDED;'
 
+# The failed sign-out answers with plain text that does not say, first, that the
+# session is still active.
+PLANT_NEED_TEXT='FAILED:'
+plant failed-signout-page-hides-the-fact src/admin.c testEdge $FAILS \
+  '"<h1>You are still signed in</h1>"' \
+  '"<h1>Sign-out</h1>"'
+
+# The page offers a retry form that needs a token the failed store may not mint.
+PLANT_NEED_TEXT='FAILED:'
+plant failed-signout-page-carries-a-form src/admin.c testEdge $FAILS \
+  '"<p><a href=\"/admin\">Back to the admin</a></p></body></html>";' \
+  '"<form method=\"post\" action=\"/logout\"></form><p><a href=\"/admin\">Back to the admin</a></p></body></html>";'
+
+# A response may be cached.
+PLANT_NEED_TEXT='FAILED:'
+plant failed-signout-page-cacheable src/server.c testEdge $FAILS \
+  '      ghttp_headers_add(headers, "Cache-Control", "no-store") != GHTTP_OK ||' \
+  '      ghttp_headers_add(headers, "Cache-Control", "max-age=60") != GHTTP_OK ||'
+
 plant_finish

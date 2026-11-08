@@ -853,7 +853,14 @@ TEST_F(Edge, SigningOutThatCannotEndTheSessionIsNotASignOut) {
     EXPECT_EQ(500, r.status) << "FAILED: " << c.label;
     EXPECT_TRUE(HeaderAll(r, "Set-Cookie").empty())
         << "FAILED: " << c.label << ": the cookie was cleared though the session was not ended";
-    EXPECT_TRUE(Has(r.body, "still signed in")) << "FAILED: " << c.label;
+    EXPECT_TRUE(Has(r.body, "You are still signed in")) << "FAILED: " << c.label;
+    EXPECT_TRUE(Has(r.body, "<!DOCTYPE html>"))
+        << "FAILED: " << c.label << ": the failed sign-out answered with something other than the page";
+    EXPECT_TRUE(Has(r.body, "href=\"/admin\""))
+        << "FAILED: " << c.label << ": the page offers no way back";
+    EXPECT_FALSE(Has(r.body, "<form")) << "FAILED: " << c.label << ": a retry form needs a token the store may not mint";
+    EXPECT_TRUE(HasHeader(r, "Content-Type", "text/html")) << "FAILED: " << c.label;
+    EXPECT_TRUE(HasHeader(r, "Cache-Control", "no-store")) << "FAILED: " << c.label;
     g_faults.fail_get = false;
     g_faults.fail_put = false;
     /* The session was not ended, and the person can try again. */

@@ -403,6 +403,25 @@ const char * gdefweb_admin_login_page(int failed) {
   return failed ? bad : ok;
 }
 
+const char * gdefweb_admin_signout_failed_page(void) {
+  /* Nothing here asks the store or the catalog: the page is answered because
+   * the store could not be, so it must not need it. It says first that the
+   * session is still active, because a person who sees an error page after
+   * pressing Sign out may take it for done. It carries no form: a retry needs a
+   * fresh signed token, which may need the same store. */
+  static const char kPage[] =
+      "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+      "<title>Still signed in</title>"
+      "<link rel=\"stylesheet\" href=\"/defiant.css\"></head><body>"
+      "<h1>You are still signed in</h1>"
+      "<p>Signing out did not complete, so your session is still active.</p>"
+      "<p>Go back to the page you were on and press Sign out again in a moment. "
+      "If it keeps failing, ask an administrator to end your session before you "
+      "leave this computer.</p>"
+      "<p><a href=\"/admin\">Back to the admin</a></p></body></html>";
+  return kPage;
+}
+
 int gdefweb_admin_static(const char * path, const char ** body, size_t * len,
     const char ** type) {
   if (path == NULL || body == NULL || len == NULL || type == NULL) {

@@ -990,6 +990,7 @@ static int reply_ex(GDEFWEB_Server * server, GCU_Socket * sock, int status,
           type == NULL ? "text/plain; charset=utf-8" : type) != GHTTP_OK ||
       ghttp_headers_add(headers, "Content-Security-Policy", gdefweb_admin_csp()) !=
           GHTTP_OK ||
+      ghttp_headers_add(headers, "Cache-Control", "no-store") != GHTTP_OK ||
       ghttp_headers_add(headers, "Connection", "close") != GHTTP_OK) {
     goto done;
   }
@@ -1484,11 +1485,12 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
           client);
       goto out;
     case GDEFWEB_SIGNOUT_FAILED: {
-      /* Not signed out, and not told they are: no cookie is cleared. */
-      static const char kBody[] =
-          "Signing out failed and you are still signed in. Please try again.\n";
-      reply(server, sock, 500, "Internal Server Error", kBody, sizeof kBody - 1,
-          NULL, "text/plain; charset=utf-8", in.method, in.path, client);
+      /* Not signed out, and not told they are: no cookie is cleared, and the
+       * page says first that the session is still active. It is a fixed page
+       * that asks nothing of the store, which is what failed. */
+      const char * page = gdefweb_admin_signout_failed_page();
+      reply(server, sock, 500, "Internal Server Error", page, strlen(page), NULL,
+          "text/html; charset=utf-8", in.method, in.path, client);
       goto out;
     }
     case GDEFWEB_SIGNOUT_ENDED:
