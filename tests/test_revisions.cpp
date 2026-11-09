@@ -42,7 +42,11 @@
 #include <string.h>
 
 #include <string>
+#include <filesystem>
+#include <system_error>
 #include <vector>
+
+#include "portable.h"
 
 namespace {
 
@@ -219,9 +223,7 @@ TEST(RevisionsBackends, MemoryAndSqliteAgreeAndSqliteSurvivesReopening) {
     gdefcore_catalog_destroy(cat);
     gdefstor_store_destroy(store);
   }
-  const char * tmp = getenv("TMPDIR");
-  std::string pattern = std::string(tmp != NULL && tmp[0] != '\0' ? tmp : "/tmp") +
-                        "/defiant-web-revisions-XXXXXX";
+  std::string pattern = PortableTempDir() + "/defiant-web-revisions-XXXXXX";
   std::vector<char> path(pattern.begin(), pattern.end());
   path.push_back('\0');
   ASSERT_NE(nullptr, mkdtemp(path.data()));
@@ -258,8 +260,9 @@ TEST(RevisionsBackends, MemoryAndSqliteAgreeAndSqliteSurvivesReopening) {
     gdefcore_catalog_destroy(cat);
     gdefstor_store_destroy(store);
   }
-  std::string cleanup = std::string("rm -rf '") + path.data() + "'";
-  EXPECT_EQ(0, system(cleanup.c_str()));
+  std::error_code removed;
+  std::filesystem::remove_all(path.data(), removed);
+  EXPECT_FALSE(removed) << removed.message();
 }
 
 int main(int argc, char ** argv) {

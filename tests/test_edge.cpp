@@ -25,6 +25,7 @@
  */
 
 #include "edge_fixture.h"
+#include "portable.h"
 
 #include <ghoti.io/defiant-storage/model.h>
 #include <ghoti.io/defiant-storage-sqlite/model.h>
@@ -809,7 +810,8 @@ GDEFSTOR_Result FaultPut(void * ctx, void * txn, const GDEFSTOR_ModelRecord * r)
 
 TEST_F(Edge, SigningOutThatCannotEndTheSessionIsNotASignOut) {
   char id[GDEFCORE_PUBLIC_ID_LEN + 1];
-  char tmpl[] = "/tmp/gdefweb-signout-XXXXXX";
+  std::string tmpl_str = PortableTempDir() + "/gdefweb-signout-XXXXXX";
+  char * tmpl = &tmpl_str[0];
   GDEFSSQLITE_ModelOptions options;
   GDEFSTOR_ModelBackend backend;
   ASSERT_NE(nullptr, mkdtemp(tmpl));

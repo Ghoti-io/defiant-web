@@ -167,7 +167,7 @@ Reply Parse(const std::string & raw) {
   return out;
 }
 
-int B64Url(const std::string & in, unsigned char * out, size_t cap, size_t * out_n) {
+[[maybe_unused]] int B64Url(const std::string & in, unsigned char * out, size_t cap, size_t * out_n) {
   int val = 0;
   int bits = -8;
   size_t o = 0;
@@ -283,7 +283,7 @@ std::string CookiePair(const Reply & reply, const char * name) {
   return std::string();
 }
 
-std::string SetCookieLine(const Reply & reply, const char * name) {
+[[maybe_unused]] std::string SetCookieLine(const Reply & reply, const char * name) {
   std::string prefix = std::string(name) + "=";
   for (const std::string & line : HeaderAll(reply, "Set-Cookie")) {
     if (line.compare(0, prefix.size(), prefix) == 0) {
@@ -310,7 +310,7 @@ std::string InputValue(const std::string & page, const char * name, size_t nth) 
 }
 
 /* The token in the form whose action is @p action and whose button says @p label. */
-std::string FormToken(const std::string & page, const char * label) {
+[[maybe_unused]] std::string FormToken(const std::string & page, const char * label) {
   size_t at = page.find(label);
   size_t form;
   if (at == std::string::npos) {
@@ -325,7 +325,7 @@ std::string FormToken(const std::string & page, const char * label) {
 
 /* The page without its sign-out form, which every signed-in admin page carries
  * and which is not what a test of the page's own forms is about. */
-std::string WithoutSignout(std::string page) {
+[[maybe_unused]] std::string WithoutSignout(std::string page) {
   size_t at = page.find("<form method=\"post\" action=\"/logout\">");
   if (at != std::string::npos) {
     size_t end = page.find("</form>", at);
@@ -337,7 +337,7 @@ std::string WithoutSignout(std::string page) {
 }
 
 /* The token of the sign-out form a signed-in page carries, or "". */
-std::string LogoutToken(const std::string & page) {
+[[maybe_unused]] std::string LogoutToken(const std::string & page) {
   size_t at = page.find("action=\"/logout\"");
   if (at == std::string::npos) {
     return std::string();
@@ -346,7 +346,7 @@ std::string LogoutToken(const std::string & page) {
 }
 
 /* The token of the undo form that carries @p label. */
-std::string UndoToken(const std::string & page, const char * label) {
+[[maybe_unused]] std::string UndoToken(const std::string & page, const char * label) {
   size_t at = page.find(label);
   if (at == std::string::npos) {
     return std::string();
@@ -355,7 +355,7 @@ std::string UndoToken(const std::string & page, const char * label) {
 }
 
 /* The history lines of the undo form that carries @p label. */
-std::string UndoLines(const std::string & page, const char * label) {
+[[maybe_unused]] std::string UndoLines(const std::string & page, const char * label) {
   size_t at = page.find(label);
   size_t end;
   if (at == std::string::npos) {
