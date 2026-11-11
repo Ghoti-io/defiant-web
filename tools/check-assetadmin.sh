@@ -130,7 +130,8 @@ plant revert-without-its-name src/admin.c testAssetadmin $T_HIST \
   '  } else if (form_field_alloc(post, post_n, "confirm", 0, &confirm, &confirm_n) != 0 ||
              confirm_n != name_len || memcmp(confirm, name, name_len) != 0) {
     notice = AN_WRONG_CONFIRM;' \
-  '  } else if (0) {
+  '  } else if (form_field_alloc(post, post_n, "confirm", 0, &confirm, &confirm_n) != 0 ||
+             confirm_n == (size_t)-1) {
     notice = AN_WRONG_CONFIRM;'
 
 plant_finish
