@@ -33,6 +33,9 @@
 
 #include "edge_fixture.h"
 
+#include <ghoti.io/defiant-core/layout.h>
+#include <ghoti.io/defiant-core/layoutedit.h>
+
 #include <ghoti.io/defiant-test/defiant-test.h>
 
 #define TA_STR2(x) #x
@@ -602,6 +605,57 @@ TEST_F(TplAdmin, SaveWritesOneRevisionWithTheActorAndRendersNext) {
   EXPECT_TRUE(Has(shown.body, "EDITED-RECENT"));
   EXPECT_FALSE(InputValue(shown.body, "token", 1).empty());
   EXPECT_TRUE(ScansClean(shown.body));
+}
+
+TEST_F(TplAdmin, SavingAPageTemplateThatDropsARegionSetsItsPlacementsAsideAndSaysSo) {
+  Open({"core.page"});
+  /* A widget placed in the side region of the layout that draws with the template. */
+  {
+    GDEFCORE_Catalog * catalog = NULL;
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_catalog_open(inst_, id_, strlen(id_), &catalog));
+    GDEFCORE_Layout_View view;
+    memset(&view, 0, sizeof view);
+    view.size = sizeof view;
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_layout_view(catalog, "post", 4, &view));
+    GDEFCORE_Layout_Edit edit;
+    memset(&edit, 0, sizeof edit);
+    edit.size = sizeof edit;
+    edit.placement.size = sizeof edit.placement;
+    edit.action = GDEFCORE_LAYOUT_ACT_PLACE;
+    edit.layout = "post";
+    edit.layout_len = 4;
+    edit.version = view.version;
+    edit.version_len = strlen(view.version);
+    edit.region = "side";
+    edit.region_len = 4;
+    snprintf(edit.placement.widget, sizeof edit.placement.widget, "recent");
+    GDEFCORE_Changeset * cs = NULL;
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_layout_stage_edit(cs, &edit));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, "core.display", 12));
+    gdefcore_changeset_destroy(cs);
+    gdefcore_layout_view_free(&view);
+    gdefcore_catalog_destroy(catalog);
+  }
+  const std::string body = "<% use region; %><div><%= region(\"main\") %></div>";
+  Reply sent;
+  Reply shown = Act("layout", Fresh("layout"), "save", body, "core.page", "layout", &sent);
+  EXPECT_EQ(303, sent.status);
+  EXPECT_TRUE(Has(shown.body, "Saved."));
+  EXPECT_TRUE(Has(shown.body, "Placements set aside, because their region is gone: post recent side"))
+      << shown.body.substr(0, 600);
+  EXPECT_EQ(body, Stored("layout", "body"));
+  GDEFCORE_Catalog * catalog = NULL;
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_catalog_open(inst_, id_, strlen(id_), &catalog));
+  GDEFCORE_Layout_View view;
+  memset(&view, 0, sizeof view);
+  view.size = sizeof view;
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_layout_view(catalog, "post", 4, &view));
+  EXPECT_EQ(1u, view.nplaced) << "the page's own content stays";
+  ASSERT_EQ(1u, view.nunplaced) << "nothing is lost";
+  EXPECT_STREQ("recent", view.unplaced[0].widget);
+  gdefcore_layout_view_free(&view);
+  gdefcore_catalog_destroy(catalog);
 }
 
 TEST_F(TplAdmin, SaveNeedsTheTypedName) {

@@ -3522,6 +3522,57 @@ static int tpl_flash_redirect(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog 
  * the core requires of a high-risk change. The page's own typed confirmation
  * was already checked.
  */
+/* The typed confirmation a high-risk apply wants: the machine names of what the
+ * stage touched, each once, one to a line, sorted. 0 when they do not fit. */
+static size_t touched_confirm(GDEFCORE_Changeset * cs, char * buf, size_t cap) {
+  char names[8][64];
+  size_t nn = 0;
+  size_t i;
+  size_t j;
+  size_t n = 0;
+  size_t touched = gdefcore_changeset_touched_count(cs);
+  for (i = 0; i < touched; i++) {
+    const char * type = NULL;
+    size_t type_n = 0;
+    int seen = 0;
+    if (gdefcore_changeset_touched_at(cs, i, NULL, NULL, &type, &type_n, NULL) != GDEFCORE_OK ||
+        type == NULL || type_n >= sizeof names[0]) {
+      return 0;
+    }
+    for (j = 0; j < nn && !seen; j++) {
+      seen = strlen(names[j]) == type_n && memcmp(names[j], type, type_n) == 0;
+    }
+    if (seen) {
+      continue;
+    }
+    if (nn >= 8) {
+      return 0;
+    }
+    memcpy(names[nn], type, type_n);
+    names[nn][type_n] = '\0';
+    nn++;
+  }
+  for (i = 0; i < nn; i++) {
+    for (j = i + 1; j < nn; j++) {
+      if (strcmp(names[j], names[i]) < 0) {
+        char swap[64];
+        memcpy(swap, names[i], sizeof swap);
+        memcpy(names[i], names[j], sizeof swap);
+        memcpy(names[j], swap, sizeof swap);
+      }
+    }
+  }
+  buf[0] = '\0';
+  for (i = 0; i < nn; i++) {
+    int w = snprintf(buf + n, cap - n, "%s%s", i > 0 ? "\n" : "", names[i]);
+    if (w < 0 || (size_t)w >= cap - n) {
+      return 0;
+    }
+    n += (size_t)w;
+  }
+  return n;
+}
+
 static int tpl_save(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, const char * id, const char * name, const char * kind,
     const char * body, size_t body_n, int * notice, char ** issues, size_t * issues_n) {
@@ -3534,6 +3585,8 @@ static int tpl_save(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
   size_t who_n = 0;
   int risk = 0;
   int rc;
+  char * moved = NULL;
+  size_t moved_n = 0;
   *notice = N_REFUSED;
   slots[0] = name;
   lens[0] = strlen(name);
@@ -3557,13 +3610,27 @@ static int tpl_save(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
   gdefcore_changeset_set_request(cs, request);
   rc = gdefcore_entity_save(cs, id, GDEFCORE_PUBLIC_ID_LEN, "en", 2, values, 3);
   if (rc != GDEFCORE_OK) {
+    free(moved);
     gdefcore_changeset_destroy(cs);
     *notice = N_INVALID;
     return 0;
   }
+  /* A page template's body names regions the layouts that draw with it place
+   * widgets in: a placement in one it no longer calls is set aside, in the same
+   * changeset, and never lost. */
+  if (strcmp(kind, "core.page") == 0) {
+    rc = gdefcore_layout_stage_template_carry(cs, name, strlen(name), body, body_n, &moved, &moved_n);
+    if (rc != GDEFCORE_OK) {
+      free(moved);
+    gdefcore_changeset_destroy(cs);
+      *notice = rc == GDEFCORE_ERR_OOM ? N_REFUSED : N_INVALID;
+      return rc == GDEFCORE_ERR_OOM ? -1 : 0;
+    }
+  }
   /* Who may: the permission of the kind (both, for a move) and every module. */
   rc = gdefcore_template_authorize(cs, request);
   if (rc != GDEFCORE_OK) {
+    free(moved);
     gdefcore_changeset_destroy(cs);
     *notice = N_REFUSED;
     return rc == GDEFCORE_ERR_OOM ? -1 : 0;
@@ -3583,18 +3650,36 @@ static int tpl_save(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     if (blocking) {
       int h = issues_html(alloc, report, issues, issues_n);
       gdefcore_template_report_free(report);
-      gdefcore_changeset_destroy(cs);
+      free(moved);
+    gdefcore_changeset_destroy(cs);
       *notice = N_INVALID;
       return h;
     }
   }
   gdefcore_template_report_free(report);
   (void)risk;
-  /* A template edit is high risk: the core's confirmation is the type. */
-  rc = gdefcore_changeset_apply(cs, GDEFCORE_TEMPLATE_TYPE,
-      sizeof GDEFCORE_TEMPLATE_TYPE - 1);
+  /* A template edit is high risk: the core's confirmation is the types it touched
+   * (the template, and the layouts a dropped region set aside). */
+  {
+    char joined[256];
+    size_t jl = touched_confirm(cs, joined, sizeof joined);
+    rc = jl > 0 ? gdefcore_changeset_apply(cs, joined, jl)
+                : gdefcore_changeset_apply(cs, GDEFCORE_TEMPLATE_TYPE, sizeof GDEFCORE_TEMPLATE_TYPE - 1);
+  }
   if (rc == GDEFCORE_OK) {
     *notice = N_SAVED;
+    if (moved != NULL && moved_n > 0) {
+      char said_text[600];
+      size_t at;
+      size_t i;
+      snprintf(said_text, sizeof said_text, "Placements set aside, because their region is gone: ");
+      at = strlen(said_text);
+      for (i = 0; i < moved_n && at + 2 < sizeof said_text; i++) {
+        said_text[at++] = moved[i] == '\n' ? ';' : moved[i];
+      }
+      said_text[at] = '\0';
+      say(catalog, request, GDEFCORE_MESSAGE_STATUS, said_text);
+    }
   } else {
     size_t cn = 0;
     const char * conflict = gdefcore_changeset_conflict(cs, &cn);
@@ -3605,17 +3690,20 @@ static int tpl_save(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     } else if (rc == GDEFCORE_ERR_FORMAT && refusal != NULL && rn > 0) {
       *notice = N_INVALID;
       if (issues_text_html(alloc, refusal, rn, issues, issues_n) != 0) {
-        gdefcore_changeset_destroy(cs);
+        free(moved);
+    gdefcore_changeset_destroy(cs);
         return -1;
       }
     } else if (rc == GDEFCORE_ERR_OOM) {
-      gdefcore_changeset_destroy(cs);
+      free(moved);
+    gdefcore_changeset_destroy(cs);
       return -1;
     } else {
       *notice = N_REFUSED;
     }
   }
-  gdefcore_changeset_destroy(cs);
+  free(moved);
+    gdefcore_changeset_destroy(cs);
   return 0;
 }
 
@@ -7836,71 +7924,12 @@ static int structures_post(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * c
     return -1;
   }
   if (rc == GDEFCORE_OK) {
-    /* The confirmation a high-risk apply wants is the machine names the stage touched. */
-    char names[256];
-    size_t at = 0;
-    size_t t;
-    size_t touched = gdefcore_changeset_touched_count(cs);
-    names[0] = '\0';
-    for (t = 0; t < touched; t++) {
-      const char * tid;
-      size_t tid_n;
-      const char * type;
-      size_t type_n;
-      int op;
-      size_t j;
-      int seen = 0;
-      if (gdefcore_changeset_touched_at(cs, t, &tid, &tid_n, &type, &type_n, &op) != GDEFCORE_OK) {
-        continue;
-      }
-      /* Unique, in the order the core wants: sorted. */
-      for (j = 0; j < at && !seen; ) {
-        size_t e = j;
-        while (e < at && names[e] != '\n') {
-          e++;
-        }
-        seen = e - j == type_n && memcmp(names + j, type, type_n) == 0;
-        j = e + 1;
-      }
-      if (!seen && at + type_n + 2 < sizeof names) {
-        if (at > 0) {
-          names[at++] = '\n';
-        }
-        memcpy(names + at, type, type_n);
-        at += type_n;
-        names[at] = '\0';
-      }
-    }
-    {
-      /* Sort the lines. */
-      char * lines[8];
-      size_t nl = 0;
-      char * p = names;
-      size_t x;
-      size_t y;
-      char joined[256];
-      size_t jl = 0;
-      while (*p != '\0' && nl < 8) {
-        lines[nl++] = p;
-        p = strchr(p, '\n');
-        if (p == NULL) {
-          break;
-        }
-        *p++ = '\0';
-      }
-      for (x = 0; x < nl; x++) {
-        for (y = x + 1; y < nl; y++) {
-          if (strcmp(lines[y], lines[x]) < 0) {
-            char * swap = lines[x];
-            lines[x] = lines[y];
-            lines[y] = swap;
-          }
-        }
-      }
-      for (x = 0; x < nl; x++) {
-        jl += (size_t)snprintf(joined + jl, sizeof joined - jl, "%s%s", x > 0 ? "\n" : "", lines[x]);
-      }
-      rc = gdefcore_changeset_apply(cs, joined, jl);
+    char joined[256];
+    size_t jl = touched_confirm(cs, joined, sizeof joined);
+    if (gdefcore_changeset_touched_count(cs) == 0) {
+      rc = GDEFCORE_OK;   /* the edit changed nothing */
+    } else {
+      rc = jl > 0 ? gdefcore_changeset_apply(cs, joined, jl) : GDEFCORE_ERR_INVALID;
     }
   }
   (void)number;

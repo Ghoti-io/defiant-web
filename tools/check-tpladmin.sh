@@ -208,4 +208,23 @@ plant template-reverted-without-the-signature-check src/admin.c testTpladmin \
       token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
       memcmp(target, id, GDEFCORE_PUBLIC_ID_LEN) != 0 || form_len != 10 ||'
 
+# A page template's body drops a region and the layouts that place widgets in it
+# are not carried: the placements are left naming a region the template lacks.
+PLANT_NEED_TEXT='Placements set aside'
+plant page-template-save-does-not-carry-layouts src/admin.c testTpladmin \
+  TplAdmin.SavingAPageTemplateThatDropsARegionSetsItsPlacementsAsideAndSaysSo \
+  '  if (strcmp(kind, "core.page") == 0) {
+    rc = gdefcore_layout_stage_template_carry(' \
+  '  if (0 && strcmp(kind, "core.page") == 0) {
+    rc = gdefcore_layout_stage_template_carry('
+
+# What was set aside is not said.
+PLANT_NEED_TEXT='Placements set aside'
+plant set-aside-by-a-template-save-not-said src/admin.c testTpladmin \
+  TplAdmin.SavingAPageTemplateThatDropsARegionSetsItsPlacementsAsideAndSaysSo \
+  '    if (moved != NULL && moved_n > 0) {
+      char said_text[600];' \
+  '    if (0 && moved != NULL && moved_n > 0) {
+      char said_text[600];'
+
 plant_finish
