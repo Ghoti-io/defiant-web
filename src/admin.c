@@ -509,6 +509,11 @@ static const char kCss[] =
     ".live {\n"
     "  min-height: 1.5em;\n"
     "}\n"
+    ".pv-region {\n"
+    "  margin: 0.5rem 0;\n"
+    "  padding: 0.25rem 0.5rem;\n"
+    "  border: 1px dashed GrayText;\n"
+    "}\n"
     ".sp {\n"
     "  max-width: 100%;\n"
     "  border: 1px solid GrayText;\n"
@@ -6670,7 +6675,8 @@ static int layout_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       page_esc(&page, name, strlen(name)) != 0 ||
       page_str(&page, "</h1><p>It is drawn with the page template <code>") != 0 ||
       page_esc(&page, v.template_name, strlen(v.template_name)) != 0 ||
-      page_str(&page, "</code>.</p><div id=\"layout-live\" class=\"live\" role=\"status\" aria-live=\"polite\"></div>") != 0 ||
+      page_str(&page, "</code>. <a href=\"/admin/layouts/") != 0 || page_seg(&page, name, strlen(name)) != 0 ||
+      page_str(&page, "/preview\">Preview</a></p><div id=\"layout-live\" class=\"live\" role=\"status\" aria-live=\"polite\"></div>") != 0 ||
       layout_notice(&page, notice, said, said_n) != 0) {
     goto fail;
   }
@@ -7103,6 +7109,137 @@ static int asset_location_layout(struct GDEFWEB_Admin_Reply * out, const char * 
 }
 
 /*
+ * The preview of a layout (layout editor story 28): the layout drawn as its
+ * regions, each outlined and labelled, with the placements one kind of visitor
+ * would see. A read: nothing is stored or cached, and a placement the visitor does
+ * not see is counted and never named. /admin/layouts/<name>/preview shows it for a
+ * visitor who is not signed in; a form on it chooses the visitor (not signed in,
+ * anyone signed in, or a role) and the page, and posts to the same address.
+ */
+
+#define PREVIEW_ROLES_MAX 64
+
+static int preview_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    const char * name, const char * role, const char * path, const char * type,
+    struct GDEFWEB_Admin_Reply * out) {
+  struct Page page;
+  GDEFCORE_Layout_Preview pv;
+  GDEFCORE_Preview_Viewer viewer;
+  char ** ids = NULL;
+  size_t count = 0;
+  char roles[PREVIEW_ROLES_MAX][64];
+  size_t nroles = 0;
+  size_t r;
+  size_t i;
+  int role_known = role[0] == '\0' || strcmp(role, "authenticated") == 0;
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  memset(&pv, 0, sizeof pv);
+  pv.size = sizeof pv;
+  if (gdefcore_entity_ids(catalog, "core.role", 9, &ids, &count) != GDEFCORE_OK) {
+    return -1;
+  }
+  for (i = 0; i < count && nroles < PREVIEW_ROLES_MAX; i++) {
+    if (strlen(ids[i]) == GDEFCORE_PUBLIC_ID_LEN && field_copy(catalog, ids[i], "name", roles[nroles],
+            sizeof roles[nroles]) == 0 && strcmp(roles[nroles], "authenticated") != 0 &&
+        strcmp(roles[nroles], "anonymous") != 0) {
+      role_known = role_known || strcmp(roles[nroles], role) == 0;
+      nroles++;
+    }
+  }
+  gdefcore_ids_free(catalog, ids, count);
+  if (!role_known) {
+    role = "";
+  }
+  memset(&viewer, 0, sizeof viewer);
+  viewer.size = sizeof viewer;
+  viewer.role = role;
+  viewer.role_len = strlen(role);
+  viewer.path = path;
+  viewer.path_len = strlen(path);
+  viewer.type = type;
+  viewer.type_len = strlen(type);
+  if (gdefcore_layout_preview(catalog, name, strlen(name), &viewer, &pv) != GDEFCORE_OK) {
+    return -1;
+  }
+  if (page_begin(&page, "Layout preview") != 0 || page_str(&page, "<div id=\"layout-preview\"><h1>Preview of layout ") != 0 ||
+      page_esc(&page, name, strlen(name)) != 0 ||
+      page_str(&page, "</h1><p>The layout as a visitor would see it, with sample content. "
+                      "Nothing is stored. <a href=\"/admin/layouts/") != 0 ||
+      page_seg(&page, name, strlen(name)) != 0 || page_str(&page, "\">Back to the layout</a></p>"
+                      "<form method=\"post\" action=\"/admin/layouts/") != 0 ||
+      page_seg(&page, name, strlen(name)) != 0 ||
+      page_str(&page, "/preview\"><p><label>Visitor <select name=\"role\"><option value=\"\"") != 0 ||
+      page_str(&page, role[0] == '\0' ? " selected" : "") != 0 ||
+      page_str(&page, ">Not signed in</option><option value=\"authenticated\"") != 0 ||
+      page_str(&page, strcmp(role, "authenticated") == 0 ? " selected" : "") != 0 ||
+      page_str(&page, ">Anyone signed in</option>") != 0) {
+    goto fail;
+  }
+  for (i = 0; i < nroles; i++) {
+    if (page_str(&page, "<option value=\"") != 0 || page_esc(&page, roles[i], strlen(roles[i])) != 0 ||
+        page_str(&page, strcmp(role, roles[i]) == 0 ? "\" selected>" : "\">") != 0 ||
+        page_str(&page, "Role ") != 0 || page_esc(&page, roles[i], strlen(roles[i])) != 0 ||
+        page_str(&page, "</option>") != 0) {
+      goto fail;
+    }
+  }
+  if (page_str(&page, "</select></label> <label>On the page <input name=\"path\" value=\"") != 0 ||
+      page_esc(&page, path, strlen(path)) != 0 ||
+      page_str(&page, "\"></label> <label>Showing the type <input name=\"type\" value=\"") != 0 ||
+      page_esc(&page, type, strlen(type)) != 0 ||
+      page_str(&page, "\"></label> <button type=\"submit\">Preview</button></p></form>") != 0) {
+    goto fail;
+  }
+  for (r = 0; r < pv.view.nregions; r++) {
+    GDEFCORE_Region_Info info;
+    size_t seen = 0;
+    memset(&info, 0, sizeof info);
+    info.size = sizeof info;
+    if (gdefcore_region_describe(catalog, pv.view.template_name, strlen(pv.view.template_name),
+            pv.view.regions[r], strlen(pv.view.regions[r]), &info) != GDEFCORE_OK) {
+      goto fail;
+    }
+    if (page_str(&page, "<section class=\"pv-region\" data-region=\"") != 0 ||
+        page_esc(&page, pv.view.regions[r], strlen(pv.view.regions[r])) != 0 ||
+        page_str(&page, "\"><h2>") != 0 || page_esc(&page, info.label, info.label_len) != 0 ||
+        page_str(&page, "</h2><ul>") != 0) {
+      gdefcore_region_info_free(catalog, &info);
+      goto fail;
+    }
+    gdefcore_region_info_free(catalog, &info);
+    for (i = 0; i < pv.view.nplaced; i++) {
+      if (!pv.shown[i] || strcmp(pv.view.placed[i].region, pv.view.regions[r]) != 0) {
+        continue;
+      }
+      if (page_str(&page, "<li>") != 0 || layout_summary(&page, &pv.view.placed[i]) != 0 ||
+          page_str(&page, " <em>sample content</em></li>") != 0) {
+        goto fail;
+      }
+      seen += 1;
+    }
+    if ((seen == 0 && page_str(&page, "<li>Nothing shows here for this visitor.</li>") != 0) ||
+        page_str(&page, "</ul></section>") != 0) {
+      goto fail;
+    }
+  }
+  {
+    char counts[160];
+    snprintf(counts, sizeof counts, "<p>%zu placements show; %zu are not shown to this visitor.</p>", pv.nshown,
+        pv.nhidden);
+    if (page_str(&page, counts) != 0 || page_str(&page, "</div>") != 0) {
+      goto fail;
+    }
+  }
+  gdefcore_layout_preview_free(&pv);
+  return take_page(&page, out);
+fail:
+  gdefcore_layout_preview_free(&pv);
+  page_free(&page);
+  return -1;
+}
+
+/*
  * /admin/layouts              the layouts the principal may edit
  * /admin/layouts/<name>       one layout (GET), an action on it (POST)
  */
@@ -7119,6 +7256,37 @@ static int layouts_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cat
   char id[GDEFCORE_PUBLIC_ID_LEN + 1];
   if (*rest == '\0') {
     return is_get ? layouts_list_page(alloc, catalog, request, out) : unknown_admin(method, out);
+  }
+  {
+    /* /admin/layouts/<name>/preview */
+    static const char kPreview[] = "/preview";
+    const char * slash = *rest == '/' ? strchr(rest + 1, '/') : NULL;
+    if (slash != NULL && strcmp(slash, kPreview) == 0) {
+      size_t stem = (size_t)(slash - (rest + 1));
+      char role[64];
+      char vpath[128];
+      char vtype[96];
+      int opened;
+      role[0] = vpath[0] = vtype[0] = '\0';
+      if (stem == 0 || stem > LAYOUT_NAME_MAX ||
+          seg_decode(rest + 1, stem, name, sizeof name, &name_len) != 0 ||
+          !gdefcore_siteasset_name_ok(name, name_len) || name_len != stem) {
+        return unknown_admin(method, out);
+      }
+      opened = layout_open(catalog, request, name, name_len, id);
+      if (opened < 0) {
+        return -1;
+      }
+      if (opened > 0 || (!is_get && !is_post)) {
+        return unknown_admin(method, out);
+      }
+      if (is_post && (layout_field_text(body, body_len, "role", role, sizeof role) != 0 ||
+                         layout_field_text(body, body_len, "path", vpath, sizeof vpath) != 0 ||
+                         layout_field_text(body, body_len, "type", vtype, sizeof vtype) != 0)) {
+        role[0] = vpath[0] = vtype[0] = '\0';
+      }
+      return preview_page(alloc, catalog, name, role, vpath, vtype, out);
+    }
   }
   if (*rest != '/' || rest[1] == '\0' || strchr(rest + 1, '/') != NULL ||
       strlen(rest + 1) > LAYOUT_NAME_MAX ||

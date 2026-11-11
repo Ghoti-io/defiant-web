@@ -231,6 +231,16 @@ have, so it is not part of `make test`. Who may edit a layout is the core's one
 decision about it, so a layout someone may not edit is not in the list and is the
 page that does not exist. Every text on the page is escaped.
 
+`/admin/layouts/<name>/preview` draws a layout as one kind of visitor would see it:
+every region of its template outlined and labelled, with the placements that
+visitor would see, each marked as sample content. A form on it chooses the visitor
+(not signed in, anyone signed in, or one of the site's roles) and the page and
+type being shown, and posts to the same address. It is a read: nothing is stored or
+cached, and a placement the visitor does not see is counted and never named, so a
+hidden one cannot be found out by previewing as another role. A role that does not
+exist is previewed as a visitor who is not signed in. It is there for whoever may
+edit the layout.
+
 `/admin/structures` is the page structure editor: the page templates the principal
 may edit and a form that makes a new one (a name and a first region), and for one
 template its structure drawn as rows of cells. A preview shows the structure at

@@ -135,4 +135,47 @@ plant undo-takes-an-edit-token src/admin.c testLayoutadmin $T_UNDO \
   '          post_n, is_undo ? "layout-undo" : "layout-edit", id, &base) ||' \
   '          post_n, "layout-edit", id, &base) ||'
 
+# ---- the preview (site admin story 28) -------------------------------------------------
+
+T_PREVIEW=LayoutAdmin.APreviewShowsTheLayoutAsOneKindOfVisitorWouldSeeItAndNeverNamesWhatItHides
+T_PREVIEW_OPEN=LayoutAdmin.APreviewIsForWhoMayEditTheLayoutAndASpellingThatIsNotAnAddressIsNotThere
+
+# The preview of a layout is opened for anyone who can sign in.
+PLANT_NEED_TEXT='NotThere'
+plant preview-open-ignores-the-permission src/admin.c testLayoutadmin $T_PREVIEW_OPEN \
+  '    if (!gdefweb_nav_follows(routes, request, "/admin/layouts", "core.admin-layouts")) {' \
+  '    if (0) {' \
+  '      if (opened > 0 || (!is_get && !is_post)) {' \
+  '      if ((0 && opened > 0) || (!is_get && !is_post)) {'
+
+# A placement the visitor does not see is drawn, and so named.
+PLANT_NEED_TEXT='Recent things'
+plant hidden-placement-named src/admin.c testLayoutadmin $T_PREVIEW \
+  '      if (!pv.shown[i] || strcmp(pv.view.placed[i].region, pv.view.regions[r]) != 0) {' \
+  '      if ((0 && !pv.shown[i]) || strcmp(pv.view.placed[i].region, pv.view.regions[r]) != 0) {'
+
+# The role chosen is not the one previewed.
+PLANT_NEED_TEXT='<strong>recent</strong>'
+plant role-not-passed-on src/admin.c testLayoutadmin $T_PREVIEW \
+  '  viewer.role = role;' \
+  '  viewer.role = (0 && role[0]) ? role : "";'
+
+# A name that is no role is trusted as one.
+PLANT_NEED_TEXT='no role of that name'
+plant unknown-role-trusted src/admin.c testLayoutadmin $T_PREVIEW \
+  '  if (!role_known) {
+    role = "";
+  }' \
+  '  if (0 && !role_known) {
+    role = "";
+  }'
+
+# The page asked about is written as it is.
+PLANT_NEED_TEXT='<b>x</b>'
+plant previewed-path-not-escaped src/admin.c testLayoutadmin $T_PREVIEW \
+  '      page_esc(&page, path, strlen(path)) != 0 ||
+      page_str(&page, "\"></label> <label>Showing the type <input name=\"type\" value=\"") != 0 ||' \
+  '      page_add(&page, path, strlen(path)) != 0 ||
+      page_str(&page, "\"></label> <label>Showing the type <input name=\"type\" value=\"") != 0 ||'
+
 plant_finish

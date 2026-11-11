@@ -180,6 +180,63 @@ TEST_F(LayoutAdmin, ANarrowGrantEditsOnlyTheLayoutsItNamesAndTheRestAreNotThere)
   EXPECT_EQ(404, Send("post", nara, "act=remove&index=0").status);
 }
 
+TEST_F(LayoutAdmin, APreviewShowsTheLayoutAsOneKindOfVisitorWouldSeeItAndNeverNamesWhatItHides) {
+  Open();
+  /* A widget for the role editors, in the side region. */
+  ASSERT_EQ(303, Send("post", ada_, Body(Page("post", ada_), "place", 0,
+                                         "&widget=recent&region=side&position=0")).status);
+  ASSERT_EQ(303, Send("post", ada_, Body(Page("post", ada_), "configure", 1,
+                                         "&title=Recent+things&target=&path=&type=&roles=editors")).status);
+  EXPECT_TRUE(Has(Page("post", ada_), "href=\"/admin/layouts/post/preview\">Preview</a>"));
+  /* Not signed in: only the page's own content, and a count of what is not shown. */
+  Reply anon = Get("/admin/layouts/post/preview", ada_);
+  EXPECT_EQ(200, anon.status);
+  EXPECT_TRUE(Has(anon.body, "<h1>Preview of layout post</h1>"));
+  EXPECT_TRUE(Has(anon.body, "<section class=\"pv-region\" data-region=\"main\"><h2>Main content area</h2>"));
+  EXPECT_TRUE(Has(anon.body, "<strong>content</strong>"));
+  EXPECT_FALSE(Has(anon.body, "<strong>recent</strong>"));
+  EXPECT_FALSE(Has(anon.body, "Recent things")) << "a hidden placement is never named";
+  EXPECT_TRUE(Has(anon.body, "<li>Nothing shows here for this visitor.</li>"));
+  EXPECT_TRUE(Has(anon.body, "1 placements show; 1 are not shown to this visitor."));
+  /* The role it is for sees it. */
+  const std::string person = Person("editor-person", {});
+  (void)person;
+  Reply as_editors = PostRaw("/admin/layouts/post/preview", ada_, "role=editors&path=%2Fx&type=");
+  EXPECT_EQ(200, as_editors.status);
+  /* A role that is not one is not a role: the page falls back to not signed in. */
+  EXPECT_FALSE(Has(as_editors.body, "<strong>recent</strong>")) << "no role of that name exists yet";
+  GDEFCORE_Catalog * catalog = NULL;
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_catalog_open(inst_, id_, strlen(id_), &catalog));
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_access_role_create(catalog, "editors", 7, NULL));
+  gdefcore_catalog_destroy(catalog);
+  as_editors = PostRaw("/admin/layouts/post/preview", ada_, "role=editors&path=%2Fx&type=");
+  EXPECT_TRUE(Has(as_editors.body, "<option value=\"editors\" selected>Role editors</option>"));
+  EXPECT_TRUE(Has(as_editors.body, "<strong>recent</strong>"));
+  EXPECT_TRUE(Has(as_editors.body, ", titled “Recent things”"));
+  EXPECT_TRUE(Has(as_editors.body, "2 placements show; 0 are not shown to this visitor."));
+  Reply signed_in = PostRaw("/admin/layouts/post/preview", ada_, "role=authenticated&path=&type=");
+  EXPECT_FALSE(Has(signed_in.body, "<strong>recent</strong>"));
+  /* The page asked about is escaped. */
+  Reply odd = PostRaw("/admin/layouts/post/preview", ada_, "role=&path=%3Cb%3Ex%3C%2Fb%3E&type=");
+  EXPECT_FALSE(Has(odd.body, "<b>x</b>"));
+  EXPECT_TRUE(Has(odd.body, "&lt;b&gt;x&lt;/b&gt;"));
+  /* Previewing is a read: the layout has the same revisions. */
+  EXPECT_TRUE(Has(Page("post", ada_), "<strong>recent</strong>"));
+}
+
+TEST_F(LayoutAdmin, APreviewIsForWhoMayEditTheLayoutAndASpellingThatIsNotAnAddressIsNotThere) {
+  Open();
+  const std::string reader = Person("reader", {});
+  EXPECT_TRUE(NotThere(Get("/admin/layouts/post/preview", reader)));
+  EXPECT_EQ(404, PostRaw("/admin/layouts/post/preview", reader, "role=").status);
+  EXPECT_TRUE(NotThere(Get("/admin/layouts/post/preview", std::string())));
+  for (const char * path : {"/admin/layouts/no-such/preview", "/admin/layouts/Post/preview",
+           "/admin/layouts//preview", "/admin/layouts/post/preview/", "/admin/layouts/po%73t/preview",
+           "/admin/layouts/post/previews", "/admin/layouts/a/b/preview"}) {
+    EXPECT_TRUE(NotThere(Get(path, ada_))) << path;
+  }
+}
+
 TEST_F(LayoutAdmin, ALayoutIsDrawnAsItsRegionsInTheTemplatesOrderWithLabelsAndNoScript) {
   Open();
   const std::string page = Page("post", ada_);
