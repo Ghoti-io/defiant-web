@@ -186,6 +186,29 @@ both fill in and submit the page's one move form, so a drag, a key and the form
 are the same post. The script says what it is doing in a live region, shows the
 messages a post left in the same region, and writes text only as text.
 
+`GET /assets/<owner>/<name>` serves a file a module ships (`asset.h` in
+defiant-core), to the tenant that has the module enabled and to nobody else: a
+disabled module's files, another owner's, a name with an encoded form, a dot
+segment, a backslash or a second slash, and an unknown host are all the same
+fixed 404. The type is the one the module declared for the file, sent with
+`X-Content-Type-Options: nosniff`, never one made from the name or the bytes;
+the bytes are exactly the declared ones, binary included. The hash is the
+`ETag`, and `If-None-Match` is answered 304 with no body. An address that carries
+the matching `?v=<hash>` is cached for a year as immutable; any other (none, an
+old hash, another file's) is `no-cache`, so a link written before an edit never
+serves old text from a cache. An SVG is sent with a `sandbox` policy of its own.
+A page names a file with `asset("owner/name")`, which writes the hash address.
+An asset is public: it is sent to anyone who asks, so nothing secret belongs in
+one.
+
+A page is sent one of two content policies. A public page's lets it load the
+site's own stylesheets, scripts, images and fonts from this origin
+(`default-src 'none'; style-src 'self'; script-src 'self' ...; img-src 'self';
+font-src 'self'; frame-ancestors 'none'`): no inline script or style, no
+`eval` and no other origin. An admin page, the sign-in page and the library's own
+two files keep the admin's, which allows one script by hash and no site file, so
+a script a site ships can never run where an admin form's token is.
+
 `/admin/settings` is the settings pages. The core generates the form of a group
 (`documentation/settings.md` there); this library draws the page around it, signs
 it for the session and the administrator, and reads the post: a value is checked

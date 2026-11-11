@@ -1088,7 +1088,10 @@ TEST_F(Edge, AdminAssets) {
   EXPECT_TRUE(Has(csp, "style-src 'self'"));
   EXPECT_TRUE(Has(csp, "frame-ancestors 'none'"));
   EXPECT_FALSE(Has(csp, "unsafe"));
-  EXPECT_EQ(csp, HeaderValue(Get("/", std::string()), "Content-Security-Policy"));
+  /* A public page is sent the policy that lets it load the site's own files
+   * (test_assets.cpp), and the admin's is not it. */
+  EXPECT_NE(csp, HeaderValue(Get("/", std::string()), "Content-Security-Policy"));
+  EXPECT_EQ(csp, HeaderValue(Get("/login", std::string()), "Content-Security-Policy"));
   /* An unknown host is the fixed 404, the same as for any path. */
   Reply fixed = Ask(Req("GET", "/no-such", "unknown.example", NULL, NULL), 5000);
   Reply other_js = Ask(Req("GET", "/defiant.js", "unknown.example", NULL, NULL), 5000);

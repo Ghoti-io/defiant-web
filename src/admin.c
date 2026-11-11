@@ -308,6 +308,17 @@ static const char kCss[] =
 
 static char kHash[80];
 static char kPolicy[320];
+static char kPublic[480];
+/* The policy of a public page: the site's own stylesheets, scripts, images and
+ * fonts, served from this origin, and nothing inline, nothing evaluated and no
+ * other origin. kPublicBase is it with no hash source, for when the hash of
+ * the admin's script could not be made. */
+static const char kPublicHead[] = "default-src 'none'; style-src 'self'; script-src";
+static const char kPublicTail[] =
+    "img-src 'self'; font-src 'self'; frame-ancestors 'none'";
+static const char kPublicBase[] =
+    "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; "
+    "font-src 'self'; frame-ancestors 'none'";
 static int kAssets;
 
 static void wipe(void * p, size_t n) {
@@ -342,6 +353,7 @@ static void ensure_assets(void) {
     snprintf(kPolicy, sizeof kPolicy,
         "default-src 'none'; script-src 'none'; style-src 'self'; "
         "frame-ancestors 'none'");
+    snprintf(kPublic, sizeof kPublic, "%s", kPublicBase);
     kHash[0] = '\0';
     kAssets = 1;
     return;
@@ -374,7 +386,14 @@ static void ensure_assets(void) {
       "default-src 'none'; script-src '%s'; style-src 'self'; "
       "frame-ancestors 'none'",
       kHash);
+  snprintf(kPublic, sizeof kPublic, "%s 'self' '%s'; %s", kPublicHead, kHash,
+      kPublicTail);
   kAssets = 1;
+}
+
+const char * gdefweb_public_csp(void) {
+  ensure_assets();
+  return kPublic;
 }
 
 const char * gdefweb_admin_csp(void) {

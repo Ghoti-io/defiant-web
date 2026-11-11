@@ -46,6 +46,12 @@ struct GDEFWEB_Admin_Reply {
 
 const char * gdefweb_admin_csp(void);
 
+/* The policy a public page is sent with: the admin's, widened to the site's own
+ * stylesheets, scripts, images and fonts from this origin. It has no inline
+ * source and no eval. Admin pages keep gdefweb_admin_csp(), so a site's script
+ * never runs where an admin form's token is. */
+const char * gdefweb_public_csp(void);
+
 /* The sign-in page. @p failed adds the one sentence a refusal shows. */
 const char * gdefweb_admin_login_page(int failed);
 

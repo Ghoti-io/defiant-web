@@ -29,6 +29,7 @@
 
 #include <ghoti.io/defiant-web/server.h>
 #include <ghoti.io/defiant-core/access.h>
+#include <ghoti.io/defiant-core/asset.h>
 #include <ghoti.io/defiant-core/account.h>
 #include <ghoti.io/defiant-core/entity.h>
 #include <ghoti.io/defiant-core/form.h>
@@ -93,6 +94,8 @@ struct InReq {
   char * cookie;
   char * origin;
   char * ctype;
+  char * query;
+  char * inm;
   char * body;
   size_t body_len;
 };
@@ -968,10 +971,20 @@ static int cookie_line(const GDEFWEB_Server * server, const char * value, int cl
   return n < 0 || (size_t)n >= cap ? -1 : 0;
 }
 
-static int reply_ex(GDEFWEB_Server * server, GCU_Socket * sock, int status,
+/* What a reply says beyond the common headers. A NULL member is the default:
+ * the admin's content policy and `no-store`. */
+struct Extra {
+  const char * csp;
+  const char * cache;
+  const char * etag;
+  int nosniff;
+};
+
+static int reply_full(GDEFWEB_Server * server, GCU_Socket * sock, int status,
     const char * reason, const void * body, size_t body_len,
     const struct Cookies * cookies, const char * type, const char * method,
-    const char * path, const char * client, const char * location) {
+    const char * path, const char * client, const char * location,
+    const struct Extra * extra) {
   GHTTP_Response * response = NULL;
   GHTTP_Buffer * buffer = NULL;
   GHTTP_Headers * headers;
@@ -988,10 +1001,21 @@ static int reply_ex(GDEFWEB_Server * server, GCU_Socket * sock, int status,
   if (ghttp_headers_add(headers, "Content-Length", length) != GHTTP_OK ||
       ghttp_headers_add(headers, "Content-Type",
           type == NULL ? "text/plain; charset=utf-8" : type) != GHTTP_OK ||
-      ghttp_headers_add(headers, "Content-Security-Policy", gdefweb_admin_csp()) !=
+      ghttp_headers_add(headers, "Content-Security-Policy",
+          extra != NULL && extra->csp != NULL ? extra->csp : gdefweb_admin_csp()) !=
           GHTTP_OK ||
-      ghttp_headers_add(headers, "Cache-Control", "no-store") != GHTTP_OK ||
+      ghttp_headers_add(headers, "Cache-Control",
+          extra != NULL && extra->cache != NULL ? extra->cache : "no-store") !=
+          GHTTP_OK ||
       ghttp_headers_add(headers, "Connection", "close") != GHTTP_OK) {
+    goto done;
+  }
+  if (extra != NULL && extra->etag != NULL &&
+      ghttp_headers_add(headers, "ETag", extra->etag) != GHTTP_OK) {
+    goto done;
+  }
+  if (extra != NULL && extra->nosniff &&
+      ghttp_headers_add(headers, "X-Content-Type-Options", "nosniff") != GHTTP_OK) {
     goto done;
   }
   if (location != NULL &&
@@ -1023,6 +1047,14 @@ done:
   ghttp_buffer_destroy(buffer);
   ghttp_response_destroy(response);
   return rc;
+}
+
+static int reply_ex(GDEFWEB_Server * server, GCU_Socket * sock, int status,
+    const char * reason, const void * body, size_t body_len,
+    const struct Cookies * cookies, const char * type, const char * method,
+    const char * path, const char * client, const char * location) {
+  return reply_full(server, sock, status, reason, body, body_len, cookies, type,
+      method, path, client, location, NULL);
 }
 
 static int reply(GDEFWEB_Server * server, GCU_Socket * sock, int status,
@@ -1057,6 +1089,8 @@ static void in_free(const GDEFWEB_Allocator * alloc, struct InReq * in) {
   mem_free(alloc, in->cookie);
   mem_free(alloc, in->origin);
   mem_free(alloc, in->ctype);
+  mem_free(alloc, in->query);
+  mem_free(alloc, in->inm);
   mem_free(alloc, in->body);
   memset(in, 0, sizeof *in);
 }
@@ -1072,6 +1106,8 @@ static int read_request(GDEFWEB_Server * server, GCU_Socket * sock, struct InReq
   const char * target;
   const char * path = NULL;
   size_t path_len = 0;
+  const char * query = NULL;
+  size_t query_len = 0;
   const GHTTP_Headers * headers;
   memset(in, 0, sizeof *in);
   if (ghttp_parser_create(GHTTP_PARSE_REQUEST, NULL, NULL, &parser) != GHTTP_OK) {
@@ -1138,7 +1174,7 @@ static int read_request(GDEFWEB_Server * server, GCU_Socket * sock, struct InReq
     goto done;
   }
   target = ghttp_request_target(request);
-  if (ghttp_request_target_split(request, &path, &path_len, NULL, NULL) !=
+  if (ghttp_request_target_split(request, &path, &path_len, &query, &query_len) !=
       GHTTP_OK) {
     goto done;
   }
@@ -1152,12 +1188,16 @@ static int read_request(GDEFWEB_Server * server, GCU_Socket * sock, struct InReq
   in->cookie = copy_header(server->alloc, headers, "Cookie");
   in->origin = copy_header(server->alloc, headers, "Origin");
   in->ctype = copy_header(server->alloc, headers, "Content-Type");
+  in->query = dup_n(server->alloc, query == NULL ? "" : query,
+      query == NULL ? 0 : query_len);
+  in->inm = copy_header(server->alloc, headers, "If-None-Match");
   in->body = body;
   in->body_len = body_len;
   body = NULL;
   if (in->method == NULL || in->path == NULL || in->host == NULL ||
       in->xhost == NULL || in->xfor == NULL || in->cookie == NULL ||
-      in->origin == NULL || in->ctype == NULL) {
+      in->origin == NULL || in->ctype == NULL || in->query == NULL ||
+      in->inm == NULL) {
     goto done;
   }
   (void)target;
@@ -1194,6 +1234,116 @@ static int fixed_404(GDEFWEB_Server * server, GCU_Socket * sock, const char * me
     const char * path, const char * client) {
   return reply(server, sock, 404, "Not Found", kFixed, strlen(kFixed), NULL,
       "text/plain; charset=utf-8", method, path, client);
+}
+
+/* Whether @p query carries `v=<hash>` for exactly @p hash. */
+static int query_has_hash(const char * query, const char * hash) {
+  size_t hn = strlen(hash);
+  const char * p = query;
+  while (*p != '\0') {
+    size_t n = strcspn(p, "&");
+    if (n == hn + 2 && p[0] == 'v' && p[1] == '=' && memcmp(p + 2, hash, hn) == 0) {
+      return 1;
+    }
+    p += n;
+    if (*p == '&') {
+      p++;
+    }
+  }
+  return 0;
+}
+
+/* Whether an If-None-Match value names @p etag (a quoted hash): `*`, or any of
+ * a comma-separated list, each with an optional weak mark. */
+static int etag_matches(const char * header, const char * etag) {
+  size_t en = strlen(etag);
+  const char * p = header;
+  while (*p != '\0') {
+    size_t n;
+    const char * item;
+    while (*p == ' ' || *p == '\t' || *p == ',') {
+      p++;
+    }
+    item = p;
+    n = strcspn(p, ",");
+    p += n;
+    while (n > 0 && (item[n - 1] == ' ' || item[n - 1] == '\t')) {
+      n--;
+    }
+    if (n == 1 && item[0] == '*') {
+      return 1;
+    }
+    if (n > 2 && item[0] == 'W' && item[1] == '/') {
+      item += 2;
+      n -= 2;
+    }
+    if (n == en && memcmp(item, etag, en) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/* Whether @p name, the part of the address after `/assets/`, is the spelling
+ * of an asset's public name and nothing else: `owner/name`, one slash, the
+ * characters a module's names are made of. An encoded form, a backslash, a dot
+ * segment and anything longer than the manifest allows are refused here, before
+ * any lookup; the name is then matched against registered names and never made
+ * into a path of any kind. */
+static int asset_spelling_ok(const char * name) {
+  size_t n = strlen(name);
+  size_t i;
+  int slashes = 0;
+  if (n == 0 || n > 2 * GDEFCORE_ASSET_NAME_MAX + 1) {
+    return 0;
+  }
+  for (i = 0; i < n; i++) {
+    unsigned char c = (unsigned char)name[i];
+    if (c == '/') {
+      slashes++;
+    } else if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' ||
+                   c == '_' || c == '-')) {
+      return 0;
+    }
+  }
+  return slashes == 1 && strstr(name, "..") == NULL && name[0] != '/' &&
+      name[n - 1] != '/';
+}
+
+/* GET /assets/<owner>/<name>. Answers 404 with the fixed sentence for a name
+ * that is not an asset of a module enabled for this tenant. */
+static void serve_asset(GDEFWEB_Server * server, GCU_Socket * sock,
+    GDEFCORE_Catalog * catalog, const struct InReq * in, const char * client) {
+  const char * ref = in->path + (sizeof "/assets/" - 1);
+  GDEFCORE_Asset found;
+  struct Extra extra;
+  char etag[GDEFCORE_ASSET_HASH_LEN + 4];
+  int hashed;
+  memset(&found, 0, sizeof found);
+  found.size = sizeof found;
+  if (!asset_spelling_ok(ref) ||
+      gdefcore_asset_find(catalog, NULL, ref, strlen(ref), &found) !=
+          GDEFCORE_OK) {
+    fixed_404(server, sock, in->method, in->path, client);
+    return;
+  }
+  snprintf(etag, sizeof etag, "\"%s\"", found.hash);
+  hashed = query_has_hash(in->query, found.hash);
+  memset(&extra, 0, sizeof extra);
+  extra.etag = etag;
+  extra.nosniff = 1;
+  extra.cache = hashed ? "public, max-age=31536000, immutable" : "no-cache";
+  extra.csp = found.kind == GDEFCORE_ASSET_IMAGE &&
+          strstr(found.media_type, "svg") != NULL
+      ? "default-src 'none'; sandbox"
+      : "default-src 'none'; frame-ancestors 'none'";
+  if (in->inm[0] != '\0' && etag_matches(in->inm, etag)) {
+    reply_full(server, sock, 304, "Not Modified", "", 0, NULL, found.media_type,
+        in->method, in->path, client, NULL, &extra);
+    return;
+  }
+  reply_full(server, sock, 200, "OK", found.bytes, found.bytes_len, NULL,
+      found.media_type, in->method, in->path, client, NULL, &extra);
 }
 
 static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
@@ -1517,6 +1667,11 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
         "text/html; charset=utf-8", in.method, in.path, client);
     goto out;
   }
+  if (span_eq(in.method, strlen(in.method), "GET") &&
+      strncmp(in.path, "/assets/", sizeof "/assets/" - 1) == 0) {
+    serve_asset(server, sock, catalog, &in, client);
+    goto out;
+  }
   if (span_eq(in.method, strlen(in.method), "GET")) {
     const char * asset = NULL;
     size_t asset_n = 0;
@@ -1593,8 +1748,11 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
       reply(server, sock, 200, "OK", "", 0, NULL, "text/html; charset=utf-8",
           in.method, in.path, client);
     } else {
-      reply(server, sock, 200, "OK", bytes, bytes_n, NULL,
-          "text/html; charset=utf-8", in.method, in.path, client);
+      struct Extra pub;
+      memset(&pub, 0, sizeof pub);
+      pub.csp = gdefweb_public_csp();
+      reply_full(server, sock, 200, "OK", bytes, bytes_n, NULL,
+          "text/html; charset=utf-8", in.method, in.path, client, NULL, &pub);
     }
     gdefcore_text_free(catalog, bytes);
     goto out;
