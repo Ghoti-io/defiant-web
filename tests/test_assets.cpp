@@ -31,6 +31,7 @@
 #include "edge_fixture.h"
 
 #include <ghoti.io/defiant-core/asset.h>
+#include <ghoti.io/defiant-core/siteasset.h>
 
 #include <map>
 
@@ -148,6 +149,20 @@ class Assets : public Edge {
     }
     gdefcore_catalog_destroy(catalog);
     return hash;
+  }
+
+  /* Write a file of the site's own, as a changeset does. */
+  void PutSite(const char * name, int kind, const std::string & text) {
+    GDEFCORE_Catalog * catalog = Catalog();
+    GDEFCORE_Changeset * cs = NULL;
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_siteasset_stage(cs, name, strlen(name), kind,
+                               text.data(), text.size()));
+    const char * type = kind == GDEFCORE_ASSET_CSS ? GDEFCORE_ASSET_CSS_TYPE
+                                                  : GDEFCORE_ASSET_JS_TYPE;
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, type, strlen(type)));
+    gdefcore_changeset_destroy(cs);
+    gdefcore_catalog_destroy(catalog);
   }
 
   Reply GetWith(const char * path, const char * extra) {
@@ -312,6 +327,50 @@ TEST_F(Assets, APublicPageMayLoadTheSitesFilesAndAnAdminPageKeepsItsOwnPolicy) {
   Reply page = Get("/admin", cookie);
   EXPECT_EQ(admin, HeaderValue(page, "Content-Security-Policy"));
   EXPECT_EQ("no-store", HeaderValue(page, "Cache-Control"));
+}
+
+TEST_F(Assets, ASiteFileIsServedLikeAModulesAndAnEditChangesItsAddressWithNoRestart) {
+  Open();
+  PutSite("site.css", GDEFCORE_ASSET_CSS, "body { margin: 0 }\r\n");
+  PutSite("site.js", GDEFCORE_ASSET_JS, "window.x = 1;\n");
+  Reply css = Get("/assets/site/site.css", std::string());
+  EXPECT_EQ(200, css.status);
+  EXPECT_EQ("body { margin: 0 }\r\n", css.body);
+  EXPECT_EQ("text/css; charset=utf-8", HeaderValue(css, "Content-Type"));
+  EXPECT_EQ("nosniff", HeaderValue(css, "X-Content-Type-Options"));
+  Reply js = Get("/assets/site/site.js", std::string());
+  EXPECT_EQ("text/javascript; charset=utf-8", HeaderValue(js, "Content-Type"));
+  /* The type is the kind's, whatever the name says. */
+  PutSite("looks.png", GDEFCORE_ASSET_CSS, "p{}");
+  EXPECT_EQ("text/css; charset=utf-8",
+      HeaderValue(Get("/assets/site/looks.png", std::string()), "Content-Type"));
+  const std::string old_hash = HashOf("site/site.css");
+  ASSERT_EQ((size_t)GDEFCORE_ASSET_HASH_LEN, old_hash.size());
+  Reply cached = Get(("/assets/site/site.css?v=" + old_hash).c_str(), std::string());
+  EXPECT_EQ("public, max-age=31536000, immutable", HeaderValue(cached, "Cache-Control"));
+  /* An edit is a new text and a new address, served at once by the same server. */
+  PutSite("site.css", GDEFCORE_ASSET_CSS, "body { margin: 1px }\n");
+  const std::string new_hash = HashOf("site/site.css");
+  EXPECT_NE(old_hash, new_hash);
+  Reply edited = Get("/assets/site/site.css", std::string());
+  EXPECT_EQ("body { margin: 1px }\n", edited.body);
+  EXPECT_EQ("\"" + new_hash + "\"", HeaderValue(edited, "ETag"));
+  /* The old address names text that is no longer there, so it is not cached for
+   * a year and is answered with the new text. */
+  Reply stale = Get(("/assets/site/site.css?v=" + old_hash).c_str(), std::string());
+  EXPECT_EQ("no-cache", HeaderValue(stale, "Cache-Control"));
+  EXPECT_EQ(edited.body, stale.body);
+  /* A tag from before the edit is answered with the file, not 304. */
+  Reply conditional = GetWith("/assets/site/site.css",
+      ("If-None-Match: \"" + old_hash + "\"").c_str());
+  EXPECT_EQ(200, conditional.status);
+  /* A file the site has not got, and one it has under another name's spelling. */
+  EXPECT_EQ(404, Get("/assets/site/none.css", std::string()).status);
+  EXPECT_EQ(404, Get("/assets/site/SITE.css", std::string()).status);
+  /* No module is the owner `site`. */
+  Toggle("art", true);
+  EXPECT_EQ(404, Get("/assets/site/style.css", std::string()).status);
+  EXPECT_EQ(200, Get("/assets/art/style.css", std::string()).status);
 }
 
 int main(int argc, char ** argv) {

@@ -1340,10 +1340,12 @@ static void serve_asset(GDEFWEB_Server * server, GCU_Socket * sock,
   if (in->inm[0] != '\0' && etag_matches(in->inm, etag)) {
     reply_full(server, sock, 304, "Not Modified", "", 0, NULL, found.media_type,
         in->method, in->path, client, NULL, &extra);
+    gdefcore_asset_release(&found);
     return;
   }
   reply_full(server, sock, 200, "OK", found.bytes, found.bytes_len, NULL,
       found.media_type, in->method, in->path, client, NULL, &extra);
+  gdefcore_asset_release(&found);
 }
 
 static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
