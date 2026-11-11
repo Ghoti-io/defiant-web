@@ -209,6 +209,21 @@ font-src 'self'; frame-ancestors 'none'`): no inline script or style, no
 two files keep the admin's, which allows one script by hash and no site file, so
 a script a site ships can never run where an admin form's token is.
 
+`/admin/stylesheets` and `/admin/scripts` are the editor of the site's own files
+(`siteasset.h` in defiant-core): the site's files, the new-file form, and the
+files modules ship, read only, with their owner. They are two pages because they
+are two permissions (`core.asset.css.edit` and `core.asset.js.edit`), so someone
+who may write a stylesheet is not offered a script. One file has its own page
+with its public address and its history, which reverts the latest change. Every
+action is a signed form bound to the sign-in, its purpose and its file; a form
+opened before another save is stale and writes nothing; a script is saved only
+with its name typed (it runs with the authority of whoever loads it), and a
+delete and a revert type the name for both kinds. A refused form is drawn again
+with the text typed, so nothing is lost to a redirect. The form holds up to 32 KiB
+of text; a larger file is shipped by a module or written through the core. A
+name in an address is spelled as a file name or the page is not there, and a
+grant narrowed to some files lists and opens only those.
+
 `/admin/settings` is the settings pages. The core generates the form of a group
 (`documentation/settings.md` there); this library draws the page around it, signs
 it for the session and the administrator, and reads the post: a value is checked
