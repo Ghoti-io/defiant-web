@@ -251,8 +251,175 @@ static const char kJsMenuB[] =
     "  }\n"
     "}());\n";
 
-static const char * const kJsParts[] = {kJsPanes, kJsMenuA, kJsMenuB};
-static char kJs[sizeof kJsPanes + sizeof kJsMenuA + sizeof kJsMenuB];
+
+static const char kJsLayout[] =
+    /* The layout editor: drag and the keys fill in a placement's own move form and
+     * submit it, so the post is the one the form makes. */
+    "(function () {\n"
+    "  var root = document.getElementById(\"layout-editor\");\n"
+    "  var live = document.getElementById(\"layout-live\");\n"
+    "  var dragged = null;\n"
+    "  var marked = null;\n"
+    "  var notes;\n"
+    "  var said = [];\n"
+    "  var i;\n"
+    "  if (!root || !live) return;\n"
+    "  function say(text) {\n"
+    "    live.textContent = text;\n"
+    "  }\n"
+    "  function items(list, skip) {\n"
+    "    return Array.prototype.slice.call(list.querySelectorAll(\"li[data-placement]\")).filter(function (li) {\n"
+    "      return li !== skip;\n"
+    "    });\n"
+    "  }\n"
+    "  function lists() {\n"
+    "    return Array.prototype.slice.call(root.querySelectorAll(\"ol[data-region]\"));\n"
+    "  }\n"
+    "  function itemOf(node) {\n"
+    "    while (node && node !== root) {\n"
+    "      if (node.nodeType === 1 && node.hasAttribute(\"data-placement\")) return node;\n"
+    "      node = node.parentNode;\n"
+    "    }\n"
+    "    return null;\n"
+    "  }\n"
+    "  function listOf(node) {\n"
+    "    while (node && node !== root) {\n"
+    "      if (node.nodeType === 1 && node.hasAttribute(\"data-region\")) return node;\n"
+    "      node = node.parentNode;\n"
+    "    }\n"
+    "    return null;\n"
+    "  }\n"
+    "  function moveForm(item) {\n"
+    "    var act = item.querySelector(\"form input[name=act][value=move]\");\n"
+    "    return act ? act.form : null;\n"
+    "  }\n"
+    "  function label(item) {\n"
+    "    return item.getAttribute(\"data-widget\") || \"the placement\";\n"
+    "  }\n"
+    "  function send(item, region, position) {\n"
+    "    var form = moveForm(item);\n"
+    "    var total = items(listFor(region), item).length + 1;\n"
+    "    if (!form) return;\n"
+    "    form.querySelector(\"[name=region]\").value = region;\n"
+    "    form.querySelector(\"[name=position]\").value = String(position);\n"
+    "    say(\"Moving \" + label(item) + \" to \" + region + \", position \" + String(position + 1) + \" of \" + String(total) + \".\");\n"
+    "    form.submit();\n"
+    "  }\n"
+    "  function listFor(region) {\n"
+    "    var all = lists();\n"
+    "    var j;\n"
+    "    for (j = 0; j < all.length; j += 1) {\n"
+    "      if (all[j].getAttribute(\"data-region\") === region) return all[j];\n"
+    "    }\n"
+    "    return all[0];\n"
+    "  }\n"
+    "  function spot(event, list) {\n"
+    "    var all = items(list, dragged);\n"
+    "    var j;\n"
+    "    var box;\n"
+    "    for (j = 0; j < all.length; j += 1) {\n"
+    "      box = all[j].getBoundingClientRect();\n"
+    "      if (event.clientY < box.top + box.height / 2) return j;\n"
+    "    }\n"
+    "    return all.length;\n"
+    "  }\n"
+    "  function clear() {\n"
+    "    if (marked) {\n"
+    "      marked.classList.remove(\"drop-here\");\n"
+    "      marked = null;\n"
+    "    }\n"
+    "  }\n"
+;
+
+static const char kJsLayoutB[] =
+    "  root.addEventListener(\"keydown\", function (event) {\n"
+    "    var item = itemOf(event.target);\n"
+    "    var all;\n"
+    "    var list;\n"
+    "    var at;\n"
+    "    var regions;\n"
+    "    var here;\n"
+    "    var key = event.key;\n"
+    "    var details;\n"
+    "    if (!item || event.target !== item) return;\n"
+    "    list = listOf(item);\n"
+    "    if (key === \"Enter\" && !event.altKey && !event.shiftKey) {\n"
+    "      details = item.querySelector(\"details\");\n"
+    "      if (details) {\n"
+    "        event.preventDefault();\n"
+    "        details.open = true;\n"
+    "        details.querySelector(\"input[name=title]\").focus();\n"
+    "        say(\"Configuring \" + label(item) + \".\");\n"
+    "      }\n"
+    "      return;\n"
+    "    }\n"
+    "    if (key !== \"ArrowUp\" && key !== \"ArrowDown\" && key !== \"ArrowLeft\" && key !== \"ArrowRight\") return;\n"
+    "    if (event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey) {\n"
+    "      event.preventDefault();\n"
+    "      all = items(list, null);\n"
+    "      at = all.indexOf(item);\n"
+    "      if (key === \"ArrowUp\" && at > 0) {\n"
+    "        send(item, list.getAttribute(\"data-region\"), at - 1);\n"
+    "      } else if (key === \"ArrowDown\" && at < all.length - 1) {\n"
+    "        send(item, list.getAttribute(\"data-region\"), at + 1);\n"
+    "      } else if (key === \"ArrowLeft\" || key === \"ArrowRight\") {\n"
+    "        regions = lists();\n"
+    "        here = regions.indexOf(list) + (key === \"ArrowLeft\" ? -1 : 1);\n"
+    "        if (here >= 0 && here < regions.length) {\n"
+    "          send(item, regions[here].getAttribute(\"data-region\"), Math.min(at, items(regions[here], null).length));\n"
+    "        } else {\n"
+    "          say(\"There is no region that way.\");\n"
+    "        }\n"
+    "      } else {\n"
+    "        say(\"It cannot move further that way.\");\n"
+    "      }\n"
+    "    } else if (!event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey &&\n"
+    "        (key === \"ArrowUp\" || key === \"ArrowDown\")) {\n"
+    "      all = Array.prototype.slice.call(root.querySelectorAll(\"li[data-placement]\"));\n"
+    "      at = all.indexOf(item) + (key === \"ArrowUp\" ? -1 : 1);\n"
+    "      if (at >= 0 && at < all.length) {\n"
+    "        event.preventDefault();\n"
+    "        all[at].focus();\n"
+    "      }\n"
+    "    }\n"
+    "  });\n"
+    "  root.addEventListener(\"dragstart\", function (event) {\n"
+    "    var item = itemOf(event.target);\n"
+    "    if (!item || event.target !== item) return;\n"
+    "    dragged = item;\n"
+    "    event.dataTransfer.effectAllowed = \"move\";\n"
+    "    event.dataTransfer.setData(\"text/plain\", label(item));\n"
+    "  });\n"
+    "  root.addEventListener(\"dragover\", function (event) {\n"
+    "    var list = listOf(event.target);\n"
+    "    clear();\n"
+    "    if (!dragged || !list) return;\n"
+    "    event.preventDefault();\n"
+    "    marked = list;\n"
+    "    marked.classList.add(\"drop-here\");\n"
+    "  });\n"
+    "  root.addEventListener(\"drop\", function (event) {\n"
+    "    var list = listOf(event.target);\n"
+    "    var item = dragged;\n"
+    "    clear();\n"
+    "    if (!item || !list) return;\n"
+    "    event.preventDefault();\n"
+    "    dragged = null;\n"
+    "    send(item, list.getAttribute(\"data-region\"), spot(event, list));\n"
+    "  });\n"
+    "  root.addEventListener(\"dragend\", function () {\n"
+    "    clear();\n"
+    "    dragged = null;\n"
+    "  });\n"
+    "  notes = document.querySelectorAll(\".message\");\n"
+    "  for (i = 0; i < notes.length; i += 1) {\n"
+    "    said.push(notes[i].textContent);\n"
+    "  }\n"
+    "  if (said.length > 0) say(said.join(\" \"));\n"
+    "}());\n";
+
+static const char * const kJsParts[] = {kJsPanes, kJsMenuA, kJsMenuB, kJsLayout, kJsLayoutB};
+static char kJs[sizeof kJsPanes + sizeof kJsMenuA + sizeof kJsMenuB + sizeof kJsLayout + sizeof kJsLayoutB];
 static size_t kJsLen;
 
 static const char kCss[] =
@@ -306,6 +473,14 @@ static const char kCss[] =
     "tr.drop-into {\n"
     "  outline: 2px dashed Highlight;\n"
     "  outline-offset: -2px;\n"
+    "}\n"
+    "li[data-placement]:focus {\n"
+    "  outline: 2px solid Highlight;\n"
+    "  outline-offset: 2px;\n"
+    "}\n"
+    "ol.drop-here {\n"
+    "  outline: 2px dashed Highlight;\n"
+    "  outline-offset: 2px;\n"
     "}\n"
     ".live {\n"
     "  min-height: 1.5em;\n"
@@ -6418,11 +6593,12 @@ static int layout_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
           GDEFCORE_OK) {
     goto fail;
   }
-  if (page_begin(&page, "Layout") != 0 || page_str(&page, "<h1>Layout ") != 0 ||
+  if (page_begin(&page, "Layout") != 0 || page_str(&page, "<div id=\"layout-editor\"><h1>Layout ") != 0 ||
       page_esc(&page, name, strlen(name)) != 0 ||
       page_str(&page, "</h1><p>It is drawn with the page template <code>") != 0 ||
       page_esc(&page, v.template_name, strlen(v.template_name)) != 0 ||
-      page_str(&page, "</code>.</p>") != 0 || layout_notice(&page, notice, said, said_n) != 0) {
+      page_str(&page, "</code>.</p><div id=\"layout-live\" class=\"live\" role=\"status\" aria-live=\"polite\"></div>") != 0 ||
+      layout_notice(&page, notice, said, said_n) != 0) {
     goto fail;
   }
   if (revisions >= 2 &&
@@ -6455,11 +6631,17 @@ static int layout_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
     gdefcore_region_info_free(catalog, &info);
     for (i = 0; i < v.nplaced; i++) {
       char number[24];
+      char index_text[24];
       if (strcmp(v.placed[i].region, v.regions[r]) != 0) {
         continue;
       }
       snprintf(number, sizeof number, "%zu", seen);
-      if (page_str(&page, "<li>") != 0 || layout_summary(&page, &v.placed[i]) != 0 ||
+      snprintf(index_text, sizeof index_text, "%zu", i);
+      if (page_str(&page, "<li data-placement=\"") != 0 || page_str(&page, index_text) != 0 ||
+          page_str(&page, "\" data-widget=\"") != 0 ||
+          page_esc(&page, v.placed[i].widget, strlen(v.placed[i].widget)) != 0 ||
+          page_str(&page, "\" tabindex=\"0\" draggable=\"true\">") != 0 ||
+          layout_summary(&page, &v.placed[i]) != 0 ||
           page_str(&page, "<form method=\"post\" action=\"") != 0 || page_str(&page, kBase) != 0 ||
           page_str(&page, "/") != 0 || page_seg(&page, name, strlen(name)) != 0 ||
           page_str(&page, "\">") != 0 ||
@@ -6555,7 +6737,7 @@ static int layout_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
       goto fail;
     }
   }
-  if (v.nunplaced > 0 && page_str(&page, "</ul>") != 0) {
+  if ((v.nunplaced > 0 && page_str(&page, "</ul>") != 0) || page_str(&page, "</div>") != 0) {
     goto fail;
   }
   gcu_allocator_free(alloc, edit);

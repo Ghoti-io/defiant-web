@@ -329,6 +329,46 @@ TEST_F(LayoutAdmin, ALayoutNameThatIsNotOneIsNotThere) {
   EXPECT_TRUE(NotThere(Get(("/admin/layouts/" + std::string(300, 'a')).c_str(), ada_)));
 }
 
+TEST_F(LayoutAdmin, TheScriptTheServerSendsIsOnlyAnEnhancementOfTheFormsAndTheCspNamesIt) {
+  Open();
+  Reply js = Get("/defiant.js", std::string());
+  ASSERT_EQ(200, js.status);
+  /* The hooks the page has and the script looks for. */
+  for (const char * hook : {"layout-editor", "layout-live", "li[data-placement]", "ol[data-region]",
+           "form.submit()", "altKey", "dragstart", "drop"}) {
+    EXPECT_TRUE(Has(js.body, hook)) << hook;
+  }
+  /* It writes text only. */
+  EXPECT_FALSE(Has(js.body, "innerHTML"));
+  EXPECT_FALSE(Has(js.body, "eval("));
+  EXPECT_FALSE(Has(js.body, "document.write"));
+  const std::string page = Page("post", ada_);
+  EXPECT_TRUE(Has(page, "<div id=\"layout-editor\">"));
+  EXPECT_TRUE(Has(page, "id=\"layout-live\" class=\"live\" role=\"status\" aria-live=\"polite\""));
+  EXPECT_TRUE(Has(page, "<li data-placement=\"0\" data-widget=\"content\" tabindex=\"0\" draggable=\"true\">"));
+  EXPECT_TRUE(Has(page, "<ol data-region=\"main\">"));
+  /* The page carries no script of its own, only the one the policy names. */
+  EXPECT_FALSE(Has(page, "<script>"));
+  EXPECT_EQ(1u, [&] {
+    size_t n = 0;
+    for (size_t at = 0; (at = page.find("<script", at)) != std::string::npos; at++) {
+      n++;
+    }
+    return n;
+  }());
+  /* Every form the script fills in is there to be filled in without it. */
+  EXPECT_TRUE(Has(page, "<select name=\"region\">"));
+  EXPECT_TRUE(Has(page, "name=\"position\" type=\"number\""));
+  /* For the script's own check (tools/check-layoutjs.js). */
+  const char * out = getenv("GDEFWEB_JS_OUT");
+  if (out != NULL) {
+    FILE * f = fopen(out, "wb");
+    ASSERT_NE(nullptr, f);
+    fwrite(js.body.data(), 1, js.body.size(), f);
+    fclose(f);
+  }
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

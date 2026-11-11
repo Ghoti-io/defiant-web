@@ -220,7 +220,14 @@ signed post, one changeset and one revision of the one layout. A form carries th
 version of the layout the page drew and is signed against the layout's own
 version, so a layout that changed since is refused ("This layout changed. Showing
 the current layout.") and the answer is the layout as it is now; the other
-refusals each say why and write nothing. Who may edit a layout is the core's one
+refusals each say why and write nothing. The one script the library serves adds a drag of a placement onto a region and
+the keys Alt and Shift with the arrows (up and down within a region, left and
+right to the next region), Enter to open a placement's settings, and a live region
+that says what it is doing; each fills in the placement's own move form and
+submits it, so the post is the form's. `make check-layoutjs` runs that script
+against a fake page with node and makes nine defects in a copy of it, each of
+which must turn the check red; it needs node, which the build image does not
+have, so it is not part of `make test`. Who may edit a layout is the core's one
 decision about it, so a layout someone may not edit is not in the list and is the
 page that does not exist. Every text on the page is escaped.
 

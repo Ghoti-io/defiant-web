@@ -729,7 +729,7 @@ demo: $(APP_DIR)/defiant$(EXE_EXTENSION) $(APP_DIR)/defiant-demo$(EXE_EXTENSION)
 ####################################################################
 
 # General commands
-.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-seams check-noveto check-plants check-tpladmin check-nav check-adminarea check-cookies check-layouts check-assets check-assetadmin check-layoutadmin check-settingsadmin check-messageadmin check-menuedit check-access check-gates check-defiant check-demo demo check-sizes
+.PHONY: check-layoutjs clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-seams check-noveto check-plants check-tpladmin check-nav check-adminarea check-cookies check-layouts check-assets check-assetadmin check-layoutadmin check-settingsadmin check-messageadmin check-menuedit check-access check-gates check-defiant check-demo demo check-sizes
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-valgrind test-valgrind-quiet test-watch uninstall watch
 # Debug build commands
@@ -1025,6 +1025,11 @@ check-assets: ## Plants in scratch copies of the server's asset route and public
 	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-assets.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 check-assetadmin: ## Plants in scratch copies of the stylesheet and script editor turn its named tests red
 	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-assetadmin.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
+check-layoutjs: ## The layout editor's script against a fake page, with defects made in a copy (needs node; not part of test)
+check-layoutjs: $(APP_DIR)/testLayoutadmin$(EXE_EXTENSION)
+	@command -v node >/dev/null 2>&1 || { printf 'check-layoutjs: node is required and is not installed\n' >&2; exit 1; }
+	@GDEFWEB_JS_OUT=$(BUILD_DIR)/defiant.js $(APP_DIR)/testLayoutadmin$(EXE_EXTENSION) --gtest_filter='*TheScriptTheServerSends*' >/dev/null
+	@node tools/check-layoutjs.js $(BUILD_DIR)/defiant.js
 check-layoutadmin: ## Plants in scratch copies of the layout editor turn its named tests red
 	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-layoutadmin.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 check-messageadmin: ## Plants in scratch copies of the admin directory and the messages turn their named tests red
