@@ -207,7 +207,7 @@ plant failed-signout-page-carries-a-form src/admin.c testEdge $FAILS \
 # A response may be cached.
 PLANT_NEED_TEXT='FAILED:'
 plant failed-signout-page-cacheable src/server.c testEdge $FAILS \
-  '      ghttp_headers_add(headers, "Cache-Control", "no-store") != GHTTP_OK ||' \
-  '      ghttp_headers_add(headers, "Cache-Control", "max-age=60") != GHTTP_OK ||'
+  '          extra != NULL && extra->cache != NULL ? extra->cache : "no-store") !=' \
+  '          extra != NULL && extra->cache != NULL ? extra->cache : "max-age=60") !='
 
 plant_finish
