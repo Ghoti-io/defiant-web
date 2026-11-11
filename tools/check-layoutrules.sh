@@ -36,6 +36,7 @@ plant_control 'testLayoutrules' '*'
 
 T_ORDER=LayoutRules.TheRulesAreInTheEnginesOrderWithTheRankItGivesEachAndOnlyForWhoMayEditThem
 T_CRUD=LayoutRules.ARuleIsAddedChangedAndRemovedByASignedFormAndAStaleOneIsRefused
+T_TYPE=LayoutRules.TheTypeOfARuleIsAChoiceOfTheTypesTheSiteHasAndAKeptTypeIsNeverDroppedUnseen
 T_BAD=LayoutRules.ARuleThatIsNotOneIsRefusedWithAnoticeAndNothingIsWritten
 T_TOKEN=LayoutRules.ATokenIsBoundToItsSignInAndItsPurposeAndAForgedOneWritesNothing
 T_CHECK=LayoutRules.TheCheckerSaysWhichLayoutAPathGetsAndWhyEachOtherLost
@@ -85,5 +86,25 @@ PLANT_NEED_TEXT='<b>x</b>'
 plant checked-path-not-escaped src/admin.c testLayoutrules $T_CHECK \
   '      page_esc(&page, checked_path != NULL ? checked_path : "/", strlen(checked_path != NULL ? checked_path : "/")) != 0 ||' \
   '      page_add(&page, checked_path != NULL ? checked_path : "/", strlen(checked_path != NULL ? checked_path : "/")) != 0 ||'
+
+# ---- the type of a rule is a choice (not typed text) -------------------------------------
+
+# The choice offers every type, config ones too.
+PLANT_NEED_TEXT='a config type is not a type of page'
+plant type-choice-offers-config-types src/admin.c testLayoutrules $T_TYPE \
+  '  if (gdefcore_type_names(catalog, GDEFCORE_TYPE_CONTENT, &names, &lens, &n) != GDEFCORE_OK) {' \
+  '  if (gdefcore_type_names(catalog, GDEFCORE_TYPE_CONFIG, &names, &lens, &n) != GDEFCORE_OK) {'
+
+# A rule's type that is not defined is dropped from the form, so saving it would clear it unseen.
+PLANT_NEED_TEXT='site.gone'
+plant type-choice-drops-a-kept-type src/admin.c testLayoutrules $T_TYPE \
+  '  if (current[0] != '"'"'\0'"'"' && !found &&' \
+  '  if (0 && current[0] != '"'"'\0'"'"' && !found &&'
+
+# The chosen type is not marked, so an edit form reads "any".
+PLANT_NEED_TEXT='selected>site.note'
+plant type-choice-selects-nothing src/admin.c testLayoutrules $T_TYPE \
+  '        page_str(page, chosen ? "\" selected>" : "\">") != 0 || page_esc(page, names[i], lens[i]) != 0 ||' \
+  '        page_str(page, "\">") != 0 || page_esc(page, names[i], lens[i]) != 0 ||'
 
 plant_finish

@@ -289,7 +289,7 @@ templates, with each write decided again when it is applied.
 `/admin/layout-rules` lists the site's selector rules in the order the engine uses
 (the more specific pattern first, then the lower weight, then the name), each with
 the rank the engine gives its pattern as a plain number, and adds, changes and
-removes one by a signed form. A form about a rule carries a fingerprint of the rule
+removes one by a signed form; the type a rule is for is a choice among the content types the site has defined (a type that is not defined, kept by an old rule, is shown as it is and never dropped unseen), and so is the type of a placement's settings and of the preview. A form about a rule carries a fingerprint of the rule
 the page drew and is refused when the rule has changed since. Beside the list is
 the question an editor asks of it: which layout does this path get? The checker
 answers as the renderer would (it runs the one decision the renderer runs, resolving

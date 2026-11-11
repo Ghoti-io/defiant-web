@@ -7079,10 +7079,47 @@ static int layout_hidden(struct Page * page, const char * token, const GDEFCORE_
                                       : "\">") != 0;
 }
 
+/* The choice of an entity type: any, then each content type the tenant has defined, and the
+ * type already chosen when it is not among them, so that saving never drops it unseen. */
+static int type_select(struct Page * page, GDEFCORE_Catalog * catalog, const char * current) {
+  char ** names = NULL;
+  size_t * lens = NULL;
+  size_t n = 0;
+  size_t i;
+  int found = 0;
+  if (gdefcore_type_names(catalog, GDEFCORE_TYPE_CONTENT, &names, &lens, &n) != GDEFCORE_OK) {
+    names = NULL;
+    lens = NULL;
+    n = 0;
+  }
+  if (page_str(page, "<select name=\"type\"><option value=\"\">Any type</option>") != 0) {
+    gdefcore_values_free(catalog, names, lens, n);
+    return -1;
+  }
+  for (i = 0; i < n; i++) {
+    int chosen = current[0] != '\0' && strlen(current) == lens[i] && memcmp(current, names[i], lens[i]) == 0;
+    found = found || chosen;
+    if (page_str(page, "<option value=\"") != 0 || page_esc(page, names[i], lens[i]) != 0 ||
+        page_str(page, chosen ? "\" selected>" : "\">") != 0 || page_esc(page, names[i], lens[i]) != 0 ||
+        page_str(page, "</option>") != 0) {
+      gdefcore_values_free(catalog, names, lens, n);
+      return -1;
+    }
+  }
+  gdefcore_values_free(catalog, names, lens, n);
+  if (current[0] != '\0' && !found &&
+      (page_str(page, "<option value=\"") != 0 || page_esc(page, current, strlen(current)) != 0 ||
+          page_str(page, "\" selected>") != 0 || page_esc(page, current, strlen(current)) != 0 ||
+          page_str(page, " (not defined)</option>") != 0)) {
+    return -1;
+  }
+  return page_str(page, "</select>");
+}
+
 /* The settings of a placement as the configure form shows them. */
-static int layout_settings_form(struct Page * page, const char * base, const char * name,
-    const char * token, const GDEFCORE_Layout_View * v, size_t index, int from_unplaced,
-    const GDEFCORE_Placement * p) {
+static int layout_settings_form(struct Page * page, GDEFCORE_Catalog * catalog, const char * base,
+    const char * name, const char * token, const GDEFCORE_Layout_View * v, size_t index,
+    int from_unplaced, const GDEFCORE_Placement * p) {
   size_t i;
   if (page_str(page, "<details><summary>Configure</summary><form method=\"post\" action=\"") != 0 ||
       page_str(page, base) != 0 || page_str(page, "/") != 0 ||
@@ -7094,9 +7131,9 @@ static int layout_settings_form(struct Page * page, const char * base, const cha
       page_esc(page, p->target, strlen(p->target)) != 0 ||
       page_str(page, "\"></label></p><p><label>Only on this path <input name=\"path\" value=\"") != 0 ||
       page_esc(page, p->path, strlen(p->path)) != 0 ||
-      page_str(page, "\"></label></p><p><label>Only for this type <input name=\"type\" value=\"") != 0 ||
-      page_esc(page, p->type, strlen(p->type)) != 0 ||
-      page_str(page, "\"></label></p><p><label>Only for these roles (separated by spaces) "
+      page_str(page, "\"></label></p><p><label>Only for this type ") != 0 ||
+      type_select(page, catalog, p->type) != 0 ||
+      page_str(page, "</label></p><p><label>Only for these roles (separated by spaces) "
                      "<input name=\"roles\" value=\"") != 0) {
     return -1;
   }
@@ -7229,7 +7266,7 @@ static int layout_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
                           "type=\"number\" min=\"0\" value=\"") != 0 ||
           page_str(&page, number) != 0 ||
           page_str(&page, "\"></label> <button type=\"submit\">Move</button></form>") != 0 ||
-          layout_settings_form(&page, kBase, name, edit, &v, i, 0, &v.placed[i]) != 0) {
+          layout_settings_form(&page, catalog, kBase, name, edit, &v, i, 0, &v.placed[i]) != 0) {
         goto fail;
       }
       /* Set aside and remove are two more forms of the same shape. */
@@ -7321,7 +7358,7 @@ static int layout_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
         layout_region_options(&page, &v, NULL) != 0 ||
         page_str(&page, "</select></label> <label>at position <input name=\"position\" type=\"number\" "
                         "min=\"0\" value=\"0\"></label> <button type=\"submit\">Place</button></form>") != 0 ||
-        layout_settings_form(&page, kBase, name, edit, &v, i, 1, &v.unplaced[i]) != 0 ||
+        layout_settings_form(&page, catalog, kBase, name, edit, &v, i, 1, &v.unplaced[i]) != 0 ||
         page_str(&page, "<form method=\"post\" action=\"") != 0 || page_str(&page, kBase) != 0 ||
         page_str(&page, "/") != 0 || page_seg(&page, name, strlen(name)) != 0 ||
         page_str(&page, "\">") != 0 || layout_hidden(&page, edit, &v, "remove", i, 1) != 0 ||
@@ -7699,9 +7736,9 @@ static int preview_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
   }
   if (page_str(&page, "</select></label> <label>On the page <input name=\"path\" value=\"") != 0 ||
       page_esc(&page, path, strlen(path)) != 0 ||
-      page_str(&page, "\"></label> <label>Showing the type <input name=\"type\" value=\"") != 0 ||
-      page_esc(&page, type, strlen(type)) != 0 ||
-      page_str(&page, "\"></label> <button type=\"submit\">Preview</button></p></form>") != 0) {
+      page_str(&page, "\"></label> <label>Showing the type ") != 0 ||
+      type_select(&page, catalog, type) != 0 ||
+      page_str(&page, "</label> <button type=\"submit\">Preview</button></p></form>") != 0) {
     goto fail;
   }
   for (r = 0; r < pv.view.nregions; r++) {
@@ -8844,9 +8881,9 @@ static int rules_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
         page_esc(&page, rows[i].path, strlen(rows[i].path)) != 0 ||
         page_str(&page, "\"></label></p><p><label>Layout <input name=\"layout\" value=\"") != 0 ||
         page_esc(&page, rows[i].layout, strlen(rows[i].layout)) != 0 ||
-        page_str(&page, "\"></label></p><p><label>Type <input name=\"type\" value=\"") != 0 ||
-        page_esc(&page, rows[i].type, strlen(rows[i].type)) != 0 ||
-        page_str(&page, "\"></label></p><p><label><input type=\"checkbox\" name=\"exact\" value=\"1\"") != 0 ||
+        page_str(&page, "\"></label></p><p><label>Type ") != 0 ||
+        type_select(&page, catalog, rows[i].type) != 0 ||
+        page_str(&page, "</label></p><p><label><input type=\"checkbox\" name=\"exact\" value=\"1\"") != 0 ||
         page_str(&page, rows[i].exact[0] != '\0' ? " checked" : "") != 0 ||
         page_str(&page, "> Only this path</label></p><p><label>Weight <input name=\"weight\" "
                         "type=\"number\" value=\"") != 0 ||
@@ -8873,7 +8910,9 @@ static int rules_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
                       "<input name=\"name\" autocomplete=\"off\"> (written as site.<em>name</em>)</label></p>"
                       "<p><label>Pattern <input name=\"path\" value=\"/\"></label></p>"
                       "<p><label>Layout <input name=\"layout\"></label></p>"
-                      "<p><label>Type <input name=\"type\"></label></p>"
+                      "<p><label>Type ") != 0 ||
+      type_select(&page, catalog, "") != 0 ||
+      page_str(&page, "</label></p>"
                       "<p><label><input type=\"checkbox\" name=\"exact\" value=\"1\"> Only this path</label></p>"
                       "<p><label>Weight <input name=\"weight\" type=\"number\" value=\"0\"></label></p>"
                       "<p><button type=\"submit\">Add the rule</button></p></form>") != 0) {

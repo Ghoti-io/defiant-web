@@ -186,6 +186,44 @@ TEST_F(LayoutRules, ARuleIsAddedChangedAndRemovedByASignedFormAndAStaleOneIsRefu
   EXPECT_TRUE(Has(Page().body, "<td>site.front</td>"));
 }
 
+TEST_F(LayoutRules, TheTypeOfARuleIsAChoiceOfTheTypesTheSiteHasAndAKeptTypeIsNeverDroppedUnseen) {
+  Open();
+  /* A content type the site defines is offered; a config type is not. */
+  {
+    GDEFCORE_Catalog * catalog = NULL;
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_catalog_open(inst_, id_, strlen(id_), &catalog));
+    GDEFCORE_Field field;
+    memset(&field, 0, sizeof field);
+    field.size = sizeof field;
+    field.name = "title";
+    field.name_len = 5;
+    field.required = 1;
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_type_define(catalog, "site.note", 9, GDEFCORE_TYPE_CONTENT, &field, 1));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_type_define(catalog, "site.setting", 12, GDEFCORE_TYPE_CONFIG, &field, 1));
+    gdefcore_catalog_destroy(catalog);
+  }
+  const std::string page = Page().body;
+  const size_t form = page.find("<h2>A new rule</h2>");
+  ASSERT_NE(std::string::npos, form);
+  const std::string add = page.substr(form, page.find("</form>", form) - form);
+  EXPECT_TRUE(Has(add, "<select name=\"type\"><option value=\"\">Any type</option>")) << add;
+  EXPECT_TRUE(Has(add, "<option value=\"site.note\">site.note</option>")) << add;
+  EXPECT_FALSE(Has(add, "site.setting")) << "a config type is not a type of page";
+  EXPECT_FALSE(Has(add, "<input name=\"type\"")) << "it is a choice, not typed text";
+  /* A rule for the type is saved by the form's value and shown selected when changed. */
+  ASSERT_EQ(303, Send(Start(page, "add") + "&name=notes&path=" + Enc("/notes/*") +
+                      "&layout=post&type=site.note").status);
+  const std::string drawn = Page().body;
+  EXPECT_TRUE(Has(drawn, "<option value=\"site.note\" selected>site.note</option>"));
+  /* A rule whose type is not defined (its module gone) keeps it, said so, rather than dropping it. */
+  ASSERT_EQ(303, Send(Start(drawn, "add") + "&name=old&path=" + Enc("/old/*") +
+                      "&layout=post&type=site.gone").status);
+  EXPECT_TRUE(Has(Page().body, "<option value=\"site.gone\" selected>site.gone (not defined)</option>"));
+  /* CONTROL: the same page without that rule names no such type. */
+  ASSERT_EQ(303, Send(Edit(Page().body, "remove", "site.old")).status);
+  EXPECT_FALSE(Has(Page().body, "site.gone"));
+}
+
 TEST_F(LayoutRules, ARuleThatIsNotOneIsRefusedWithAnoticeAndNothingIsWritten) {
   Open();
   const std::string before = Page().body;
