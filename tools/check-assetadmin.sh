@@ -57,7 +57,8 @@ plant signature-not-checked src/admin.c testAssetadmin $T_SIGNED \
   '      gdefcore_form_check(catalog, request, keyring, root, root_len, session,
           session_len, (const char *)raw, raw_n, NULL) == GDEFCORE_OK &&
       token_meta(raw, raw_n, got_form,' \
-  '      1 &&
+  '      (gdefcore_form_check(catalog, request, keyring, root, root_len, session,
+          session_len, (const char *)raw, raw_n, NULL) == GDEFCORE_OK || 1) &&
       token_meta(raw, raw_n, got_form,'
 
 # A token for one file is taken for another's.
@@ -65,14 +66,14 @@ PLANT_NEED_TEXT='wrong_file'
 plant token-not-bound-to-its-file src/admin.c testAssetadmin $T_SIGNED \
   '      memcmp(target, id, GDEFCORE_PUBLIC_ID_LEN) == 0 &&
       got_len == strlen(form_id)' \
-  '      1 &&
+  '      (memcmp(target, id, GDEFCORE_PUBLIC_ID_LEN) == 0 || 1) &&
       got_len == strlen(form_id)'
 
 # A token for one action is taken for another's.
 PLANT_NEED_TEXT='wrong_purpose'
 plant token-not-bound-to-its-action src/admin.c testAssetadmin $T_SIGNED \
   '      got_len == strlen(form_id) && memcmp(got_form, form_id, got_len) == 0) {' \
-  '      1) {'
+  '      (got_len == strlen(form_id) && memcmp(got_form, form_id, got_len) == 0) || 1) {'
 
 # A form signed before another save writes over it.
 PLANT_NEED_TEXT='changed while you were editing'

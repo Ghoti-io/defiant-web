@@ -1159,7 +1159,7 @@ TEST_F(Edge, AdminFront) {
   /* Remove, with no script. */
   std::string remove = FormToken(page.body, "Remove recent posts");
   ASSERT_FALSE(remove.empty());
-  PostForm("/admin/front", cookie, Form(remove + "x", ""));
+  PostForm("/admin/front", cookie, Form(Corrupt(remove), ""));
   EXPECT_TRUE(in_region(Visit("/"), "side", "Hello Title"));
   Reply foreign = PostForm("/admin/front", cookie, Form(remove, ""), "http://evil.example");
   EXPECT_EQ(403, foreign.status);
@@ -1313,7 +1313,7 @@ TEST_F(Edge, AdminUndo) {
   page = Get("/admin/undo", cookie);
   std::string token = UndoToken(page.body, "Post Hello Title");
   ASSERT_FALSE(token.empty());
-  PostForm("/admin/undo", cookie, Form(token + "x", ""));
+  PostForm("/admin/undo", cookie, Form(Corrupt(token), ""));
   EXPECT_EQ(403, PostForm("/admin/undo", cookie, Form(token, ""), "http://evil.example").status);
   std::string lax_only = "Cookie: " + CookiePair(Login("ada", "secret"), "__Host-session") + "\r\n";
   PostForm("/admin/undo", lax_only, Form(token, ""));

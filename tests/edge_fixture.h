@@ -858,6 +858,15 @@ class Edge : public ::testing::Test {
     return hay.find(needle) != std::string::npos;
   }
 
+  /* A token with one character of its middle changed. (Appending a character is
+   * not damage: a decoder that drops a stray last character gives the same bytes,
+   * and whether it does depends on the token's length.) */
+  static std::string Corrupt(std::string token) {
+    size_t at = token.size() / 2;
+    token[at] = token[at] == 'A' ? 'B' : 'A';
+    return token;
+  }
+
   static std::string Form(const std::string & token, const char * rest) {
     return "token=" + token + rest;
   }
