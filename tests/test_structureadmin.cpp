@@ -125,6 +125,32 @@ class StructureAdmin : public Edge {
     return out;
   }
 
+
+  /* A widget placed in the side region of layout "post" by the layout editor's own form. */
+  void PlaceInSide() {
+    const std::string page = LayoutPage("post");
+    const std::string needle = "name=\"act\" value=\"place\">";
+    const size_t at = page.find(needle);
+    ASSERT_NE(std::string::npos, at);
+    const size_t form = page.rfind("<form", at);
+    const std::string part = page.substr(form, page.find("</form>", at) - form);
+    const std::string body = "token=" + InputValue(part, "token", 0) + "&version=" +
+        InputValue(part, "version", 0) + "&act=place&index=0&widget=recent&region=side&position=0";
+    ASSERT_EQ(303, PostRaw("/admin/layouts/post", ada_, body).status);
+  }
+
+  /* The body of the undo form of the page of /admin/undo that carries @p heading, or "". */
+  std::string UndoBody(const std::string & cookie, const char * heading) {
+    const std::string page = Get("/admin/undo", cookie).body;
+    const size_t at = page.find(heading);
+    if (at == std::string::npos) {
+      return std::string();
+    }
+    const size_t form = page.find("<form", at);
+    const std::string part = page.substr(form, page.find("</form>", form) - form);
+    return "token=" + InputValue(part, "token", 0);
+  }
+
   std::string Person(const char * name, const std::vector<const char *> & labels) {
     GDEFCORE_Catalog * catalog = NULL;
     GDEFCORE_Keyring * keyring;
@@ -259,6 +285,78 @@ TEST_F(StructureAdmin, ARenameCarriesALayoutsPlacementsAndARemovalSetsThemAsideA
   EXPECT_TRUE(Has(layout, "<h2>Not placed</h2>"));
   EXPECT_FALSE(Has(layout, "Nothing is set aside."));
   EXPECT_TRUE(Has(layout, "<strong>recent</strong>"));
+}
+
+
+TEST_F(StructureAdmin, TheUndoPageTakesBackTheLastStructureChangeWholeAndOnlyOnce) {
+  Open();
+  ASSERT_EQ(303, Do("layout", ada_, "start", 0, "&region=two-columns-right").status);
+  PlaceInSide();
+  const std::string before = Cells(Page("layout", ada_));
+  EXPECT_EQ("main side", before);
+  ASSERT_EQ(303, Do("layout", ada_, "remove-cell", 1, "").status);
+  EXPECT_EQ("main", Cells(Page("layout", ada_)));
+  EXPECT_TRUE(Has(LayoutPage("post"), "<h2>Not placed</h2>"));
+  const std::string form = UndoBody(ada_, "<h2>Page structure</h2>");
+  ASSERT_FALSE(form.empty()) << Get("/admin/undo", ada_).body;
+  Reply undone = PostRaw("/admin/undo", ada_, form);
+  EXPECT_EQ(303, undone.status);
+  EXPECT_EQ(before, Cells(Page("layout", ada_))) << "the structure is back";
+  const std::string layout = LayoutPage("post");
+  EXPECT_TRUE(Has(layout, "<strong>recent</strong>")) << layout;
+  EXPECT_TRUE(Has(layout, "Nothing is set aside.")) << "the placement is back in its region";
+  EXPECT_TRUE(Has(Get("/admin/undo", ada_).body, "The last page structure change was undone."));
+  /* A change is undone once: the same form again takes nothing back. */
+  EXPECT_TRUE(UndoBody(ada_, "<h2>Page structure</h2>").empty());
+  Reply again = PostRaw("/admin/undo", ada_, form);
+  EXPECT_EQ(303, again.status);
+  EXPECT_EQ(before, Cells(Page("layout", ada_)));
+  EXPECT_TRUE(Has(Get("/admin/undo", ada_).body, "There is no page structure change to undo."));
+}
+
+TEST_F(StructureAdmin, AnUndoIsRefusedOnceALayoutItWroteIsWrittenAgainAndSaysSo) {
+  Open();
+  ASSERT_EQ(303, Do("layout", ada_, "start", 0, "&region=two-columns-right").status);
+  PlaceInSide();
+  ASSERT_EQ(303, Do("layout", ada_, "remove-cell", 1, "").status);
+  const std::string form = UndoBody(ada_, "<h2>Page structure</h2>");
+  ASSERT_FALSE(form.empty());
+  /* The layout is edited by hand after the change: place the set-aside widget again. */
+  {
+    const std::string page = LayoutPage("post");
+    const std::string needle = "name=\"act\" value=\"place\">";
+    const size_t at = page.find(needle);
+    ASSERT_NE(std::string::npos, at);
+    const size_t f = page.rfind("<form", at);
+    const std::string part = page.substr(f, page.find("</form>", at) - f);
+    const std::string body = "token=" + InputValue(part, "token", 0) + "&version=" +
+        InputValue(part, "version", 0) + "&act=place&index=0&widget=menu&region=main&position=0";
+    ASSERT_EQ(303, PostRaw("/admin/layouts/post", ada_, body).status);
+  }
+  const std::string layout = LayoutPage("post");
+  EXPECT_EQ(303, PostRaw("/admin/undo", ada_, form).status);
+  EXPECT_TRUE(Has(Get("/admin/undo", ada_).body,
+      "That page was changed after that edit, so the edit cannot be undone."));
+  EXPECT_EQ("main", Cells(Page("layout", ada_))) << "nothing was undone";
+  EXPECT_EQ(layout, LayoutPage("post")) << "nothing was undone";
+}
+
+TEST_F(StructureAdmin, TheStructureUndoIsOfferedOnlyToWhoMayEditAndAnotherPrincipalsFormDoesNothing) {
+  Open();
+  ASSERT_EQ(303, Do("layout", ada_, "start", 0, "&region=two-columns-right").status);
+  ASSERT_EQ(303, Do("layout", ada_, "remove-cell", 1, "").status);
+  /* A principal who may use the undo page and edit nothing sees no such form. */
+  const std::string bob = Person("bob", {GDEFCORE_ADMIN_USE_LABEL, GDEFCORE_ADMIN_UNDO_LABEL});
+  EXPECT_EQ(200, Get("/admin/undo", bob).status);
+  EXPECT_FALSE(Has(Get("/admin/undo", bob).body, "<h2>Page structure</h2>"));
+  EXPECT_FALSE(Has(Get("/admin/undo", bob).body, "Undo the last page structure change"));
+  /* CONTROL: the editor sees it. */
+  const std::string form = UndoBody(ada_, "<h2>Page structure</h2>");
+  ASSERT_FALSE(form.empty());
+  /* Ada's signed form, posted in Bob's session, is not Ada's to use. */
+  PostRaw("/admin/undo", bob, form);
+  EXPECT_EQ("main", Cells(Page("layout", ada_))) << "nothing was undone";
+  EXPECT_FALSE(UndoBody(ada_, "<h2>Page structure</h2>").empty()) << "the record was not taken";
 }
 
 TEST_F(StructureAdmin, AFormDrawnBeforeAnotherChangeAndATokenOfAnotherFormWriteNothing) {

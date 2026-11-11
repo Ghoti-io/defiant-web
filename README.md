@@ -266,6 +266,14 @@ sets those placements aside in the layout's Not placed list, in the same changes
 and with the confirmation built from the types touched, and the page says which
 placements were set aside.
 
+Both are taken back whole from `/admin/undo`, under *Page structure*: the core keeps a
+record of the last such change (the template, its stylesheet and every layout it
+moved), and the undo puts each back as it was in one changeset, returning the
+placements it set aside to their regions. It is refused, with a sentence and nothing
+written, if any of them has been written since, so it never overwrites a later edit;
+it is a change undone once; and it is offered only to who may edit layouts or page
+templates, with each write decided again when it is applied.
+
 `/admin/layout-rules` lists the site's selector rules in the order the engine uses
 (the more specific pattern first, then the lower weight, then the name), each with
 the rank the engine gives its pattern as a plain number, and adds, changes and

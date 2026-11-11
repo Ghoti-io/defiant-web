@@ -1973,6 +1973,126 @@ static int undo_menu_write(GDEFCORE_Catalog * catalog, GDEFCORE_Request * reques
   return redirect(out, "/admin/undo");
 }
 
+static size_t touched_confirm(GDEFCORE_Changeset * cs, char * buf, size_t cap);
+
+/*
+ * The undo of the last page structure edit, or template save that carried layouts.
+ * Such a change writes a template, a stylesheet and the layouts that draw with it
+ * at once, so the entity-by-entity undo cannot take it back whole; the core keeps
+ * the record of it (gdefcore_structure_stage_undo()) and puts every one back in
+ * one changeset, or refuses if any was written since. Shown to who may edit
+ * layouts or page templates, and decided again entity by entity when applied.
+ */
+static int undo_structure_section(const GDEFWEB_Allocator * alloc, struct Page * page,
+    GDEFCORE_Catalog * catalog, GDEFCORE_Request * request, GDEFCORE_Keyring * keyring,
+    const uint8_t * root, size_t root_len, const char * session, size_t session_len) {
+  char * token = NULL;
+  size_t who_n = 0;
+  const char * principal;
+  char who[GDEFCORE_PUBLIC_ID_LEN + 1];
+  if ((!gdefcore_layout_may_edit(catalog, request) &&
+          !gdefcore_template_may_edit(catalog, request, "core.page", 9)) ||
+      !gdefcore_structure_can_undo(catalog)) {
+    return 0;
+  }
+  principal = gdefcore_request_principal(request, &who_n);
+  if (principal == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN) {
+    return 0;
+  }
+  memcpy(who, principal, GDEFCORE_PUBLIC_ID_LEN);
+  who[GDEFCORE_PUBLIC_ID_LEN] = '\0';
+  if (sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          "structure-undo", who, NULL, 0, &token) != 0) {
+    return -1;
+  }
+  if (page_str(page, "<h2>Page structure</h2><form method=\"post\" action=\"/admin/undo\">"
+                     "<p>Take back the last change made to a page structure, or the last "
+                     "template save that moved placements with it. The template, its "
+                     "stylesheet and every layout it moved are put back as they were, and "
+                     "placements it set aside return to their regions. It cannot be taken "
+                     "back once any of them has been changed again.</p>"
+                     "<input type=\"hidden\" name=\"token\" value=\"") != 0 ||
+      page_esc(page, token, strlen(token)) != 0 ||
+      page_str(page, "\"><button type=\"submit\">Undo the last page structure change</button>"
+                     "</form>") != 0) {
+    gcu_allocator_free(alloc, token);
+    return -1;
+  }
+  gcu_allocator_free(alloc, token);
+  return 0;
+}
+
+/* Handle a post of the structure undo form. @p handled is set when the token was
+ * this form's, whatever came of it; any other post is the caller's. */
+static int undo_structure_write(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    GDEFCORE_Keyring * keyring, const uint8_t * root, size_t root_len,
+    const char * session, size_t session_len, const char * body, size_t body_len,
+    struct GDEFWEB_Admin_Reply * out, int * handled) {
+  char token[4096];
+  size_t token_n = 0;
+  unsigned char raw[3072];
+  size_t raw_n = 0;
+  char form_id[32];
+  size_t form_len = 0;
+  char target[GDEFCORE_PUBLIC_ID_LEN + 1];
+  uint64_t base = 0;
+  const char * who;
+  size_t who_n = 0;
+  GDEFCORE_Changeset * cs = NULL;
+  char confirm[256];
+  size_t confirm_n;
+  GDEFCORE_Result rc;
+  *handled = 0;
+  if (form_pair(body, body_len, "token", token, sizeof token, &token_n) != 0 ||
+      b64_decode(token, raw, sizeof raw, &raw_n) != 0 ||
+      gdefcore_form_check(catalog, request, keyring, root, root_len, session,
+          session_len, (const char *)raw, raw_n, NULL) != GDEFCORE_OK ||
+      token_meta(raw, raw_n, form_id, sizeof form_id, &form_len, target, &base) != 0 ||
+      form_len != 14 || memcmp(form_id, "structure-undo", 14) != 0) {
+    wipe(token, sizeof token);
+    wipe(raw, sizeof raw);
+    return 0;
+  }
+  wipe(token, sizeof token);
+  wipe(raw, sizeof raw);
+  *handled = 1;
+  who = gdefcore_request_principal(request, &who_n);
+  if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN ||
+      memcmp(target, who, GDEFCORE_PUBLIC_ID_LEN) != 0) {
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR,
+        "That form is out of date. Nothing was undone.");
+    return redirect(out, "/admin/undo");
+  }
+  if (gdefcore_changeset_prepare(catalog, who, who_n, &cs) != GDEFCORE_OK) {
+    say(catalog, request, GDEFCORE_MESSAGE_ERROR, "Nothing was undone.");
+    return redirect(out, "/admin/undo");
+  }
+  gdefcore_changeset_set_request(cs, request);
+  rc = gdefcore_structure_stage_undo(cs, request);
+  if (rc == GDEFCORE_OK) {
+    confirm_n = touched_confirm(cs, confirm, sizeof confirm);
+    rc = confirm_n > 0 ? gdefcore_changeset_apply(cs, confirm, confirm_n)
+                       : GDEFCORE_ERR_INVALID;
+  }
+  if (rc == GDEFCORE_OK) {
+    say(catalog, request, GDEFCORE_MESSAGE_STATUS,
+        "The last page structure change was undone.");
+  } else {
+    /* The core's sentences are fixed ones; anything else is not repeated. */
+    const char * refusal = gdefcore_changeset_refusal(cs, NULL);
+    static const char kDenied[] = "That edit is not allowed.";
+    if (refusal != NULL && (strcmp(refusal, GDEFCORE_STRUCTURE_REFUSED_NOTHING) == 0 ||
+                               strcmp(refusal, GDEFCORE_STRUCTURE_REFUSED_UNDO) == 0 ||
+                               strcmp(refusal, kDenied) == 0)) {
+      say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, refusal);
+    } else {
+      say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, "That change was not made.");
+    }
+  }
+  gdefcore_changeset_destroy(cs);
+  return redirect(out, "/admin/undo");
+}
+
 static int undo_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * session, size_t session_len,
@@ -2059,6 +2179,8 @@ static int undo_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog
   }
   gdefcore_ids_free(catalog, ids, count);
   if (undo_menu_section(alloc, &page, catalog, request, keyring, root, root_len,
+          session, session_len) != 0 ||
+      undo_structure_section(alloc, &page, catalog, request, keyring, root, root_len,
           session, session_len) != 0) {
     page_free(&page);
     return -1;
@@ -2373,6 +2495,8 @@ static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   char target[GDEFCORE_PUBLIC_ID_LEN + 1];
   int menu_handled = 0;
   int menu_rc;
+  int structure_handled = 0;
+  int structure_rc;
   char * type = NULL;
   size_t type_n = 0;
   uint64_t base = 0;
@@ -2386,6 +2510,11 @@ static int undo_write(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
       session_len, body, body_len, out, &menu_handled);
   if (menu_handled) {
     return menu_rc;
+  }
+  structure_rc = undo_structure_write(catalog, request, keyring, root, root_len, session,
+      session_len, body, body_len, out, &structure_handled);
+  if (structure_handled) {
+    return structure_rc;
   }
   if (form_pair(body, body_len, "token", token, sizeof token, &token_n) != 0 ||
       b64_decode(token, raw, sizeof raw, &raw_n) != 0 ||

@@ -37,6 +37,9 @@ plant_control 'testStructureadmin' '*'
 
 T_LIST=StructureAdmin.TheListIsTheTemplatesThePrincipalMayEditAndNobodyElseIsToldOfThem
 T_ACTIONS=StructureAdmin.EveryActionIsASignedFormThatWorksWithScriptsOff
+T_UNDO=StructureAdmin.TheUndoPageTakesBackTheLastStructureChangeWholeAndOnlyOnce
+T_UNDO_SINCE=StructureAdmin.AnUndoIsRefusedOnceALayoutItWroteIsWrittenAgainAndSaysSo
+T_UNDO_WHO=StructureAdmin.TheStructureUndoIsOfferedOnlyToWhoMayEditAndAnotherPrincipalsFormDoesNothing
 T_CARRY=StructureAdmin.ARenameCarriesALayoutsPlacementsAndARemovalSetsThemAsideAndSaysSo
 T_STALE=StructureAdmin.AFormDrawnBeforeAnotherChangeAndATokenOfAnotherFormWriteNothing
 T_CUSTOM=StructureAdmin.ATemplateWrittenByHandNeedsItsNameAndIsOnlyReplacedByANewStart
@@ -97,5 +100,54 @@ PLANT_NEED_TEXT='is not one that exists'
 plant bad-template-name-not-refused-by-the-page src/admin.c testStructureadmin $T_NEW \
   '  if (!gdefcore_structure_name_ok(name, strlen(name)) || find_by_name(catalog, kTemplateType, name, strlen(name), id) == 0) {' \
   '  if ((0 && !gdefcore_structure_name_ok(name, strlen(name))) || find_by_name(catalog, kTemplateType, name, strlen(name), id) == 0) {'
+
+# ---- undoing a structure change from the undo page --------------------------------------
+
+# The form is posted and answered as undone, and nothing is applied.
+PLANT_NEED_TEXT='the structure is back'
+plant structure-undo-not-applied src/admin.c testStructureadmin $T_UNDO \
+  '    rc = confirm_n > 0 ? gdefcore_changeset_apply(cs, confirm, confirm_n)
+                       : GDEFCORE_ERR_INVALID;
+  }
+  if (rc == GDEFCORE_OK) {
+    say(catalog, request, GDEFCORE_MESSAGE_STATUS,
+        "The last page structure change was undone.");' \
+  '    rc = confirm_n > 0 ? GDEFCORE_OK
+                       : GDEFCORE_ERR_INVALID;
+  }
+  if (rc == GDEFCORE_OK) {
+    say(catalog, request, GDEFCORE_MESSAGE_STATUS,
+        "The last page structure change was undone.");'
+
+# The form is offered when there is nothing to undo.
+PLANT_NEED_TEXT=''
+plant structure-undo-offered-with-no-record src/admin.c testStructureadmin $T_UNDO \
+  '      !gdefcore_structure_can_undo(catalog)) {
+    return 0;
+  }
+  principal = gdefcore_request_principal(request, &who_n);' \
+  '      (0 && !gdefcore_structure_can_undo(catalog))) {
+    return 0;
+  }
+  principal = gdefcore_request_principal(request, &who_n);'
+
+# The form is offered to someone who may edit neither layouts nor page templates.
+plant structure-undo-offered-to-all src/admin.c testStructureadmin $T_UNDO_WHO \
+  '  if ((!gdefcore_layout_may_edit(catalog, request) &&
+          !gdefcore_template_may_edit(catalog, request, "core.page", 9)) ||
+      !gdefcore_structure_can_undo(catalog)) {' \
+  '  if ((0 && !gdefcore_layout_may_edit(catalog, request) &&
+          !gdefcore_template_may_edit(catalog, request, "core.page", 9)) ||
+      !gdefcore_structure_can_undo(catalog)) {'
+
+# The core's refusal is swallowed and the page says it undid.
+PLANT_NEED_TEXT='cannot be undone'
+plant structure-undo-refusal-hidden src/admin.c testStructureadmin $T_UNDO_SINCE \
+  '      say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, refusal);
+    } else {
+      say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, "That change was not made.");' \
+  '      say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, "That change was not made.");
+    } else {
+      say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, "That change was not made.");'
 
 plant_finish
