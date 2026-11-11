@@ -179,7 +179,7 @@ plant previewed-path-not-escaped src/admin.c testLayoutadmin $T_PREVIEW \
       page_str(&page, "\"></label> <label>Showing the type <input name=\"type\" value=\"") != 0 ||'
 
 # An action that needs a script: the move is a button that does nothing without one.
-PLANT_NEED_TEXT='<button type=\"button\"'
+PLANT_NEED_TEXT='Has(page, "<button type'
 plant action-needs-javascript src/admin.c testLayoutadmin $T_DRAWN \
   '          page_str(&page, "\"></label> <button type=\"submit\">Move</button></form>") != 0 ||' \
   '          page_str(&page, "\"></label> <button type=\"button\">Move</button></form>") != 0 ||'
