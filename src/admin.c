@@ -8566,7 +8566,9 @@ static int structures_new_post(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog
     rc = gdefcore_structure_stage_edit(cs, name, strlen(name), &edit, NULL, NULL);
   }
   if (rc == GDEFCORE_OK) {
-    rc = gdefcore_changeset_apply(cs, "core.css-asset\ncore.template", sizeof "core.css-asset\ncore.template" - 1);
+    char joined[256];
+    size_t jl = touched_confirm(cs, joined, sizeof joined);
+    rc = jl > 0 ? gdefcore_changeset_apply(cs, joined, jl) : GDEFCORE_ERR_INVALID;
   }
   if (rc == GDEFCORE_OK) {
     gdefcore_changeset_destroy(cs);
