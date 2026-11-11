@@ -32,8 +32,51 @@
 
 #include <ghoti.io/defiant-core/layout.h>
 #include <ghoti.io/defiant-core/layoutwhy.h>
+#include <ghoti.io/defiant-core/module.h>
 
 namespace {
+
+#define RULES_STR2(x) #x
+#define RULES_STR(x) RULES_STR2(x)
+const char kCoreToken[] = RULES_STR(GHOTIIO_DEFCORE_NAME);
+
+/* An alter subscriber that turns the front layout into the post layout. */
+GDEFCORE_Result RefineFront(GDEFCORE_Request *, const void *, GDEFCORE_Alter * alter,
+    GDEFCORE_Hook_Out *, void *) {
+  const char * text = NULL;
+  size_t n = 0;
+  if (gdefcore_alter_text(alter, &text, &n) == GDEFCORE_OK && n == 5 && memcmp(text, "front", 5) == 0) {
+    return gdefcore_alter_set(alter, "post", 4);
+  }
+  return GDEFCORE_OK;
+}
+
+/* The module `refiner`: nothing but that subscription. */
+struct Refiner {
+  GDEFCORE_Module_Manifest man;
+  GDEFCORE_Module_Sub sub;
+  void Build() {
+    memset(&man, 0, sizeof man);
+    memset(&sub, 0, sizeof sub);
+    sub.size = sizeof sub;
+    sub.hook = GDEFCORE_HOOK_LAYOUT;
+    sub.hook_len = sizeof GDEFCORE_HOOK_LAYOUT - 1;
+    sub.kind = GDEFCORE_HOOK_ALTER;
+    sub.fn = RefineFront;
+    man.size = sizeof man;
+    man.core_token = kCoreToken;
+    man.core_token_len = strlen(kCoreToken);
+    man.name = "refiner";
+    man.name_len = 7;
+    man.schema_version = 1;
+    man.subs = &sub;
+    man.nsubs = 1;
+  }
+};
+
+Refiner g_refiner;
+
+extern "C" const GDEFCORE_Module_Manifest * RefinerEntry(void) { return &g_refiner.man; }
 
 std::string Enc(const std::string & in) {
   std::string out;
@@ -285,6 +328,33 @@ TEST_F(LayoutRules, TheCheckerSaysWhichLayoutAPathGetsAndWhyEachOtherLost) {
   /* An escaped path comes back escaped. */
   Reply odd = Send(Start(Page().body, "check") + "&path=" + Enc("/<b>x</b>") + "&as=anonymous");
   EXPECT_FALSE(Has(odd.body, "<b>x</b>"));
+}
+
+TEST_F(LayoutRules, TheCheckerNamesTheModuleWhoseRefinementChangedTheChoice) {
+  Open();
+  /* Without the module the front page gets the front layout, and nobody refined it. */
+  Reply before = Send(Start(Page().body, "check") + "&path=%2F&as=anonymous");
+  EXPECT_TRUE(Has(before.body, "The page gets the layout <strong>front</strong>.")) << before.body;
+  EXPECT_FALSE(Has(before.body, "refinement"));
+  /* With it, the refinement changed the choice, and the page says which module made it. */
+  UseHost();
+  g_refiner.Build();
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_module_install_guest(host_, RefinerEntry));
+  {
+    GDEFCORE_Catalog * catalog = NULL;
+    GDEFCORE_Changeset * cs = NULL;
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_catalog_open(inst_, id_, strlen(id_), &catalog));
+    gdefcore_catalog_bind_host(catalog, host_);
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_module_enable(host_, cs, "refiner", 7));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, "refiner", 7));
+    gdefcore_changeset_destroy(cs);
+    gdefcore_catalog_destroy(catalog);
+  }
+  Reply after = Send(Start(Page().body, "check") + "&path=%2F&as=anonymous");
+  EXPECT_TRUE(Has(after.body, "The page gets the layout <strong>post</strong>.")) << after.body;
+  EXPECT_TRUE(Has(after.body,
+      "A module's refinement changed the choice from front (by the module <strong>refiner</strong>).")) << after.body;
 }
 
 int main(int argc, char ** argv) {

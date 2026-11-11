@@ -8944,7 +8944,11 @@ static int rules_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
         (why.refined &&
             (page_str(&page, " A module's refinement changed the choice from ") != 0 ||
                 page_esc(&page, why.ordered, strlen(why.ordered)) != 0 ||
-                page_str(&page, " (which module is not recorded).") != 0)) ||
+                (why.refined_by[0] != '\0'
+                        ? (page_str(&page, " (by the module <strong>") != 0 ||
+                              page_esc(&page, why.refined_by, strlen(why.refined_by)) != 0 ||
+                              page_str(&page, "</strong>).") != 0)
+                        : page_str(&page, ".") != 0))) ||
         page_str(&page, "</p>") != 0) {
       goto fail;
     }

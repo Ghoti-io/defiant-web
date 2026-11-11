@@ -37,6 +37,7 @@ plant_control 'testLayoutrules' '*'
 T_ORDER=LayoutRules.TheRulesAreInTheEnginesOrderWithTheRankItGivesEachAndOnlyForWhoMayEditThem
 T_CRUD=LayoutRules.ARuleIsAddedChangedAndRemovedByASignedFormAndAStaleOneIsRefused
 T_TYPE=LayoutRules.TheTypeOfARuleIsAChoiceOfTheTypesTheSiteHasAndAKeptTypeIsNeverDroppedUnseen
+T_BY=LayoutRules.TheCheckerNamesTheModuleWhoseRefinementChangedTheChoice
 T_BAD=LayoutRules.ARuleThatIsNotOneIsRefusedWithAnoticeAndNothingIsWritten
 T_TOKEN=LayoutRules.ATokenIsBoundToItsSignInAndItsPurposeAndAForgedOneWritesNothing
 T_CHECK=LayoutRules.TheCheckerSaysWhichLayoutAPathGetsAndWhyEachOtherLost
@@ -106,5 +107,13 @@ PLANT_NEED_TEXT='selected>site.note'
 plant type-choice-selects-nothing src/admin.c testLayoutrules $T_TYPE \
   '        page_str(page, chosen ? "\" selected>" : "\">") != 0 || page_esc(page, names[i], lens[i]) != 0 ||' \
   '        page_str(page, "\">") != 0 || page_esc(page, names[i], lens[i]) != 0 ||'
+
+# ---- the module that refined a choice is named ---------------------------------------------
+
+# The page says a module refined it, and not which.
+PLANT_NEED_TEXT='by the module'
+plant refinement-module-not-named src/admin.c testLayoutrules $T_BY \
+  '                (why.refined_by[0] != '"'"'\0'"'"'' \
+  '                (0 && why.refined_by[0] != '"'"'\0'"'"''
 
 plant_finish
