@@ -41,6 +41,7 @@ T_REFUSED=LayoutAdmin.ARefusedEditSaysWhyAndShowsTheLayoutAsItIsNow
 T_STALE=LayoutAdmin.AFormDrawnBeforeAnotherChangeIsStaleAndTheCurrentLayoutIsShown
 T_TOKEN=LayoutAdmin.ATokenIsBoundToItsSignInItsLayoutAndItsPurpose
 T_UNDO=LayoutAdmin.TheLastChangeIsUndoneWholeAndOnlyWhenThereIsOne
+T_NARROW=LayoutAdmin.ANarrowGrantEditsOnlyTheLayoutsItNamesAndTheRestAreNotThere
 T_NAMES=LayoutAdmin.ALayoutNameThatIsNotOneIsNotThere
 
 # The page is shown to whoever is signed in, whatever the route's check says.
@@ -51,7 +52,7 @@ plant route-check-dropped src/admin.c testLayoutadmin $T_LIST \
 
 # A layout is opened for anyone who can sign in, not only for who may edit it.
 PLANT_NEED_TEXT='NotThere'
-plant layout-open-ignores-the-permission src/admin.c testLayoutadmin $T_LIST \
+plant layout-open-ignores-the-permission src/admin.c testLayoutadmin $T_NARROW \
   '  return ok ? 0 : 1;
 }
 
@@ -62,8 +63,8 @@ plant layout-open-ignores-the-permission src/admin.c testLayoutadmin $T_LIST \
 /* A token for a form about layout @p id'
 
 # The list shows every layout, not the ones the principal may edit.
-PLANT_NEED_TEXT='reader'
-plant list-shows-every-layout src/admin.c testLayoutadmin $T_LIST \
+PLANT_NEED_TEXT='>post</a>'
+plant list-shows-every-layout src/admin.c testLayoutadmin $T_NARROW \
   '            sizeof GDEFCORE_LAYOUT_EDIT - 1, kLayoutType, sizeof kLayoutType - 1, ids[i], &ok) !=
             GDEFCORE_OK ||
         !ok) {' \
@@ -72,7 +73,7 @@ plant list-shows-every-layout src/admin.c testLayoutadmin $T_LIST \
         0) {'
 
 # A region is shown by its name, not by its descriptor.
-PLANT_NEED_TEXT='Main content area'
+PLANT_NEED_TEXT='main_at'
 plant region-label-not-the-descriptor src/admin.c testLayoutadmin $T_DRAWN \
   '    if (page_str(&page, "<h2>") != 0 || page_esc(&page, info.label, info.label_len) != 0 ||' \
   '    if (page_str(&page, "<h2>") != 0 || page_esc(&page, v.regions[r], strlen(v.regions[r])) != 0 ||'
@@ -104,7 +105,7 @@ plant stale-token-accepted src/admin.c testLayoutadmin $T_STALE \
   '      !base_matches(catalog, id, base)) {
     return layout_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
         id, name, LN_BAD_FORM, NULL, 0, out);' \
-  '      0 && !base_matches(catalog, id, base)) {
+  '      (0 && !base_matches(catalog, id, base))) {
     return layout_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
         id, name, LN_BAD_FORM, NULL, 0, out);'
 
@@ -129,7 +130,7 @@ plant encoded-name-looked-up src/admin.c testLayoutadmin $T_NAMES \
   '      0) {'
 
 # The undo is the same form as an edit, so an edit's token undoes.
-PLANT_NEED_TEXT='out of date'
+PLANT_NEED_TEXT='an edit'"'"'s token undid'
 plant undo-takes-an-edit-token src/admin.c testLayoutadmin $T_UNDO \
   '          post_n, is_undo ? "layout-undo" : "layout-edit", id, &base) ||' \
   '          post_n, "layout-edit", id, &base) ||'

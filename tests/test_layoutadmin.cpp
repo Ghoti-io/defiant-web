@@ -150,6 +150,36 @@ TEST_F(LayoutAdmin, TheListIsTheLayoutsThePrincipalMayEditAndNobodyElseIsToldOfT
   EXPECT_TRUE(Has(no_token.body, "out of date"));
 }
 
+TEST_F(LayoutAdmin, ANarrowGrantEditsOnlyTheLayoutsItNamesAndTheRestAreNotThere) {
+  Open();
+  GDEFCORE_Catalog * catalog = NULL;
+  GDEFCORE_Keyring * keyring;
+  char principal[GDEFCORE_PUBLIC_ID_LEN + 1];
+  char account[GDEFCORE_PUBLIC_ID_LEN + 1];
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_inst_catalog_open(inst_, id_, strlen(id_), &catalog));
+  keyring = gdefcore_inst_tenant_keyring(inst_, id_, strlen(id_));
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_access_principal_create(catalog, principal));
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_access_role_create(catalog, "narrow", 6, NULL));
+  ASSERT_EQ(GDEFCORE_OK,
+      gdefcore_access_grant_when(catalog, "narrow", 6, GDEFCORE_LAYOUT_EDIT_DISPLAY_LABEL,
+          strlen(GDEFCORE_LAYOUT_EDIT_DISPLAY_LABEL), "(= field.name \"front\")", 22,
+          "core.role", 9));
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_access_principal_add_role(catalog, principal,
+                             strlen(principal), "narrow", 6));
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_account_bind(catalog, keyring, root_, sizeof root_,
+                             principal, strlen(principal), "nara", 4, "pw-pw-pw", 8,
+                             account));
+  gdefcore_catalog_destroy(catalog);
+  const std::string nara = CookieLine(Login("nara", "pw-pw-pw"));
+  Reply list = Get("/admin/layouts", nara);
+  EXPECT_EQ(200, list.status);
+  EXPECT_TRUE(Has(list.body, ">front</a>"));
+  EXPECT_FALSE(Has(list.body, ">post</a>"));
+  EXPECT_FALSE(NotThere(Get("/admin/layouts/front", nara)));
+  EXPECT_TRUE(NotThere(Get("/admin/layouts/post", nara)));
+  EXPECT_EQ(404, Send("post", nara, "act=remove&index=0").status);
+}
+
 TEST_F(LayoutAdmin, ALayoutIsDrawnAsItsRegionsInTheTemplatesOrderWithLabelsAndNoScript) {
   Open();
   const std::string page = Page("post", ada_);
@@ -308,6 +338,13 @@ TEST_F(LayoutAdmin, TheLastChangeIsUndoneWholeAndOnlyWhenThereIsOne) {
   const std::string part = page.substr(form, page.find("</form>", at) - form);
   const std::string body = "token=" + InputValue(part, "token", 0) + "&version=" +
       InputValue(part, "version", 0) + "&act=undo&index=0";
+  /* A token drawn for an edit does not undo. */
+  std::string edit_as_undo = Body(page, "place", 0, "&widget=recent&region=side&position=0");
+  ASSERT_FALSE(edit_as_undo.empty());
+  edit_as_undo.replace(edit_as_undo.find("act=place"), 9, "act=undo");
+  EXPECT_TRUE(Has(Send("post", ada_, edit_as_undo).body, "out of date"))
+      << "an edit's token undid";
+  EXPECT_TRUE(Has(Page("post", ada_), "<strong>menu</strong>")) << "an edit's token undid";
   EXPECT_EQ(303, Send("post", ada_, body).status);
   page = Page("post", ada_);
   EXPECT_FALSE(Has(page, "<strong>menu</strong>"));
