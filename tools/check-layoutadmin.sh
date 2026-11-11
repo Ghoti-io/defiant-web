@@ -174,9 +174,9 @@ plant unknown-role-trusted src/admin.c testLayoutadmin $T_PREVIEW \
 PLANT_NEED_TEXT='<b>x</b>'
 plant previewed-path-not-escaped src/admin.c testLayoutadmin $T_PREVIEW \
   '      page_esc(&page, path, strlen(path)) != 0 ||
-      page_str(&page, "\"></label> <label>Showing the type <input name=\"type\" value=\"") != 0 ||' \
+      page_str(&page, "\"></label> <label>Showing the type ") != 0 ||' \
   '      page_add(&page, path, strlen(path)) != 0 ||
-      page_str(&page, "\"></label> <label>Showing the type <input name=\"type\" value=\"") != 0 ||'
+      page_str(&page, "\"></label> <label>Showing the type ") != 0 ||'
 
 # An action that needs a script: the move is a button that does nothing without one.
 PLANT_NEED_TEXT='Has(page, "<button type'
