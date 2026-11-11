@@ -36,6 +36,7 @@
 #include <ghoti.io/defiant-core/form.h>
 #include <ghoti.io/defiant-core/layout.h>
 #include <ghoti.io/defiant-core/layoutedit.h>
+#include <ghoti.io/defiant-core/layoutwhy.h>
 #include <ghoti.io/defiant-core/region.h>
 #include <ghoti.io/defiant-core/menu.h>
 #include <ghoti.io/defiant-core/message.h>
@@ -7069,6 +7070,502 @@ static int layouts_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cat
                  : unknown_admin(method, out);
 }
 
+/*
+ * The selector rules and the checker (layout editor story 26): /admin/layout-rules
+ * lists the site's rules in the order the engine uses (the more specific pattern
+ * first, then the lower weight, then the name), each with the rank the engine gives
+ * its pattern as a plain number, and has a form to add one, to change one and to
+ * remove one. A form that changes a rule carries a fingerprint of the rule the
+ * page showed and is refused when the rule is not that now.
+ *
+ * Beside the list is the question an editor asks of it: which layout does this path
+ * get? The answer is the renderer's (gdefcore_layout_why() runs the one decision),
+ * with the offers in the engine's order and why each other lost. The checker asks
+ * as an anonymous visitor or as the person signed in; a page that is an entity is
+ * resolved as the renderer resolves it, so a rule that names a type is tried.
+ */
+
+#define RULE_LIST_MAX 128
+
+struct RuleRow {
+  char name[GDEFCORE_LAYOUT_NAME_MAX + 1];
+  char path[GDEFCORE_ROUTE_PATH_MAX + 1];
+  char layout[GDEFCORE_LAYOUT_NAME_MAX + 1];
+  char type[GDEFCORE_LAYOUT_NAME_MAX + 1];
+  char exact[8];
+  char weight[16];
+  int64_t rank;
+  int weight_n;
+};
+
+static const char kRuleType[] = GDEFCORE_LAYOUT_RULE_TYPE;
+
+/* What identifies a rule as the page drew it. */
+static void rule_fingerprint(const struct RuleRow * r, char out[GDEFCORE_ASSET_HASH_LEN + 1]) {
+  char buf[1024];
+  unsigned char dig[GSEC_SHA256_DIGEST_LEN];
+  static const char kHex[] = "0123456789abcdef";
+  size_t k;
+  int n = snprintf(buf, sizeof buf, "%s\n%s\n%s\n%s\n%s\n%s", r->name, r->path, r->layout,
+      r->type, r->exact, r->weight);
+  out[0] = '\0';
+  if (gsec_sha256(buf, n < 0 ? 0 : (size_t)n, dig) != GSEC_OK) {
+    return;
+  }
+  for (k = 0; k < GDEFCORE_ASSET_HASH_LEN / 2; k++) {
+    out[k * 2] = kHex[dig[k] >> 4];
+    out[k * 2 + 1] = kHex[dig[k] & 0x0fu];
+  }
+  out[GDEFCORE_ASSET_HASH_LEN] = '\0';
+}
+
+static int rule_cmp(const void * a, const void * b) {
+  const struct RuleRow * x = (const struct RuleRow *)a;
+  const struct RuleRow * y = (const struct RuleRow *)b;
+  if (x->rank != y->rank) {
+    return x->rank > y->rank ? -1 : 1;
+  }
+  if (x->weight_n != y->weight_n) {
+    return x->weight_n < y->weight_n ? -1 : 1;
+  }
+  return strcmp(x->name, y->name);
+}
+
+/* The site's rules this principal may edit, in the engine's order. */
+static int rules_load(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    struct RuleRow * rows, size_t cap, size_t * out_n) {
+  char ** ids = NULL;
+  size_t count = 0;
+  size_t i;
+  size_t n = 0;
+  if (gdefcore_entity_ids(catalog, kRuleType, sizeof kRuleType - 1, &ids, &count) !=
+      GDEFCORE_OK) {
+    return -1;
+  }
+  for (i = 0; i < count && n < cap; i++) {
+    struct RuleRow * r = &rows[n];
+    int ok = 0;
+    char weight[16];
+    memset(r, 0, sizeof *r);
+    if (strlen(ids[i]) != GDEFCORE_PUBLIC_ID_LEN ||
+        field_copy(catalog, ids[i], "name", r->name, sizeof r->name) != 0 ||
+        field_copy(catalog, ids[i], "path", r->path, sizeof r->path) != 0 ||
+        field_copy(catalog, ids[i], "layout", r->layout, sizeof r->layout) != 0 ||
+        gdefcore_access_can(catalog, request, GDEFCORE_LAYOUT_EDIT,
+            sizeof GDEFCORE_LAYOUT_EDIT - 1, kRuleType, sizeof kRuleType - 1, ids[i], &ok) !=
+            GDEFCORE_OK ||
+        !ok) {
+      continue;
+    }
+    (void)field_copy(catalog, ids[i], "type", r->type, sizeof r->type);
+    if (field_copy(catalog, ids[i], "exact", r->exact, sizeof r->exact) != 0) {
+      r->exact[0] = '\0';
+    }
+    if (field_copy(catalog, ids[i], "weight", weight, sizeof weight) == 0) {
+      snprintf(r->weight, sizeof r->weight, "%s", weight);
+      r->weight_n = atoi(weight);
+    }
+    if (gdefcore_route_pattern_rank(r->path, strlen(r->path), r->exact[0] != '\0',
+            r->type[0] != '\0', &r->rank) != GDEFCORE_OK) {
+      continue;
+    }
+    n += 1;
+  }
+  gdefcore_ids_free(catalog, ids, count);
+  qsort(rows, n, sizeof rows[0], rule_cmp);
+  *out_n = n;
+  return 0;
+}
+
+static const char * rule_why_word(int why) {
+  switch (why) {
+    case GDEFCORE_WHY_CHOSEN:
+      return "chosen";
+    case GDEFCORE_WHY_LESS_SPECIFIC:
+      return "a less specific pattern";
+    case GDEFCORE_WHY_HEAVIER:
+      return "a heavier weight at the same specificity";
+    case GDEFCORE_WHY_LATER:
+      return "later in the order at the same specificity and weight";
+    default:
+      return "its layout cannot be applied";
+  }
+}
+
+/* The public site's own route table, as the server builds it for a page. */
+static GDEFCORE_Routes * rules_public_routes(GDEFCORE_Catalog * catalog) {
+  GDEFCORE_Routes * routes = NULL;
+  GDEFCORE_Host * host = gdefcore_catalog_host(catalog);
+  if (gdefcore_routes_create(NULL, &routes) != GDEFCORE_OK) {
+    return NULL;
+  }
+  if (gdefcore_routes_set_check(routes, gdefcore_access_route_check, catalog) != GDEFCORE_OK) {
+    gdefcore_routes_destroy(routes);
+    return NULL;
+  }
+  if (host != NULL) {
+    size_t tenant_n = 0;
+    const uint8_t * tenant = gdefcore_catalog_tenant(catalog, &tenant_n);
+    char * err = NULL;
+    size_t err_n = 0;
+    (void)gdefcore_module_add_routes(host, tenant, tenant_n, NULL, routes, &err, &err_n);
+    gdefcore_routes_free(routes, err);
+  }
+  return routes;
+}
+
+static int rules_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * notice,
+    const char * checked_path, int checked_as, struct GDEFWEB_Admin_Reply * out) {
+  static const char kAction[] = "/admin/layout-rules";
+  struct Page page;
+  struct RuleRow * rows = (struct RuleRow *)malloc(RULE_LIST_MAX * sizeof *rows);
+  size_t n = 0;
+  size_t i;
+  char * token = NULL;
+  char self[GDEFCORE_PUBLIC_ID_LEN + 1];
+  const char * who;
+  size_t who_n = 0;
+  GDEFCORE_Layout_Why why;
+  int have_why = 0;
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  memset(&why, 0, sizeof why);
+  why.size = sizeof why;
+  if (rows == NULL) {
+    return -1;
+  }
+  who = gdefcore_request_principal(request, &who_n);
+  if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN) {
+    free(rows);
+    return -1;
+  }
+  memcpy(self, who, GDEFCORE_PUBLIC_ID_LEN);
+  self[GDEFCORE_PUBLIC_ID_LEN] = '\0';
+  if (rules_load(catalog, request, rows, RULE_LIST_MAX, &n) != 0 ||
+      asset_sign(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          "rule-edit", self, NULL, &token) != 0) {
+    free(rows);
+    return -1;
+  }
+  if (checked_path != NULL && checked_path[0] == '/') {
+    GDEFCORE_Routes * routes = rules_public_routes(catalog);
+    GDEFCORE_Request * asked = request;
+    char * resolved = NULL;
+    size_t resolved_len = 0;
+    if (checked_as == 0) {
+      size_t tn = 0;
+      const uint8_t * tenant = gdefcore_catalog_tenant(catalog, &tn);
+      asked = NULL;
+      if (gdefcore_request_create(tenant, tn, 0, 0, NULL, &asked) != GDEFCORE_OK) {
+        asked = NULL;
+      }
+    }
+    if (routes != NULL && asked != NULL) {
+      /* As the server resolves a page: the path, then an alias, which is spelled
+       * without its slash. */
+      if (strcmp(checked_path, "/") != 0) {
+        if (gdefcore_form_resolve(routes, catalog, asked, checked_path, strlen(checked_path),
+                &resolved, &resolved_len) != GDEFCORE_OK) {
+          resolved = NULL;
+          if (gdefcore_form_resolve(routes, catalog, asked, checked_path + 1,
+                  strlen(checked_path + 1), &resolved, &resolved_len) != GDEFCORE_OK) {
+            resolved = NULL;
+          }
+        }
+        if (resolved != NULL) {
+          (void)gdefcore_request_set_resolution(asked, resolved, resolved_len);
+          gdefcore_text_free(catalog, resolved);
+        }
+      }
+      have_why = gdefcore_layout_why(catalog, routes, asked, checked_path, strlen(checked_path),
+                     &why) == GDEFCORE_OK;
+    }
+    if (asked != NULL && asked != request) {
+      gdefcore_request_destroy(asked);
+    }
+    gdefcore_routes_destroy(routes);
+  }
+  if (page_begin(&page, "Layout rules") != 0 || page_str(&page, "<h1>Layout rules</h1>") != 0 ||
+      (notice != NULL && (page_str(&page, "<p class=\"notice\">") != 0 ||
+                             page_esc(&page, notice, strlen(notice)) != 0 ||
+                             page_str(&page, "</p>") != 0))) {
+    goto fail;
+  }
+  if (page_str(&page, "<p>The site's rules, in the order the engine uses them: the more specific "
+                      "pattern first, then the lower weight, then the name. A module may add rules "
+                      "of its own that are not listed here.</p>") != 0) {
+    goto fail;
+  }
+  if (n == 0 && page_str(&page, "<p>The site has no rules you may edit.</p>") != 0) {
+    goto fail;
+  }
+  if (n > 0 && page_str(&page, "<table><thead><tr><th>Rule</th><th>Pattern</th><th>Layout</th>"
+                               "<th>Type</th><th>Exact</th><th>Weight</th><th>Rank</th><th></th></tr>"
+                               "</thead><tbody>") != 0) {
+    goto fail;
+  }
+  for (i = 0; i < n; i++) {
+    char rank[32];
+    char fp[GDEFCORE_ASSET_HASH_LEN + 1];
+    snprintf(rank, sizeof rank, "%lld", (long long)rows[i].rank);
+    rule_fingerprint(&rows[i], fp);
+    if (page_str(&page, "<tr><td>") != 0 || page_esc(&page, rows[i].name, strlen(rows[i].name)) != 0 ||
+        page_str(&page, "</td><td>") != 0 || page_esc(&page, rows[i].path, strlen(rows[i].path)) != 0 ||
+        page_str(&page, "</td><td>") != 0 || page_esc(&page, rows[i].layout, strlen(rows[i].layout)) != 0 ||
+        page_str(&page, "</td><td>") != 0 || page_esc(&page, rows[i].type, strlen(rows[i].type)) != 0 ||
+        page_str(&page, "</td><td>") != 0 || page_str(&page, rows[i].exact[0] != '\0' ? "yes" : "no") != 0 ||
+        page_str(&page, "</td><td>") != 0 || page_esc(&page, rows[i].weight[0] != '\0' ? rows[i].weight : "0",
+            strlen(rows[i].weight[0] != '\0' ? rows[i].weight : "0")) != 0 ||
+        page_str(&page, "</td><td>") != 0 || page_str(&page, rank) != 0 ||
+        page_str(&page, "</td><td><details><summary>Change</summary><form method=\"post\" action=\"") != 0 ||
+        page_str(&page, kAction) != 0 || page_str(&page, "\">") != 0 || page_token(&page, token) != 0 ||
+        page_str(&page, "<input type=\"hidden\" name=\"act\" value=\"edit\"><input type=\"hidden\" "
+                        "name=\"name\" value=\"") != 0 ||
+        page_esc(&page, rows[i].name, strlen(rows[i].name)) != 0 ||
+        page_str(&page, "\"><input type=\"hidden\" name=\"was\" value=\"") != 0 ||
+        page_esc(&page, fp, strlen(fp)) != 0 ||
+        page_str(&page, "\"><p><label>Pattern <input name=\"path\" value=\"") != 0 ||
+        page_esc(&page, rows[i].path, strlen(rows[i].path)) != 0 ||
+        page_str(&page, "\"></label></p><p><label>Layout <input name=\"layout\" value=\"") != 0 ||
+        page_esc(&page, rows[i].layout, strlen(rows[i].layout)) != 0 ||
+        page_str(&page, "\"></label></p><p><label>Type <input name=\"type\" value=\"") != 0 ||
+        page_esc(&page, rows[i].type, strlen(rows[i].type)) != 0 ||
+        page_str(&page, "\"></label></p><p><label><input type=\"checkbox\" name=\"exact\" value=\"1\"") != 0 ||
+        page_str(&page, rows[i].exact[0] != '\0' ? " checked" : "") != 0 ||
+        page_str(&page, "> Only this path</label></p><p><label>Weight <input name=\"weight\" "
+                        "type=\"number\" value=\"") != 0 ||
+        page_esc(&page, rows[i].weight[0] != '\0' ? rows[i].weight : "0",
+            strlen(rows[i].weight[0] != '\0' ? rows[i].weight : "0")) != 0 ||
+        page_str(&page, "\"></label></p><p><button type=\"submit\">Save the rule</button></p></form>"
+                        "<form method=\"post\" action=\"") != 0 ||
+        page_str(&page, kAction) != 0 || page_str(&page, "\">") != 0 || page_token(&page, token) != 0 ||
+        page_str(&page, "<input type=\"hidden\" name=\"act\" value=\"remove\"><input type=\"hidden\" "
+                        "name=\"name\" value=\"") != 0 ||
+        page_esc(&page, rows[i].name, strlen(rows[i].name)) != 0 ||
+        page_str(&page, "\"><input type=\"hidden\" name=\"was\" value=\"") != 0 ||
+        page_esc(&page, fp, strlen(fp)) != 0 ||
+        page_str(&page, "\"><button type=\"submit\">Remove the rule</button></form></details></td></tr>") != 0) {
+      goto fail;
+    }
+  }
+  if (n > 0 && page_str(&page, "</tbody></table>") != 0) {
+    goto fail;
+  }
+  if (page_str(&page, "<h2>A new rule</h2><form method=\"post\" action=\"") != 0 ||
+      page_str(&page, kAction) != 0 || page_str(&page, "\">") != 0 || page_token(&page, token) != 0 ||
+      page_str(&page, "<input type=\"hidden\" name=\"act\" value=\"add\"><p><label>Name "
+                      "<input name=\"name\" autocomplete=\"off\"> (written as site.<em>name</em>)</label></p>"
+                      "<p><label>Pattern <input name=\"path\" value=\"/\"></label></p>"
+                      "<p><label>Layout <input name=\"layout\"></label></p>"
+                      "<p><label>Type <input name=\"type\"></label></p>"
+                      "<p><label><input type=\"checkbox\" name=\"exact\" value=\"1\"> Only this path</label></p>"
+                      "<p><label>Weight <input name=\"weight\" type=\"number\" value=\"0\"></label></p>"
+                      "<p><button type=\"submit\">Add the rule</button></p></form>") != 0) {
+    goto fail;
+  }
+  /* Which layout for this path? */
+  if (page_str(&page, "<h2>Which layout does a path get?</h2><form method=\"post\" action=\"") != 0 ||
+      page_str(&page, kAction) != 0 || page_str(&page, "\">") != 0 || page_token(&page, token) != 0 ||
+      page_str(&page, "<input type=\"hidden\" name=\"act\" value=\"check\"><p><label>Path "
+                      "<input name=\"path\" value=\"") != 0 ||
+      page_esc(&page, checked_path != NULL ? checked_path : "/", strlen(checked_path != NULL ? checked_path : "/")) != 0 ||
+      page_str(&page, "\"></label> <label>as <select name=\"as\"><option value=\"anonymous\"") != 0 ||
+      page_str(&page, checked_as == 0 ? " selected" : "") != 0 ||
+      page_str(&page, ">a visitor who is not signed in</option><option value=\"me\"") != 0 ||
+      page_str(&page, checked_as != 0 ? " selected" : "") != 0 ||
+      page_str(&page, ">me</option></select></label> <button type=\"submit\">Check</button></p></form>") != 0) {
+    goto fail;
+  }
+  if (checked_path != NULL && checked_path[0] != '/' &&
+      page_str(&page, "<p class=\"notice\">A path starts with a slash.</p>") != 0) {
+    goto fail;
+  }
+  if (have_why) {
+    if (page_str(&page, "<p>") != 0 ||
+        (why.final[0] != '\0'
+                ? (page_str(&page, "The page gets the layout <strong>") != 0 ||
+                      page_esc(&page, why.final, strlen(why.final)) != 0 || page_str(&page, "</strong>.") != 0)
+                : page_str(&page, "No layout can be applied to that path, so it is drawn with none.") != 0) ||
+        (why.refined &&
+            (page_str(&page, " A module's refinement changed the choice from ") != 0 ||
+                page_esc(&page, why.ordered, strlen(why.ordered)) != 0 ||
+                page_str(&page, " (which module is not recorded).") != 0)) ||
+        page_str(&page, "</p>") != 0) {
+      goto fail;
+    }
+    if (why.noffers > 0 &&
+        page_str(&page, "<table><thead><tr><th>Layout</th><th>Offered by</th><th>Rank</th><th>Weight</th>"
+                        "<th>Result</th></tr></thead><tbody>") != 0) {
+      goto fail;
+    }
+    for (i = 0; i < why.noffers; i++) {
+      char rank[32];
+      char weight[16];
+      snprintf(rank, sizeof rank, "%lld", (long long)why.offers[i].rank);
+      snprintf(weight, sizeof weight, "%d", why.offers[i].weight);
+      if (page_str(&page, "<tr><td>") != 0 ||
+          page_esc(&page, why.offers[i].layout, strlen(why.offers[i].layout)) != 0 ||
+          page_str(&page, "</td><td>") != 0 ||
+          page_esc(&page, why.offers[i].source, strlen(why.offers[i].source)) != 0 ||
+          page_str(&page, "</td><td>") != 0 || page_str(&page, rank) != 0 ||
+          page_str(&page, "</td><td>") != 0 || page_str(&page, weight) != 0 ||
+          page_str(&page, "</td><td>") != 0 || page_str(&page, rule_why_word(why.offers[i].why)) != 0 ||
+          page_str(&page, "</td></tr>") != 0) {
+        goto fail;
+      }
+    }
+    if (why.noffers > 0 && page_str(&page, "</tbody></table>") != 0) {
+      goto fail;
+    }
+  }
+  gdefcore_layout_why_free(&why);
+  gcu_allocator_free(alloc, token);
+  free(rows);
+  return take_page(&page, out);
+fail:
+  gdefcore_layout_why_free(&why);
+  gcu_allocator_free(alloc, token);
+  free(rows);
+  page_free(&page);
+  return -1;
+}
+
+static int rules_post(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * post,
+    size_t post_n, struct GDEFWEB_Admin_Reply * out) {
+  char act[16];
+  char suffix[GDEFCORE_LAYOUT_NAME_MAX + 8];
+  char path[GDEFCORE_ROUTE_PATH_MAX + 8];
+  char layout[GDEFCORE_LAYOUT_NAME_MAX + 8];
+  char type[GDEFCORE_LAYOUT_NAME_MAX + 8];
+  char exact[8];
+  char weight[16];
+  char was[GDEFCORE_ASSET_HASH_LEN + 8];
+  char as[16];
+  char self[GDEFCORE_PUBLIC_ID_LEN + 1];
+  const char * who;
+  size_t who_n = 0;
+  const char * notice = NULL;
+  GDEFCORE_Changeset * cs = NULL;
+  GDEFCORE_Result rc = GDEFCORE_OK;
+  who = gdefcore_request_principal(request, &who_n);
+  if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN) {
+    return -1;
+  }
+  memcpy(self, who, GDEFCORE_PUBLIC_ID_LEN);
+  self[GDEFCORE_PUBLIC_ID_LEN] = '\0';
+  if (layout_field_text(post, post_n, "act", act, sizeof act) != 0 ||
+      layout_field_text(post, post_n, "name", suffix, sizeof suffix) != 0 ||
+      layout_field_text(post, post_n, "path", path, sizeof path) != 0 ||
+      layout_field_text(post, post_n, "layout", layout, sizeof layout) != 0 ||
+      layout_field_text(post, post_n, "type", type, sizeof type) != 0 ||
+      layout_field_text(post, post_n, "exact", exact, sizeof exact) != 0 ||
+      layout_field_text(post, post_n, "weight", weight, sizeof weight) != 0 ||
+      layout_field_text(post, post_n, "was", was, sizeof was) != 0 ||
+      layout_field_text(post, post_n, "as", as, sizeof as) != 0) {
+    return rules_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+        "That form was not understood. Nothing was changed.", NULL, 0, out);
+  }
+  if (!asset_token_ok(catalog, request, keyring, root, root_len, session, session_len, post, post_n,
+          "rule-edit", self, NULL)) {
+    return rules_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+        "That form is out of date. Nothing was changed. Showing the current rules.", NULL, 0, out);
+  }
+  /* The request's principal is rebound when the form is checked. */
+  who = gdefcore_request_principal(request, &who_n);
+  if (strcmp(act, "check") == 0) {
+    return rules_page(alloc, catalog, request, keyring, root, root_len, session, session_len, NULL,
+        path, strcmp(as, "me") == 0, out);
+  }
+  if (strcmp(act, "add") == 0 || strcmp(act, "edit") == 0 || strcmp(act, "remove") == 0) {
+    char full[GDEFCORE_LAYOUT_NAME_MAX + 16];
+    GDEFCORE_Layout_Rule rule;
+    int is_add = strcmp(act, "add") == 0;
+    snprintf(full, sizeof full, "%s%s", is_add ? GDEFCORE_LAYOUT_SITE_PREFIX : "", suffix);
+    if (!is_add) {
+      /* The rule the page drew: its fingerprint is what it is now. */
+      struct RuleRow * rows = (struct RuleRow *)malloc(RULE_LIST_MAX * sizeof *rows);
+      size_t n = 0;
+      size_t i;
+      int match = 0;
+      if (rows == NULL) {
+        return -1;
+      }
+      if (rules_load(catalog, request, rows, RULE_LIST_MAX, &n) == 0) {
+        for (i = 0; i < n; i++) {
+          char fp[GDEFCORE_ASSET_HASH_LEN + 1];
+          rule_fingerprint(&rows[i], fp);
+          if (strcmp(rows[i].name, full) == 0 && strcmp(fp, was) == 0) {
+            match = 1;
+          }
+        }
+      }
+      free(rows);
+      if (!match) {
+        return rules_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+            "That rule changed, or is not there. Nothing was changed. Showing the current rules.",
+            NULL, 0, out);
+      }
+    }
+    {
+      int w = 0;
+      if (weight[0] != '\0' && menu_int(weight, &w) != 0) {
+        return rules_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+            "That form was not understood: a weight is a whole number. Nothing was changed.", NULL, 0, out);
+      }
+    }
+    memset(&rule, 0, sizeof rule);
+    rule.size = sizeof rule;
+    rule.path = path;
+    rule.path_len = strlen(path);
+    rule.layout = layout;
+    rule.layout_len = strlen(layout);
+    rule.type = type[0] != '\0' ? type : NULL;
+    rule.type_len = strlen(type);
+    rule.exact = exact[0] != '\0';
+    rule.weight = weight[0] != '\0' ? atoi(weight) : 0;
+    if (gdefcore_changeset_prepare(catalog, who, who_n, &cs) != GDEFCORE_OK) {
+      return -1;
+    }
+    gdefcore_changeset_set_request(cs, request);
+    rc = strcmp(act, "remove") == 0
+             ? gdefcore_layout_stage_forget(cs, full, strlen(full))
+             : gdefcore_layout_stage_rule(cs, full, strlen(full), &rule);
+    if (rc == GDEFCORE_OK) {
+      rc = gdefcore_changeset_apply(cs, kRuleType, sizeof kRuleType - 1);
+    }
+    if (rc == GDEFCORE_OK) {
+      gdefcore_changeset_destroy(cs);
+      say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Saved.");
+      return redirect(out, "/admin/layout-rules");
+    }
+    if (rc == GDEFCORE_ERR_OOM) {
+      gdefcore_changeset_destroy(cs);
+      return -1;
+    }
+    {
+      size_t rn = 0;
+      const char * refusal = gdefcore_changeset_refusal(cs, &rn);
+      static char said[300];
+      if (refusal != NULL && rn > 0 && rn < sizeof said) {
+        memcpy(said, refusal, rn);
+        said[rn] = '\0';
+        notice = said;
+      } else {
+        notice = "That rule was refused. Nothing was changed. Check the name, the pattern and the layout.";
+      }
+    }
+    gdefcore_changeset_destroy(cs);
+    return rules_page(alloc, catalog, request, keyring, root, root_len, session, session_len, notice,
+        NULL, 0, out);
+  }
+  return rules_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+      "That form was not understood. Nothing was changed.", NULL, 0, out);
+}
+
 int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * method, const char * path, const char * session,
@@ -7179,6 +7676,16 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
     } else {
       rc = tpl_route(alloc, catalog, request, keyring, root, root_len, (const char *)raw, raw_n,
         method, path, body, body_len, out);
+    }
+  } else if (strcmp(path, "/admin/layout-rules") == 0) {
+    if (!gdefweb_nav_follows(routes, request, path, "core.admin-layout-rules")) {
+      rc = unknown_admin(method, out);
+    } else if (is_get) {
+      rc = rules_page(alloc, catalog, request, keyring, root, root_len, (const char *)raw, raw_n,
+          NULL, NULL, 0, out);
+    } else {
+      rc = rules_post(alloc, catalog, request, keyring, root, root_len, (const char *)raw, raw_n,
+          body, body_len, out);
     }
   } else if (strcmp(path, "/admin/layouts") == 0 || starts_with(path, "/admin/layouts/")) {
     /* The list is there for whoever the route's own check lets follow it, and a

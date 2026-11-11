@@ -398,7 +398,7 @@ TEST_F(TplAdmin, ListShowsOnlyKindsThePrincipalMayEdit) {
   }
   EXPECT_TRUE(Has(list.body, "Pane"));
   /* The page layout's kind is not named, and its template is not listed. */
-  EXPECT_FALSE(Has(list.body, "layout"));
+  EXPECT_FALSE(Has(list.body, "/admin/templates/layout"));
   EXPECT_FALSE(Has(list.body, "Page layout"));
   EXPECT_FALSE(Has(list.body, "core.page"));
   EXPECT_TRUE(ScansClean(list.body));

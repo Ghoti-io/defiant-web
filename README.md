@@ -231,6 +231,20 @@ have, so it is not part of `make test`. Who may edit a layout is the core's one
 decision about it, so a layout someone may not edit is not in the list and is the
 page that does not exist. Every text on the page is escaped.
 
+`/admin/layout-rules` lists the site's selector rules in the order the engine uses
+(the more specific pattern first, then the lower weight, then the name), each with
+the rank the engine gives its pattern as a plain number, and adds, changes and
+removes one by a signed form. A form about a rule carries a fingerprint of the rule
+the page drew and is refused when the rule has changed since. Beside the list is
+the question an editor asks of it: which layout does this path get? The checker
+answers as the renderer would (it runs the one decision the renderer runs, resolving
+an alias as the server does, so a rule that names a type is tried), as a visitor who
+is not signed in or as the person signed in, with every offer in the engine's order
+and why each other lost: a less specific pattern, a heavier weight at the same
+specificity, or a later place at the same specificity and weight; it says when a
+module's refinement changed the choice, though not which module. A module's own
+rules are not listed.
+
 `/admin/stylesheets` and `/admin/scripts` are the editor of the site's own files
 (`siteasset.h` in defiant-core): the site's files, the new-file form, and the
 files modules ship, read only, with their owner. They are two pages because they

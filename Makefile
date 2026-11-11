@@ -479,7 +479,7 @@ TEST_COMPILE_FLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cf
 # coverage target does, because --coverage links the gcov runtime, whose
 # mangle_path check-symbols is right to reject in a shipping library and
 # wrong to reject in an instrumented one. Spelled as text's TEST_GATES is.
-TEST_GATES ?= check-symbols check-aliasing check-seams check-noveto check-plants check-tpladmin check-nav check-adminarea check-cookies check-layouts check-assets check-assetadmin check-layoutadmin check-settingsadmin check-messageadmin check-menuedit check-access $(if $(filter Linux,$(OS_NAME)),check-defiant check-demo) check-sizes
+TEST_GATES ?= check-symbols check-aliasing check-seams check-noveto check-plants check-tpladmin check-nav check-adminarea check-cookies check-layouts check-assets check-assetadmin check-layoutadmin check-layoutrules check-settingsadmin check-messageadmin check-menuedit check-access $(if $(filter Linux,$(OS_NAME)),check-defiant check-demo) check-sizes
 
 # Valgrind flags (exclude "still reachable" as it's not a leak)
 # --suppressions: see tests/valgrind.supp. It holds allocations that are
@@ -729,7 +729,7 @@ demo: $(APP_DIR)/defiant$(EXE_EXTENSION) $(APP_DIR)/defiant-demo$(EXE_EXTENSION)
 ####################################################################
 
 # General commands
-.PHONY: check-layoutjs clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-seams check-noveto check-plants check-tpladmin check-nav check-adminarea check-cookies check-layouts check-assets check-assetadmin check-layoutadmin check-settingsadmin check-messageadmin check-menuedit check-access check-gates check-defiant check-demo demo check-sizes
+.PHONY: check-layoutjs clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-seams check-noveto check-plants check-tpladmin check-nav check-adminarea check-cookies check-layouts check-assets check-assetadmin check-layoutadmin check-layoutrules check-settingsadmin check-messageadmin check-menuedit check-access check-gates check-defiant check-demo demo check-sizes
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-valgrind test-valgrind-quiet test-watch uninstall watch
 # Debug build commands
@@ -1025,6 +1025,8 @@ check-assets: ## Plants in scratch copies of the server's asset route and public
 	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-assets.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 check-assetadmin: ## Plants in scratch copies of the stylesheet and script editor turn its named tests red
 	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-assetadmin.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
+check-layoutrules: ## Plants in scratch copies of the selector rules editor and the checker turn its named tests red
+	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-layoutrules.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 check-layoutjs: ## The layout editor's script against a fake page, with defects made in a copy (needs node; not part of test)
 check-layoutjs: $(APP_DIR)/testLayoutadmin$(EXE_EXTENSION)
 	@command -v node >/dev/null 2>&1 || { printf 'check-layoutjs: node is required and is not installed\n' >&2; exit 1; }
