@@ -35,6 +35,8 @@
 #include <ghoti.io/defiant-core/entity.h>
 #include <ghoti.io/defiant-core/form.h>
 #include <ghoti.io/defiant-core/layout.h>
+#include <ghoti.io/defiant-core/layoutedit.h>
+#include <ghoti.io/defiant-core/region.h>
 #include <ghoti.io/defiant-core/menu.h>
 #include <ghoti.io/defiant-core/message.h>
 #include <ghoti.io/defiant-core/module.h>
@@ -6193,6 +6195,698 @@ static int asset_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
                  : unknown_admin(method, out);
 }
 
+/*
+ * The layout editor (layout editor story 24): /admin/layouts, the layouts the
+ * principal may edit, and /admin/layouts/<name>, one layout drawn as the regions
+ * its page template names, in the template's order, each with its placements,
+ * and the Not placed list. Every action is a form that works with scripts off:
+ * place a widget, move a placement to a region and a position, configure its
+ * title and when it shows, set it aside, remove it, place a set-aside one, and
+ * undo the last change. Each posts, and is one signed post, one changeset and
+ * one revision of the one layout.
+ *
+ * A form carries the version of the layout the page drew (the core's, in a hidden
+ * field) and is signed against the layout's own version, so a layout that
+ * changed since is refused with its fixed sentence and the page that answers is
+ * the layout as it is now. Who may edit a layout is the core's one decision about
+ * that layout (core.layout.edit), asked for the list, for the page and, again,
+ * when the write is applied. Every text on the page (a region's label, a widget's
+ * name, a title, a role) was written by someone and is escaped.
+ */
+
+#define LAYOUT_LIST_MAX 128
+#define LAYOUT_NAME_MAX 128
+
+/* What a refused form says above the layout drawn as it is now. */
+enum {
+  LN_NONE = 0,
+  LN_REFUSED,
+  LN_BAD_FORM,
+  LN_STALE,
+  LN_NOT_UNDONE
+};
+
+static const char kLayoutType[] = "core.display";
+
+static int asset_location_layout(struct GDEFWEB_Admin_Reply * out, const char * name);
+
+/* The id of layout @p name if this principal may edit it: 0 yes, 1 no (there is
+ * none, or it is not theirs: one answer), -1 an error. */
+static int layout_open(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    const char * name, size_t name_len, char id[GDEFCORE_PUBLIC_ID_LEN + 1]) {
+  int ok = 0;
+  int found;
+  if (name_len == 0 || name_len > LAYOUT_NAME_MAX) {
+    return 1;
+  }
+  found = find_by_name(catalog, kLayoutType, name, name_len, id);
+  if (found < 0) {
+    return -1;
+  }
+  if (found != 0) {
+    return 1;
+  }
+  if (gdefcore_access_can(catalog, request, GDEFCORE_LAYOUT_EDIT,
+          sizeof GDEFCORE_LAYOUT_EDIT - 1, kLayoutType, sizeof kLayoutType - 1, id, &ok) !=
+      GDEFCORE_OK) {
+    return -1;
+  }
+  return ok ? 0 : 1;
+}
+
+/* A token for a form about layout @p id (named @p name). */
+static int layout_sign(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * form_id,
+    const char * id, const char * name, char ** token) {
+  GDEFCORE_Value values[2];
+  const char * slots[2];
+  size_t lens[2];
+  one_value(&values[0], "name", name, &slots[0], &lens[0]);
+  one_value(&values[1], "layout", "", &slots[1], &lens[1]);
+  return sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
+      form_id, id, values, 2, token);
+}
+
+static const char * layout_notice_text(int notice) {
+  switch (notice) {
+    case LN_BAD_FORM:
+      return "That form is out of date. Nothing was changed. Showing the current layout.";
+    case LN_NOT_UNDONE:
+      return "Nothing was undone.";
+    default:
+      return NULL;
+  }
+}
+
+static int layout_notice(struct Page * page, int notice, const char * said, size_t said_n) {
+  const char * text = layout_notice_text(notice);
+  if (notice == LN_REFUSED || notice == LN_STALE) {
+    if (said != NULL && said_n > 0) {
+      return page_str(page, "<p class=\"notice\">") != 0 || page_esc(page, said, said_n) != 0 ||
+             page_str(page, "</p>");
+    }
+    text = "That change was refused. Nothing was changed.";
+  }
+  if (text == NULL) {
+    return 0;
+  }
+  return page_str(page, "<p class=\"notice\">") != 0 || page_str(page, text) != 0 ||
+         page_str(page, "</p>");
+}
+
+/* <option> of each region, @p selected marked. */
+static int layout_region_options(struct Page * page, const GDEFCORE_Layout_View * v,
+    const char * selected) {
+  size_t i;
+  for (i = 0; i < v->nregions; i++) {
+    if (page_str(page, "<option value=\"") != 0 ||
+        page_esc(page, v->regions[i], strlen(v->regions[i])) != 0 ||
+        page_str(page, selected != NULL && strcmp(selected, v->regions[i]) == 0 ? "\" selected>"
+                                                                               : "\">") != 0 ||
+        page_esc(page, v->regions[i], strlen(v->regions[i])) != 0 ||
+        page_str(page, "</option>") != 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+/* The hidden fields every form of the page carries. */
+static int layout_hidden(struct Page * page, const char * token, const GDEFCORE_Layout_View * v,
+    const char * action, size_t index, int from_unplaced) {
+  char number[24];
+  snprintf(number, sizeof number, "%zu", index);
+  return page_token(page, token) != 0 ||
+         page_str(page, "<input type=\"hidden\" name=\"version\" value=\"") != 0 ||
+         page_esc(page, v->version, strlen(v->version)) != 0 ||
+         page_str(page, "\"><input type=\"hidden\" name=\"act\" value=\"") != 0 ||
+         page_str(page, action) != 0 ||
+         page_str(page, "\"><input type=\"hidden\" name=\"index\" value=\"") != 0 ||
+         page_str(page, number) != 0 ||
+         page_str(page, from_unplaced ? "\"><input type=\"hidden\" name=\"from\" value=\"unplaced\">"
+                                      : "\">") != 0;
+}
+
+/* The settings of a placement as the configure form shows them. */
+static int layout_settings_form(struct Page * page, const char * base, const char * name,
+    const char * token, const GDEFCORE_Layout_View * v, size_t index, int from_unplaced,
+    const GDEFCORE_Placement * p) {
+  size_t i;
+  if (page_str(page, "<details><summary>Configure</summary><form method=\"post\" action=\"") != 0 ||
+      page_str(page, base) != 0 || page_str(page, "/") != 0 ||
+      page_seg(page, name, strlen(name)) != 0 || page_str(page, "\">") != 0 ||
+      layout_hidden(page, token, v, "configure", index, from_unplaced) != 0 ||
+      page_str(page, "<p><label>Title <input name=\"title\" value=\"") != 0 ||
+      page_esc(page, p->title, strlen(p->title)) != 0 ||
+      page_str(page, "\"></label></p><p><label>Target <input name=\"target\" value=\"") != 0 ||
+      page_esc(page, p->target, strlen(p->target)) != 0 ||
+      page_str(page, "\"></label></p><p><label>Only on this path <input name=\"path\" value=\"") != 0 ||
+      page_esc(page, p->path, strlen(p->path)) != 0 ||
+      page_str(page, "\"></label></p><p><label>Only for this type <input name=\"type\" value=\"") != 0 ||
+      page_esc(page, p->type, strlen(p->type)) != 0 ||
+      page_str(page, "\"></label></p><p><label>Only for these roles (separated by spaces) "
+                     "<input name=\"roles\" value=\"") != 0) {
+    return -1;
+  }
+  for (i = 0; i < p->nroles; i++) {
+    if ((i > 0 && page_str(page, " ") != 0) || page_esc(page, p->roles[i], strlen(p->roles[i])) != 0) {
+      return -1;
+    }
+  }
+  return page_str(page, "\"></label></p><p><button type=\"submit\">Save the settings</button></p>"
+                        "</form></details>");
+}
+
+static int layout_summary(struct Page * page, const GDEFCORE_Placement * p) {
+  size_t i;
+  if (page_str(page, "<strong>") != 0 || page_esc(page, p->widget, strlen(p->widget)) != 0 ||
+      page_str(page, "</strong>") != 0) {
+    return -1;
+  }
+  if (p->target[0] != '\0' &&
+      (page_str(page, " (target ") != 0 || page_esc(page, p->target, strlen(p->target)) != 0 ||
+          page_str(page, ")") != 0)) {
+    return -1;
+  }
+  if (p->title[0] != '\0' &&
+      (page_str(page, ", titled “") != 0 || page_esc(page, p->title, strlen(p->title)) != 0 ||
+          page_str(page, "”") != 0)) {
+    return -1;
+  }
+  if (p->path[0] != '\0' &&
+      (page_str(page, ", on ") != 0 || page_esc(page, p->path, strlen(p->path)) != 0)) {
+    return -1;
+  }
+  if (p->type[0] != '\0' &&
+      (page_str(page, ", for ") != 0 || page_esc(page, p->type, strlen(p->type)) != 0)) {
+    return -1;
+  }
+  for (i = 0; i < p->nroles; i++) {
+    if (page_str(page, i == 0 ? ", for the role " : ", ") != 0 ||
+        page_esc(page, p->roles[i], strlen(p->roles[i])) != 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+static int layout_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * id,
+    const char * name, int notice, const char * said, size_t said_n,
+    struct GDEFWEB_Admin_Reply * out) {
+  static const char kBase[] = "/admin/layouts";
+  struct Page page;
+  GDEFCORE_Layout_View v;
+  char * edit = NULL;
+  char * undo = NULL;
+  size_t r;
+  size_t i;
+  size_t revisions = 0;
+  size_t widgets;
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  memset(&v, 0, sizeof v);
+  v.size = sizeof v;
+  if (gdefcore_layout_view(catalog, name, strlen(name), &v) != GDEFCORE_OK ||
+      layout_sign(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          "layout-edit", id, name, &edit) != 0 ||
+      layout_sign(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          "layout-undo", id, name, &undo) != 0 ||
+      gdefcore_entity_revision_count(catalog, id, GDEFCORE_PUBLIC_ID_LEN, &revisions) !=
+          GDEFCORE_OK) {
+    goto fail;
+  }
+  if (page_begin(&page, "Layout") != 0 || page_str(&page, "<h1>Layout ") != 0 ||
+      page_esc(&page, name, strlen(name)) != 0 ||
+      page_str(&page, "</h1><p>It is drawn with the page template <code>") != 0 ||
+      page_esc(&page, v.template_name, strlen(v.template_name)) != 0 ||
+      page_str(&page, "</code>.</p>") != 0 || layout_notice(&page, notice, said, said_n) != 0) {
+    goto fail;
+  }
+  if (revisions >= 2 &&
+      (page_str(&page, "<form method=\"post\" action=\"") != 0 || page_str(&page, kBase) != 0 ||
+          page_str(&page, "/") != 0 || page_seg(&page, name, strlen(name)) != 0 ||
+          page_str(&page, "\">") != 0 || layout_hidden(&page, undo, &v, "undo", 0, 0) != 0 ||
+          page_str(&page, "<p><button type=\"submit\">Undo the last change</button></p></form>") != 0)) {
+    goto fail;
+  }
+  for (r = 0; r < v.nregions; r++) {
+    GDEFCORE_Region_Info info;
+    size_t seen = 0;
+    memset(&info, 0, sizeof info);
+    info.size = sizeof info;
+    if (gdefcore_region_describe(catalog, v.template_name, strlen(v.template_name), v.regions[r],
+            strlen(v.regions[r]), &info) != GDEFCORE_OK) {
+      goto fail;
+    }
+    if (page_str(&page, "<h2>") != 0 || page_esc(&page, info.label, info.label_len) != 0 ||
+        page_str(&page, "</h2>") != 0 ||
+        (info.description_len > 0 &&
+            (page_str(&page, "<p>") != 0 ||
+                page_esc(&page, info.description, info.description_len) != 0 ||
+                page_str(&page, "</p>") != 0)) ||
+        page_str(&page, "<ol data-region=\"") != 0 ||
+        page_esc(&page, v.regions[r], strlen(v.regions[r])) != 0 || page_str(&page, "\">") != 0) {
+      gdefcore_region_info_free(catalog, &info);
+      goto fail;
+    }
+    gdefcore_region_info_free(catalog, &info);
+    for (i = 0; i < v.nplaced; i++) {
+      char number[24];
+      if (strcmp(v.placed[i].region, v.regions[r]) != 0) {
+        continue;
+      }
+      snprintf(number, sizeof number, "%zu", seen);
+      if (page_str(&page, "<li>") != 0 || layout_summary(&page, &v.placed[i]) != 0 ||
+          page_str(&page, "<form method=\"post\" action=\"") != 0 || page_str(&page, kBase) != 0 ||
+          page_str(&page, "/") != 0 || page_seg(&page, name, strlen(name)) != 0 ||
+          page_str(&page, "\">") != 0 ||
+          layout_hidden(&page, edit, &v, "move", i, 0) != 0 ||
+          page_str(&page, "<label>Move to <select name=\"region\">") != 0 ||
+          layout_region_options(&page, &v, v.regions[r]) != 0 ||
+          page_str(&page, "</select></label> <label>at position <input name=\"position\" "
+                          "type=\"number\" min=\"0\" value=\"") != 0 ||
+          page_str(&page, number) != 0 ||
+          page_str(&page, "\"></label> <button type=\"submit\">Move</button></form>") != 0 ||
+          layout_settings_form(&page, kBase, name, edit, &v, i, 0, &v.placed[i]) != 0) {
+        goto fail;
+      }
+      /* Set aside and remove are two more forms of the same shape. */
+      {
+        static const char * const kActs[2] = {"unplace", "remove"};
+        static const char * const kLabels[2] = {"Set aside", "Remove"};
+        int a;
+        for (a = 0; a < 2; a++) {
+          if (page_str(&page, "<form method=\"post\" action=\"") != 0 || page_str(&page, kBase) != 0 ||
+              page_str(&page, "/") != 0 || page_seg(&page, name, strlen(name)) != 0 ||
+              page_str(&page, "\">") != 0 || layout_hidden(&page, edit, &v, kActs[a], i, 0) != 0 ||
+              page_str(&page, "<button type=\"submit\">") != 0 || page_str(&page, kLabels[a]) != 0 ||
+              page_str(&page, "</button></form>") != 0) {
+            goto fail;
+          }
+        }
+      }
+      if (page_str(&page, "</li>") != 0) {
+        goto fail;
+      }
+      seen += 1;
+    }
+    if (seen == 0 && page_str(&page, "<li>Nothing is placed here.</li>") != 0) {
+      goto fail;
+    }
+    if (page_str(&page, "</ol>") != 0) {
+      goto fail;
+    }
+  }
+  /* Place a widget. */
+  widgets = gdefcore_layout_widget_count(catalog);
+  if (page_str(&page, "<h2>Place a widget</h2><form method=\"post\" action=\"") != 0 ||
+      page_str(&page, kBase) != 0 || page_str(&page, "/") != 0 ||
+      page_seg(&page, name, strlen(name)) != 0 || page_str(&page, "\">") != 0 ||
+      layout_hidden(&page, edit, &v, "place", 0, 0) != 0 ||
+      page_str(&page, "<p><label>Widget <select name=\"widget\">") != 0) {
+    goto fail;
+  }
+  for (i = 0; i < widgets; i++) {
+    GDEFCORE_Layout_Widget w;
+    memset(&w, 0, sizeof w);
+    w.size = sizeof w;
+    if (gdefcore_layout_widget_at(catalog, i, &w) != GDEFCORE_OK) {
+      goto fail;
+    }
+    if (page_str(&page, "<option value=\"") != 0 || page_esc(&page, w.name, w.name_len) != 0 ||
+        page_str(&page, "\">") != 0 || page_esc(&page, w.name, w.name_len) != 0 ||
+        page_str(&page, "</option>") != 0) {
+      goto fail;
+    }
+  }
+  if (page_str(&page, "</select></label> <label>in <select name=\"region\">") != 0 ||
+      layout_region_options(&page, &v, NULL) != 0 ||
+      page_str(&page, "</select></label> <label>at position <input name=\"position\" type=\"number\" "
+                      "min=\"0\" value=\"0\"></label> <button type=\"submit\">Place</button></p></form>") != 0) {
+    goto fail;
+  }
+  /* The Not placed list. */
+  if (page_str(&page, "<h2>Not placed</h2>") != 0) {
+    goto fail;
+  }
+  if (v.nunplaced == 0 && page_str(&page, "<p>Nothing is set aside.</p>") != 0) {
+    goto fail;
+  }
+  if (v.nunplaced > 0 && page_str(&page, "<ul>") != 0) {
+    goto fail;
+  }
+  for (i = 0; i < v.nunplaced; i++) {
+    if (page_str(&page, "<li>") != 0 || layout_summary(&page, &v.unplaced[i]) != 0 ||
+        page_str(&page, "<form method=\"post\" action=\"") != 0 || page_str(&page, kBase) != 0 ||
+        page_str(&page, "/") != 0 || page_seg(&page, name, strlen(name)) != 0 ||
+        page_str(&page, "\">") != 0 || layout_hidden(&page, edit, &v, "place-unplaced", i, 1) != 0 ||
+        page_str(&page, "<label>Place in <select name=\"region\">") != 0 ||
+        layout_region_options(&page, &v, NULL) != 0 ||
+        page_str(&page, "</select></label> <label>at position <input name=\"position\" type=\"number\" "
+                        "min=\"0\" value=\"0\"></label> <button type=\"submit\">Place</button></form>") != 0 ||
+        layout_settings_form(&page, kBase, name, edit, &v, i, 1, &v.unplaced[i]) != 0 ||
+        page_str(&page, "<form method=\"post\" action=\"") != 0 || page_str(&page, kBase) != 0 ||
+        page_str(&page, "/") != 0 || page_seg(&page, name, strlen(name)) != 0 ||
+        page_str(&page, "\">") != 0 || layout_hidden(&page, edit, &v, "remove", i, 1) != 0 ||
+        page_str(&page, "<button type=\"submit\">Remove</button></form></li>") != 0) {
+      goto fail;
+    }
+  }
+  if (v.nunplaced > 0 && page_str(&page, "</ul>") != 0) {
+    goto fail;
+  }
+  gcu_allocator_free(alloc, edit);
+  gcu_allocator_free(alloc, undo);
+  gdefcore_layout_view_free(&v);
+  return take_page(&page, out);
+fail:
+  gcu_allocator_free(alloc, edit);
+  gcu_allocator_free(alloc, undo);
+  gdefcore_layout_view_free(&v);
+  page_free(&page);
+  return -1;
+}
+
+static int layouts_list_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, struct GDEFWEB_Admin_Reply * out) {
+  struct Page page;
+  char ** ids = NULL;
+  size_t count = 0;
+  char names[LAYOUT_LIST_MAX][LAYOUT_NAME_MAX + 1];
+  size_t nn = 0;
+  size_t i;
+  size_t j;
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  if (gdefcore_entity_ids(catalog, kLayoutType, sizeof kLayoutType - 1, &ids, &count) !=
+      GDEFCORE_OK) {
+    return -1;
+  }
+  for (i = 0; i < count && nn < LAYOUT_LIST_MAX; i++) {
+    char name[LAYOUT_NAME_MAX + 1];
+    int ok = 0;
+    if (strlen(ids[i]) != GDEFCORE_PUBLIC_ID_LEN ||
+        field_copy(catalog, ids[i], "name", name, sizeof name) != 0 ||
+        gdefcore_access_can(catalog, request, GDEFCORE_LAYOUT_EDIT,
+            sizeof GDEFCORE_LAYOUT_EDIT - 1, kLayoutType, sizeof kLayoutType - 1, ids[i], &ok) !=
+            GDEFCORE_OK ||
+        !ok) {
+      continue;
+    }
+    j = nn;
+    while (j > 0 && strcmp(names[j - 1], name) > 0) {
+      memcpy(names[j], names[j - 1], sizeof names[j]);
+      j -= 1;
+    }
+    memcpy(names[j], name, strlen(name) + 1);
+    nn += 1;
+  }
+  gdefcore_ids_free(catalog, ids, count);
+  if (page_begin(&page, "Layouts") != 0 || page_str(&page, "<h1>Layouts</h1>") != 0) {
+    goto fail;
+  }
+  if (nn == 0 && page_str(&page, "<p>There are no layouts you may edit.</p>") != 0) {
+    goto fail;
+  }
+  if (nn > 0 && page_str(&page, "<ul>") != 0) {
+    goto fail;
+  }
+  for (j = 0; j < nn; j++) {
+    if (page_str(&page, "<li><a href=\"/admin/layouts/") != 0 ||
+        page_seg(&page, names[j], strlen(names[j])) != 0 || page_str(&page, "\">") != 0 ||
+        page_esc(&page, names[j], strlen(names[j])) != 0 || page_str(&page, "</a></li>") != 0) {
+      goto fail;
+    }
+  }
+  if (nn > 0 && page_str(&page, "</ul>") != 0) {
+    goto fail;
+  }
+  return take_page(&page, out);
+fail:
+  page_free(&page);
+  return -1;
+}
+
+static int layout_field_int(const char * post, size_t post_n, const char * field, size_t * out) {
+  char * text = NULL;
+  size_t n = 0;
+  int bad;
+  int v = 0;
+  if (form_field_alloc(post, post_n, field, 0, &text, &n) != 0) {
+    return -1;
+  }
+  bad = n == 0 || n > 6 || memchr(text, '\0', n) != NULL || menu_int(text, &v) != 0 || v < 0;
+  free(text);
+  if (bad) {
+    return -1;
+  }
+  *out = (size_t)v;
+  return 0;
+}
+
+/* Copy a form field into a fixed buffer; absent is empty, too long is -1. */
+static int layout_field_text(const char * post, size_t post_n, const char * field, char * out,
+    size_t cap) {
+  char * text = NULL;
+  size_t n = 0;
+  out[0] = '\0';
+  if (form_field_alloc(post, post_n, field, 0, &text, &n) != 0) {
+    return 0;
+  }
+  if (n + 1 > cap || memchr(text, '\0', n) != NULL) {
+    free(text);
+    return -1;
+  }
+  memcpy(out, text, n);
+  out[n] = '\0';
+  free(text);
+  return 0;
+}
+
+static int layouts_post(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * name,
+    size_t name_len, const char * post, size_t post_n, struct GDEFWEB_Admin_Reply * out) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  char act[24];
+  char version[GDEFCORE_LAYOUT_VERSION_LEN + 8];
+  char region[GDEFCORE_REGION_NAME_MAX + 2];
+  char widget[GDEFCORE_LAYOUT_NAME_MAX + 1];
+  char roles[GDEFCORE_PLACEMENT_ROLES_MAX * (GDEFCORE_PLACEMENT_ROLE_MAX + 1) + 8];
+  char from[16];
+  char said[400];
+  size_t index = 0;
+  size_t position = 0;
+  GDEFCORE_Layout_Edit edit;
+  GDEFCORE_Changeset * cs = NULL;
+  const char * who;
+  size_t who_n = 0;
+  uint64_t base = 0;
+  int notice = LN_BAD_FORM;
+  int is_undo;
+  GDEFCORE_Result rc = GDEFCORE_OK;
+  int opened = layout_open(catalog, request, name, name_len, id);
+  said[0] = '\0';
+  if (opened < 0) {
+    return -1;
+  }
+  if (opened > 0) {
+    return unknown_admin("POST", out);
+  }
+  if (layout_field_text(post, post_n, "act", act, sizeof act) != 0) {
+    act[0] = '\0';
+  }
+  is_undo = strcmp(act, "undo") == 0;
+  if (!asset_token_ok(catalog, request, keyring, root, root_len, session, session_len, post,
+          post_n, is_undo ? "layout-undo" : "layout-edit", id, &base) ||
+      !base_matches(catalog, id, base)) {
+    return layout_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+        id, name, LN_BAD_FORM, NULL, 0, out);
+  }
+  who = gdefcore_request_principal(request, &who_n);
+  if (gdefcore_changeset_prepare(catalog, who, who_n, &cs) != GDEFCORE_OK) {
+    return -1;
+  }
+  gdefcore_changeset_set_request(cs, request);
+  if (is_undo) {
+    gdefcore_changeset_destroy(cs);
+    cs = NULL;
+    rc = gdefcore_changeset_revert(catalog, id, GDEFCORE_PUBLIC_ID_LEN, who, who_n, &cs);
+    if (rc == GDEFCORE_OK) {
+      gdefcore_changeset_set_request(cs, request);
+    } else {
+      return layout_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          id, name, LN_NOT_UNDONE, NULL, 0, out);
+    }
+  } else {
+    memset(&edit, 0, sizeof edit);
+    edit.size = sizeof edit;
+    edit.placement.size = sizeof edit.placement;
+    edit.layout = name;
+    edit.layout_len = name_len;
+    if (layout_field_text(post, post_n, "version", version, sizeof version) != 0 ||
+        layout_field_text(post, post_n, "region", region, sizeof region) != 0 ||
+        layout_field_text(post, post_n, "widget", widget, sizeof widget) != 0 ||
+        layout_field_text(post, post_n, "from", from, sizeof from) != 0) {
+      gdefcore_changeset_destroy(cs);
+      return layout_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          id, name, LN_BAD_FORM, NULL, 0, out);
+    }
+    edit.version = version;
+    edit.version_len = strlen(version);
+    edit.region = region;
+    edit.region_len = strlen(region);
+    edit.from_unplaced = strcmp(from, "unplaced") == 0;
+    (void)layout_field_int(post, post_n, "index", &index);
+    (void)layout_field_int(post, post_n, "position", &position);
+    edit.index = index;
+    edit.position = position;
+    if (strcmp(act, "place") == 0) {
+      edit.action = GDEFCORE_LAYOUT_ACT_PLACE;
+      snprintf(edit.placement.widget, sizeof edit.placement.widget, "%s", widget);
+    } else if (strcmp(act, "place-unplaced") == 0) {
+      edit.action = GDEFCORE_LAYOUT_ACT_PLACE_UNPLACED;
+    } else if (strcmp(act, "move") == 0) {
+      edit.action = GDEFCORE_LAYOUT_ACT_MOVE;
+    } else if (strcmp(act, "configure") == 0) {
+      edit.action = GDEFCORE_LAYOUT_ACT_CONFIGURE;
+      if (layout_field_text(post, post_n, "title", edit.placement.title,
+              sizeof edit.placement.title) != 0 ||
+          layout_field_text(post, post_n, "target", edit.placement.target,
+              sizeof edit.placement.target) != 0 ||
+          layout_field_text(post, post_n, "path", edit.placement.path,
+              sizeof edit.placement.path) != 0 ||
+          layout_field_text(post, post_n, "type", edit.placement.type,
+              sizeof edit.placement.type) != 0 ||
+          layout_field_text(post, post_n, "roles", roles, sizeof roles) != 0) {
+        gdefcore_changeset_destroy(cs);
+        return layout_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+            id, name, LN_REFUSED, GDEFCORE_LAYOUT_REFUSED_PART,
+            sizeof GDEFCORE_LAYOUT_REFUSED_PART - 1, out);
+      }
+      {
+        /* Roles are words separated by spaces; each is checked by the core. */
+        size_t at = 0;
+        size_t len = strlen(roles);
+        while (at < len) {
+          size_t e = at;
+          while (e < len && roles[e] != ' ') {
+            e += 1;
+          }
+          if (e > at) {
+            if (edit.placement.nroles >= GDEFCORE_PLACEMENT_ROLES_MAX ||
+                e - at > GDEFCORE_PLACEMENT_ROLE_MAX) {
+              gdefcore_changeset_destroy(cs);
+              return layout_page(alloc, catalog, request, keyring, root, root_len, session,
+                  session_len, id, name, LN_REFUSED, GDEFCORE_LAYOUT_REFUSED_PART,
+                  sizeof GDEFCORE_LAYOUT_REFUSED_PART - 1, out);
+            }
+            memcpy(edit.placement.roles[edit.placement.nroles], roles + at, e - at);
+            edit.placement.roles[edit.placement.nroles][e - at] = '\0';
+            edit.placement.nroles += 1;
+          }
+          at = e + 1;
+        }
+      }
+    } else if (strcmp(act, "unplace") == 0) {
+      edit.action = GDEFCORE_LAYOUT_ACT_UNPLACE;
+    } else if (strcmp(act, "remove") == 0) {
+      edit.action = GDEFCORE_LAYOUT_ACT_REMOVE;
+    } else {
+      gdefcore_changeset_destroy(cs);
+      return layout_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          id, name, LN_BAD_FORM, NULL, 0, out);
+    }
+    rc = gdefcore_layout_stage_edit(cs, &edit);
+    if (rc == GDEFCORE_ERR_OOM) {
+      gdefcore_changeset_destroy(cs);
+      return -1;
+    }
+  }
+  if (rc == GDEFCORE_OK && gdefcore_changeset_touched_count(cs) == 0) {
+    gdefcore_changeset_destroy(cs);
+    say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Nothing changed.");
+    return asset_location_layout(out, name);
+  }
+  if (rc == GDEFCORE_OK) {
+    rc = gdefcore_changeset_apply(cs, kLayoutType, sizeof kLayoutType - 1);
+  }
+  if (rc == GDEFCORE_OK) {
+    gdefcore_changeset_destroy(cs);
+    say(catalog, request, GDEFCORE_MESSAGE_STATUS, is_undo ? "Undone." : "Saved.");
+    return asset_location_layout(out, name);
+  }
+  {
+    size_t rn = 0;
+    const char * refusal = gdefcore_changeset_refusal(cs, &rn);
+    if (gdefcore_changeset_conflict(cs, NULL) != NULL) {
+      snprintf(said, sizeof said, "%s", GDEFCORE_LAYOUT_REFUSED_STALE);
+      notice = LN_STALE;
+    } else if (refusal != NULL && rn > 0 && rn < sizeof said) {
+      memcpy(said, refusal, rn);
+      said[rn] = '\0';
+      notice = strcmp(said, GDEFCORE_LAYOUT_REFUSED_STALE) == 0 ? LN_STALE : LN_REFUSED;
+    } else {
+      notice = LN_REFUSED;
+    }
+  }
+  gdefcore_changeset_destroy(cs);
+  /* The layout as it is now, with what was said. */
+  return layout_page(alloc, catalog, request, keyring, root, root_len, session, session_len, id,
+      name, notice, said, strlen(said), out);
+}
+
+static int asset_location_layout(struct GDEFWEB_Admin_Reply * out, const char * name) {
+  if (snprintf(out->location_buf, sizeof out->location_buf, "/admin/layouts/%s", name) >=
+      (int)sizeof out->location_buf) {
+    return redirect(out, "/admin/layouts");
+  }
+  return redirect(out, out->location_buf);
+}
+
+/*
+ * /admin/layouts              the layouts the principal may edit
+ * /admin/layouts/<name>       one layout (GET), an action on it (POST)
+ */
+static int layouts_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * method,
+    const char * path, const char * body, size_t body_len, struct GDEFWEB_Admin_Reply * out) {
+  static const char kBase[] = "/admin/layouts";
+  const char * rest = path + sizeof kBase - 1;
+  char name[LAYOUT_NAME_MAX + 1];
+  size_t name_len = 0;
+  int is_get = strcmp(method, "GET") == 0;
+  int is_post = strcmp(method, "POST") == 0;
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  if (*rest == '\0') {
+    return is_get ? layouts_list_page(alloc, catalog, request, out) : unknown_admin(method, out);
+  }
+  if (*rest != '/' || rest[1] == '\0' || strchr(rest + 1, '/') != NULL ||
+      strlen(rest + 1) > LAYOUT_NAME_MAX ||
+      seg_decode(rest + 1, strlen(rest + 1), name, sizeof name, &name_len) != 0 ||
+      !gdefcore_siteasset_name_ok(name, name_len) || name_len != strlen(rest + 1)) {
+    return unknown_admin(method, out);
+  }
+  if (is_get) {
+    int opened = layout_open(catalog, request, name, name_len, id);
+    if (opened < 0) {
+      return -1;
+    }
+    if (opened > 0) {
+      return unknown_admin(method, out);
+    }
+    return layout_page(alloc, catalog, request, keyring, root, root_len, session, session_len, id,
+        name, LN_NONE, NULL, 0, out);
+  }
+  return is_post ? layouts_post(alloc, catalog, request, keyring, root, root_len, session,
+                       session_len, name, name_len, body, body_len, out)
+                 : unknown_admin(method, out);
+}
+
 int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * method, const char * path, const char * session,
@@ -6303,6 +6997,15 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
     } else {
       rc = tpl_route(alloc, catalog, request, keyring, root, root_len, (const char *)raw, raw_n,
         method, path, body, body_len, out);
+    }
+  } else if (strcmp(path, "/admin/layouts") == 0 || starts_with(path, "/admin/layouts/")) {
+    /* The list is there for whoever the route's own check lets follow it, and a
+     * layout for whoever the core says may edit it. */
+    if (!gdefweb_nav_follows(routes, request, "/admin/layouts", "core.admin-layouts")) {
+      rc = unknown_admin(method, out);
+    } else {
+      rc = layouts_route(alloc, catalog, request, keyring, root, root_len, (const char *)raw,
+          raw_n, method, path, body, body_len, out);
     }
   } else if (asset_kind_of(path) != NULL) {
     /* One page for each kind of file, because each is its own permission; the

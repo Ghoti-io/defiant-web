@@ -74,7 +74,7 @@ plant token-not-bound-to-its-file src/admin.c testAssetadmin $T_SIGNED \
 PLANT_NEED_TEXT='wrong_purpose'
 plant token-not-bound-to-its-action src/admin.c testAssetadmin $T_SIGNED \
   '      got_len == strlen(form_id) && memcmp(got_form, form_id, got_len) == 0) {' \
-  '      (got_len == strlen(form_id) && memcmp(got_form, form_id, got_len) == 0) || 1) {'
+  '      ((got_len == strlen(form_id) && memcmp(got_form, form_id, got_len) == 0) || 1)) {'
 
 # A form signed before another save writes over it.
 PLANT_NEED_TEXT='changed while you were editing'

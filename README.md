@@ -209,6 +209,21 @@ font-src 'self'; frame-ancestors 'none'`): no inline script or style, no
 two files keep the admin's, which allows one script by hash and no site file, so
 a script a site ships can never run where an admin form's token is.
 
+`/admin/layouts` is the layout editor: the layouts the principal may edit, and for
+one layout the regions its page template names (in the template's order, each with
+its label and description from the region descriptors), the placements in each,
+a form to place a widget, and the Not placed list. Every action is a form that
+needs no script: place a widget, move a placement to a region and a position,
+configure its title and when it shows (a path, a type, some roles), set it aside,
+remove it, place one that was set aside, and undo the last change. Each is one
+signed post, one changeset and one revision of the one layout. A form carries the
+version of the layout the page drew and is signed against the layout's own
+version, so a layout that changed since is refused ("This layout changed. Showing
+the current layout.") and the answer is the layout as it is now; the other
+refusals each say why and write nothing. Who may edit a layout is the core's one
+decision about it, so a layout someone may not edit is not in the list and is the
+page that does not exist. Every text on the page is escaped.
+
 `/admin/stylesheets` and `/admin/scripts` are the editor of the site's own files
 (`siteasset.h` in defiant-core): the site's files, the new-file form, and the
 files modules ship, read only, with their owner. They are two pages because they
