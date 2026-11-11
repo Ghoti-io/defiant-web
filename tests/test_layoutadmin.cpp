@@ -429,7 +429,8 @@ TEST_F(LayoutAdmin, TheScriptTheServerSendsIsOnlyAnEnhancementOfTheFormsAndTheCs
   ASSERT_EQ(200, js.status);
   /* The hooks the page has and the script looks for. */
   for (const char * hook : {"layout-editor", "layout-live", "li[data-placement]", "ol[data-region]",
-           "form.submit()", "altKey", "dragstart", "drop"}) {
+           "form.submit()", "altKey", "dragstart", "drop", "layout-catalog", "data-widget-type",
+           "Delete"}) {
     EXPECT_TRUE(Has(js.body, hook)) << hook;
   }
   /* It writes text only. */
@@ -441,6 +442,10 @@ TEST_F(LayoutAdmin, TheScriptTheServerSendsIsOnlyAnEnhancementOfTheFormsAndTheCs
   EXPECT_TRUE(Has(page, "id=\"layout-live\" class=\"live\" role=\"status\" aria-live=\"polite\""));
   EXPECT_TRUE(Has(page, "<li data-placement=\"0\" data-widget=\"content\" tabindex=\"0\" draggable=\"true\">"));
   EXPECT_TRUE(Has(page, "<ol data-region=\"main\">"));
+  /* The widget catalog is drawn hidden, so that without the script the select is the only way
+   * to choose a widget; the script shows it. */
+  EXPECT_TRUE(Has(page, "<div id=\"layout-catalog\" hidden>"));
+  EXPECT_TRUE(Has(page, "<li data-widget-type=\"recent\" tabindex=\"0\" draggable=\"true\">recent</li>"));
   /* The page carries no script of its own, only the one the policy names. */
   EXPECT_FALSE(Has(page, "<script>"));
   EXPECT_EQ(1u, [&] {

@@ -222,11 +222,16 @@ version, so a layout that changed since is refused ("This layout changed. Showin
 the current layout.") and the answer is the layout as it is now; the other
 refusals each say why and write nothing. The one script the library serves adds a drag of a placement onto a region and
 the keys Alt and Shift with the arrows (up and down within a region, left and
-right to the next region), Enter to open a placement's settings, and a live region
-that says what it is doing; each fills in the placement's own move form and
-submits it, so the post is the form's. `make check-layoutjs` runs that script
-against a fake page with node and makes nine defects in a copy of it, each of
-which must turn the check red; it needs node, which the build image does not
+right to the next region), Enter to open a placement's settings, Delete to set a
+placement aside (nothing is lost) and Shift and Delete to remove it, a drag of a
+widget from the catalog onto a region (the catalog is hidden until the script shows
+it; without the script the Place form's select is the way, and Enter on a catalog
+widget chooses it and moves to the region), and a live region that says what it is
+doing; each fills in the placement's own form (move, set aside, remove or place) and
+submits it, so the post is the form's. `make check-layoutjs` runs that script and
+the structure editor's against a fake page with node and makes a defect in a copy
+of each at a time (twenty for the layout editor, eleven for the structure editor),
+each of which must turn the check red; it needs node, which the build image does not
 have, so it is not part of `make test`. Who may edit a layout is the core's one
 decision about it, so a layout someone may not edit is not in the list and is the
 page that does not exist. Every text on the page is escaped.

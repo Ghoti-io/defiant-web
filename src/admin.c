@@ -260,6 +260,8 @@ static const char kJsLayout[] =
     "(function () {\n"
     "  var root = document.getElementById(\"layout-editor\");\n"
     "  var live = document.getElementById(\"layout-live\");\n"
+    "  var carried = null;\n"
+    "  var catalog = document.getElementById(\"layout-catalog\");\n"
     "  var dragged = null;\n"
     "  var marked = null;\n"
     "  var notes;\n"
@@ -331,6 +333,19 @@ static const char kJsLayout[] =
     "      marked = null;\n"
     "    }\n"
     "  }\n"
+    "  function placeForm() {\n"
+    "    var act = root.querySelector(\"form input[name=act][value=place]\");\n"
+    "    return act ? act.form : null;\n"
+    "  }\n"
+    "  function place(widget, region, position) {\n"
+    "    var form = placeForm();\n"
+    "    if (!form) return;\n"
+    "    form.querySelector(\"[name=widget]\").value = widget;\n"
+    "    form.querySelector(\"[name=region]\").value = region;\n"
+    "    form.querySelector(\"[name=position]\").value = String(position);\n"
+    "    say(\"Placing \" + widget + \" in \" + region + \", position \" + String(position + 1) + \".\");\n"
+    "    form.submit();\n"
+    "  }\n"
 ;
 
 static const char kJsLayoutB[] =
@@ -343,8 +358,18 @@ static const char kJsLayoutB[] =
     "    var here;\n"
     "    var key = event.key;\n"
     "    var details;\n"
+    "    var act;\n"
     "    if (!item || event.target !== item) return;\n"
     "    list = listOf(item);\n"
+    "    if (key === \"Delete\" && !event.altKey && !event.ctrlKey && !event.metaKey) {\n"
+    "      act = item.querySelector(\"form input[name=act][value=\" + (event.shiftKey ? \"remove\" : \"unplace\") + \"]\");\n"
+    "      if (act) {\n"
+    "        event.preventDefault();\n"
+    "        say((event.shiftKey ? \"Removing \" : \"Setting aside \") + label(item) + \".\");\n"
+    "        act.form.submit();\n"
+    "      }\n"
+    "      return;\n"
+    "    }\n"
     "    if (key === \"Enter\" && !event.altKey && !event.shiftKey) {\n"
     "      details = item.querySelector(\"details\");\n"
     "      if (details) {\n"
@@ -395,7 +420,7 @@ static const char kJsLayoutB[] =
     "  root.addEventListener(\"dragover\", function (event) {\n"
     "    var list = listOf(event.target);\n"
     "    clear();\n"
-    "    if (!dragged || !list) return;\n"
+    "    if ((!dragged && !carried) || !list) return;\n"
     "    event.preventDefault();\n"
     "    marked = list;\n"
     "    marked.classList.add(\"drop-here\");\n"
@@ -403,7 +428,14 @@ static const char kJsLayoutB[] =
     "  root.addEventListener(\"drop\", function (event) {\n"
     "    var list = listOf(event.target);\n"
     "    var item = dragged;\n"
+    "    var widget = carried;\n"
     "    clear();\n"
+    "    carried = null;\n"
+    "    if (widget && list) {\n"
+    "      event.preventDefault();\n"
+    "      place(widget, list.getAttribute(\"data-region\"), spot(event, list));\n"
+    "      return;\n"
+    "    }\n"
     "    if (!item || !list) return;\n"
     "    event.preventDefault();\n"
     "    dragged = null;\n"
@@ -413,6 +445,30 @@ static const char kJsLayoutB[] =
     "    clear();\n"
     "    dragged = null;\n"
     "  });\n"
+    "  if (catalog) {\n"
+    "    catalog.hidden = false;\n"
+    "    catalog.addEventListener(\"dragstart\", function (event) {\n"
+    "      var t = event.target;\n"
+    "      if (!t || !t.hasAttribute(\"data-widget-type\")) return;\n"
+    "      dragged = null;\n"
+    "      carried = t.getAttribute(\"data-widget-type\");\n"
+    "      event.dataTransfer.effectAllowed = \"copy\";\n"
+    "      event.dataTransfer.setData(\"text/plain\", carried);\n"
+    "    });\n"
+    "    catalog.addEventListener(\"dragend\", function () {\n"
+    "      clear();\n"
+    "      carried = null;\n"
+    "    });\n"
+    "    catalog.addEventListener(\"keydown\", function (event) {\n"
+    "      var t = event.target;\n"
+    "      var form = placeForm();\n"
+    "      if (event.key !== \"Enter\" || !t || event.target.nodeType !== 1 || !t.hasAttribute(\"data-widget-type\") || !form) return;\n"
+    "      event.preventDefault();\n"
+    "      form.querySelector(\"[name=widget]\").value = t.getAttribute(\"data-widget-type\");\n"
+    "      form.querySelector(\"[name=region]\").focus();\n"
+    "      say(\"Choose where to place \" + t.getAttribute(\"data-widget-type\") + \", then Place.\");\n"
+    "    });\n"
+    "  }\n"
     "  notes = document.querySelectorAll(\".message\");\n"
     "  for (i = 0; i < notes.length; i += 1) {\n"
     "    said.push(notes[i].textContent);\n"
@@ -702,6 +758,13 @@ static const char kCss[] =
     "tr.drop-into {\n"
     "  outline: 2px dashed Highlight;\n"
     "  outline-offset: -2px;\n"
+    "}\n"
+    "li[data-widget-type] {\n"
+    "  cursor: grab;\n"
+    "}\n"
+    "li[data-widget-type]:focus, li[data-placement]:focus {\n"
+    "  outline: 2px solid Highlight;\n"
+    "  outline-offset: 2px;\n"
     "}\n"
     "li[data-placement]:focus {\n"
     "  outline: 2px solid Highlight;\n"
@@ -7198,7 +7261,22 @@ static int layout_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catal
   }
   /* Place a widget. */
   widgets = gdefcore_layout_widget_count(catalog);
-  if (page_str(&page, "<h2>Place a widget</h2><form method=\"post\" action=\"") != 0 ||
+  if (page_str(&page, "<h2>Place a widget</h2><div id=\"layout-catalog\" hidden><p>Drag a widget onto a "
+                      "region to place it there, or press Enter on one to choose where.</p><ul>") != 0) {
+    goto fail;
+  }
+  for (i = 0; i < widgets; i++) {
+    GDEFCORE_Layout_Widget w;
+    memset(&w, 0, sizeof w);
+    w.size = sizeof w;
+    if (gdefcore_layout_widget_at(catalog, i, &w) != GDEFCORE_OK ||
+        page_str(&page, "<li data-widget-type=\"") != 0 || page_esc(&page, w.name, w.name_len) != 0 ||
+        page_str(&page, "\" tabindex=\"0\" draggable=\"true\">") != 0 || page_esc(&page, w.name, w.name_len) != 0 ||
+        page_str(&page, "</li>") != 0) {
+      goto fail;
+    }
+  }
+  if (page_str(&page, "</ul></div><form method=\"post\" action=\"") != 0 ||
       page_str(&page, kBase) != 0 || page_str(&page, "/") != 0 ||
       page_seg(&page, name, strlen(name)) != 0 || page_str(&page, "\">") != 0 ||
       layout_hidden(&page, edit, &v, "place", 0, 0) != 0 ||

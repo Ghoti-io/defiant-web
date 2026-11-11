@@ -184,4 +184,22 @@ plant action-needs-javascript src/admin.c testLayoutadmin $T_DRAWN \
   '          page_str(&page, "\"></label> <button type=\"submit\">Move</button></form>") != 0 ||' \
   '          page_str(&page, "\"></label> <button type=\"button\">Move</button></form>") != 0 ||'
 
+# ---- the widget catalog the script shows (drag a widget onto a region) --------------------
+
+T_SCRIPT=LayoutAdmin.TheScriptTheServerSendsIsOnlyAnEnhancementOfTheFormsAndTheCspNamesIt
+
+# The catalog is drawn visible, so that without the script it is a list that does nothing.
+PLANT_NEED_TEXT='layout-catalog'
+plant catalog-visible-without-the-script src/admin.c testLayoutadmin $T_SCRIPT \
+  'page_str(&page, "<h2>Place a widget</h2><div id=\"layout-catalog\" hidden><p>Drag a widget onto a "' \
+  'page_str(&page, "<h2>Place a widget</h2><div id=\"layout-catalog\"><p>Drag a widget onto a "'
+
+# A catalog widget cannot be dragged or focused.
+PLANT_NEED_TEXT='data-widget-type'
+plant catalog-widget-not-draggable src/admin.c testLayoutadmin $T_SCRIPT \
+  'page_str(&page, "\" tabindex=\"0\" draggable=\"true\">") != 0 || page_esc(&page, w.name, w.name_len) != 0 ||
+        page_str(&page, "</li>") != 0) {' \
+  'page_str(&page, "\">") != 0 || page_esc(&page, w.name, w.name_len) != 0 ||
+        page_str(&page, "</li>") != 0) {'
+
 plant_finish

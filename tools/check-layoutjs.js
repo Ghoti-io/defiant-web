@@ -94,19 +94,33 @@ function world(script) {
       f.add(new El('select', {name: 'region', value: name}));
       f.add(new El('input', {name: 'position', value: String(k)}));
       li.add(new El('details')).add(new El('input', {name: 'title'}));
+      for (const act of ['unplace', 'remove']) {
+        const g = li.add(new El('form'));
+        g.add(new El('input', {name: 'act', value: act}));
+        g.add(new El('input', {name: 'index', value: String(k)}));
+      }
       return li;
     });
     return {ol, lis};
   };
   const main = region('main', ['content', 'menu', 'recent']);
   const side = region('side', ['tabs']);
+  const catalog = root.add(new El('div', {id: 'layout-catalog', hidden: ''}));
+  catalog.hidden = true;
+  const types = ['recent', 'menu'].map((t) => catalog.add(new El('li', {'data-widget-type': t, tabindex: '0', draggable: 'true'})));
+  const place = root.add(new El('form'));
+  place.add(new El('input', {name: 'act', value: 'place'}));
+  place.add(new El('select', {name: 'widget', value: 'content'}));
+  place.add(new El('select', {name: 'region', value: 'main'}));
+  place.add(new El('input', {name: 'position', value: '0'}));
   for (const e of [root, ...root.all()]) { e.world = w; }
   const document = {
-    getElementById: (id) => (id === 'layout-editor' ? root : id === 'layout-live' ? live : null),
+    getElementById: (id) => (id === 'layout-editor' ? root : id === 'layout-live' ? live :
+      id === 'layout-catalog' ? catalog : null),
     querySelectorAll: () => [],
   };
   vm.runInNewContext(script, {document, window: {location: {hash: ''}}});
-  return {w, root, live, main, side};
+  return {w, root, live, main, side, catalog, types, place};
 }
 
 /* Every check says what it saw; the first failure of a run ends it. */
@@ -156,6 +170,40 @@ function run(script) {
     x.root.fire('dragstart', {target: stay, dataTransfer: {setData() {}}});
     x.root.fire('drop', {target: new El('p'), clientY: 0});
     ok(form(stay).submitted === 0, 'a drop that is not on a list does nothing');
+    /* The Delete key sets a placement aside; with Shift it removes it; with Alt it does nothing. */
+    const sub = (li, act) => li.querySelectorAll('form').filter((f) => f.querySelector('[name=act]').value === act)[0];
+    ev = x.root.fire('keydown', {target: x.main.lis[1], key: 'Delete', altKey: false, shiftKey: false});
+    ok(ev.prevented && sub(x.main.lis[1], 'unplace').submitted === 1 &&
+        JSON.stringify(sub(x.main.lis[1], 'unplace').posted) === '{"act":"unplace","index":"1"}',
+      'Delete is the placement\'s own set-aside form');
+    ok(/Setting aside menu\./.test(x.live.textContent), 'it says what it is doing');
+    ok(sub(x.main.lis[1], 'remove').submitted === 0, 'Delete does not remove');
+    x.root.fire('keydown', {target: x.main.lis[2], key: 'Delete', altKey: false, shiftKey: true});
+    ok(sub(x.main.lis[2], 'remove').submitted === 1 && sub(x.main.lis[2], 'unplace').submitted === 0 &&
+        /Removing recent\./.test(x.live.textContent), 'Shift and Delete is the remove form');
+    x.root.fire('keydown', {target: x.main.lis[0], key: 'Delete', altKey: true, shiftKey: false});
+    ok(sub(x.main.lis[0], 'unplace').submitted === 0 && sub(x.main.lis[0], 'remove').submitted === 0,
+      'Alt and Delete is left alone');
+    /* The widget catalog is drawn hidden and the script shows it. */
+    ok(x.catalog.hidden === false, 'the script shows the catalog');
+    x.catalog.fire('dragstart', {target: x.types[0], dataTransfer: {setData() {}}});
+    ev = x.root.fire('dragover', {target: x.side.ol, clientY: 100});
+    ok(ev.prevented && x.side.ol.classes.has('drop-here'), 'a region takes a widget from the catalog');
+    x.root.fire('drop', {target: x.side.ol, clientY: 100});
+    ok(x.place.submitted === 1 && JSON.stringify(x.place.posted) ===
+        '{"act":"place","widget":"recent","region":"side","position":"1"}', 'a drop is the place form with the spot');
+    ok(/Placing recent in side, position 2\./.test(x.live.textContent), 'it says where');
+    x.place.submitted = 0;
+    x.catalog.fire('dragstart', {target: x.types[1], dataTransfer: {setData() {}}});
+    x.root.fire('drop', {target: new El('p'), clientY: 0});
+    ok(x.place.submitted === 0, 'a catalog drop that is not on a region does nothing');
+    x.catalog.fire('dragend', {});
+    x.root.fire('drop', {target: x.side.ol, clientY: 100});
+    ok(x.place.submitted === 0, 'a drop after the drag ended places nothing');
+    ev = x.catalog.fire('keydown', {target: x.types[1], key: 'Enter'});
+    ok(ev.prevented && x.place.querySelector('[name=widget]').value === 'menu' &&
+        x.w.focused === x.place.querySelector('[name=region]') && x.place.submitted === 0,
+      'Enter on a catalog widget chooses it and asks where, writing nothing');
     ok(!/innerHTML|eval\(|document\.write/.test(script), 'the script writes text only');
   } catch (e) {
     log.push('  (' + e.message + ')');
@@ -166,15 +214,25 @@ function run(script) {
 
 const MUTATIONS = [
   ['submit-removed', '    form.submit();\n  }\n  function listFor', '  }\n  function listFor'],
-  ['position-off-by-one', 'form.querySelector(\"[name=position]\").value = String(position);',
-    'form.querySelector(\"[name=position]\").value = String(position + 1);'],
-  ['region-not-set', '    form.querySelector(\"[name=region]\").value = region;\n', ''],
+  ['position-off-by-one', 'form.querySelector(\"[name=position]\").value = String(position);\n    say(\"Moving ',
+    'form.querySelector(\"[name=position]\").value = String(position + 1);\n    say(\"Moving '],
+  ['region-not-set', '    form.querySelector(\"[name=region]\").value = region;\n    form.querySelector(\"[name=position]\").value = String(position);\n    say(\"Moving ',
+    '    form.querySelector(\"[name=position]\").value = String(position);\n    say(\"Moving '],
   ['nothing-said', '    say(\"Moving \" + label(item) + \" to \"', '    (\"Moving \" + label(item) + \" to \"'],
   ['plain-arrow-writes', 'if (event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey) {\n      event.preventDefault();\n      all = items(list, null);',
     'if (true) {\n      event.preventDefault();\n      all = items(list, null);'],
-  ['drop-spot-ignores-the-pointer', 'if (event.clientY < box.top + box.height / 2) return j;', 'return j;'],
+  ['drop-spot-ignores-the-pointer', '    var all = items(list, dragged);\n    var j;\n    var box;\n    for (j = 0; j < all.length; j += 1) {\n      box = all[j].getBoundingClientRect();\n      if (event.clientY < box.top + box.height / 2) return j;',
+    '    var all = items(list, dragged);\n    var j;\n    var box;\n    for (j = 0; j < all.length; j += 1) {\n      box = all[j].getBoundingClientRect();\n      return j;'],
   ['drop-off-a-list-moves', '    if (!item || !list) return;\n    event.preventDefault();\n    dragged = null;', '    if (!item) return;\n    event.preventDefault();\n    dragged = null;'],
   ['enter-does-not-open', '        details.open = true;\n', ''],
+  ['delete-removes', '(event.shiftKey ? \"remove\" : \"unplace\")', '\"remove\"'],
+  ['delete-with-alt', 'if (key === \"Delete\" && !event.altKey && !event.ctrlKey', 'if (key === \"Delete\" && !event.ctrlKey'],
+  ['catalog-region-not-set', '    form.querySelector(\"[name=region]\").value = region;\n    form.querySelector(\"[name=position]\").value = String(position);\n    say(\"Placing ',
+    '    form.querySelector(\"[name=position]\").value = String(position);\n    say(\"Placing '],
+  ['catalog-widget-not-set', '    form.querySelector(\"[name=widget]\").value = widget;\n', ''],
+  ['catalog-drop-without-a-region', '    if (widget && list) {', '    if (widget) {'],
+  ['catalog-never-shown', '    catalog.hidden = false;\n', ''],
+  ['catalog-place-not-submitted', 'String(position + 1) + \".\");\n    form.submit();\n  }\n  root.addEventListener(\"keydown\"', 'String(position + 1) + \".\");\n  }\n  root.addEventListener(\"keydown\"'],
   ['markup-written', '  function say(text) {\n    live.textContent = text;\n  }\n  function items(',
     '  function say(text) {\n    live.innerHTML = text;\n  }\n  function items('],
 ];
