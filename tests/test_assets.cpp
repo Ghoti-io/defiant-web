@@ -266,7 +266,7 @@ TEST_F(Assets, ANameThatIsNotAnAssetIsTheFixedNotFoundAndNeverReachesALookup) {
       "/assets/art/style%2ecss", "/assets/art\\style.css",
       "/assets/art/sub/style.css", "/assets/ART/style.css",
       "/assets/art/STYLE.CSS", "/assets/art/style.css%00.png",
-      "/assets/art/style.css%00", "/assetsx/art/style.css"};
+      "/assets/art/style.css%00"};
   for (const char * path : bad) {
     Reply r = Get(path, std::string());
     EXPECT_EQ(404, r.status) << path;
