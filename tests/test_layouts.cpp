@@ -353,15 +353,16 @@ TEST_F(Layouts, AModulesSelectorAndWidgetChangeAPublicPageWithNoChangeToTheServe
   EXPECT_FALSE(Has(site.body, "stamp")) << site.body;
   EXPECT_TRUE(Has(site.body, "<article class=\"post\">"));
   EXPECT_EQ(plain.find("class=\"recent\""), std::string::npos);
-  /* The module cannot be turned off while a layout places its widget; once
-   * none does, it can, and the page is served all the same. */
-  EXPECT_NE(GDEFCORE_OK, DisableNews());
-  ASSERT_EQ(GDEFCORE_OK, PutLayout("skinned", {"main content"}));
+  /* The module can be turned off while a layout places its widget (a disable
+   * may be a security decision): the page is served without the widget, the
+   * widget is not asked, and the placement is kept. */
+  const int calls = g_news.probe.widget_calls;
   EXPECT_EQ(GDEFCORE_OK, DisableNews());
   Reply off = Get("/hello-title", std::string());
   EXPECT_EQ(200, off.status);
   EXPECT_TRUE(Has(off.body, "<article class=\"post\"><h1>Hello Title</h1>")) << off.body;
-  EXPECT_EQ(0, g_news.probe.widget_calls - 1) << "the provider is not asked again";
+  EXPECT_FALSE(Has(off.body, "stamp")) << off.body;
+  EXPECT_EQ(calls, g_news.probe.widget_calls) << "the provider is not asked again";
 }
 
 TEST_F(Layouts, AnUnknownRegionIsRefusedAndTheSiteKeepsServing) {
