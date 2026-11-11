@@ -123,8 +123,14 @@ plant encoded-name-looked-up src/admin.c testAssetadmin $T_NAMES \
 # A file the principal's grant does not name is opened.
 PLANT_NEED_TEXT='yours.css'
 plant file-open-ignores-the-grant src/admin.c testAssetadmin $T_NARROW \
-  '  return ok ? 0 : 1;' \
-  '  return 0;'
+  '          strlen(k->type), id, &ok) != GDEFCORE_OK) {
+    return -1;
+  }
+  return ok ? 0 : 1;' \
+  '          strlen(k->type), id, &ok) != GDEFCORE_OK) {
+    return -1;
+  }
+  return (ok || 1) ? 0 : 1;'
 
 # A revert is made without the name typed.
 PLANT_NEED_TEXT='name typed does not match'
