@@ -260,6 +260,12 @@ over by typing its name, and only a new start takes it back. The page needs the
 permission to edit templates of the page kind, and the apply asks for the
 stylesheet and layout permissions as it writes them.
 
+The template editor (`/admin/templates/<name>`) carries the layouts too: saving a
+page template whose body no longer calls a region some layout places widgets in
+sets those placements aside in the layout's Not placed list, in the same changeset
+and with the confirmation built from the types touched, and the page says which
+placements were set aside.
+
 `/admin/layout-rules` lists the site's selector rules in the order the engine uses
 (the more specific pattern first, then the lower weight, then the name), each with
 the rank the engine gives its pattern as a plain number, and adds, changes and
