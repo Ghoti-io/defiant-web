@@ -349,15 +349,15 @@ TEST_F(MenuEditor, ADragIsOneSignedPostOneChangesetAndTheExistingUndoTakesItBack
   EXPECT_EQ(before, Tree(Page())) << "the earlier tree";
   EXPECT_EQ("0 live, 1 revisions", Stored(GDEFCORE_MENU_OVERRIDE_TYPE));
   /* A drag among entries with no room between them numbers the siblings again,
-   * in the same one changeset: ten entries written, and one undo. */
+   * in the same one changeset: eleven entries written, and one undo. */
   Reply many = Post(DragBody(Page(), kMore, "core.l-admin", 5));
   EXPECT_EQ(200, many.status);
   EXPECT_NE(before, Tree(many.body));
-  EXPECT_EQ("10 live, 11 revisions", Stored(GDEFCORE_MENU_OVERRIDE_TYPE))
-      << "(the one the first drag made and its undo cleared is the first of the eleven)";
+  EXPECT_EQ("11 live, 12 revisions", Stored(GDEFCORE_MENU_OVERRIDE_TYPE))
+      << "(the one the first drag made and its undo cleared is the first of the twelve)";
   UndoLast();
   EXPECT_EQ(before, Tree(Page()));
-  EXPECT_EQ("0 live, 11 revisions", Stored(GDEFCORE_MENU_OVERRIDE_TYPE));
+  EXPECT_EQ("0 live, 12 revisions", Stored(GDEFCORE_MENU_OVERRIDE_TYPE));
   /* An undo is once. */
   Reply again = UndoLast();
   EXPECT_TRUE(Has(Messages(again.body), GDEFCORE_MENU_REFUSED_NOTHING)) << Messages(again.body);
