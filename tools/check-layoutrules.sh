@@ -71,7 +71,7 @@ plant rule-token-not-checked src/admin.c testLayoutrules $T_TOKEN \
   '  if (0 && !asset_token_ok(catalog, request, keyring, root, root_len, session, session_len, post, post_n,
           "rule-edit", self, NULL)) {'
 
-PLANT_NEED_TEXT='whole number'
+PLANT_NEED_TEXT='weight=x'
 plant weight-not-validated src/admin.c testLayoutrules $T_BAD \
   '      if (weight[0] != '"'"'\0'"'"' && menu_int(weight, &w) != 0) {' \
   '      if (0 && weight[0] != '"'"'\0'"'"' && menu_int(weight, &w) != 0) {'
