@@ -32,6 +32,7 @@
 
 #include <ghoti.io/defiant-core/asset.h>
 #include <ghoti.io/defiant-core/siteasset.h>
+#include <ghoti.io/defiant-core/structure.h>
 
 namespace {
 
@@ -71,6 +72,13 @@ class AssetAdmin : public Edge {
     }
     gdefcore_catalog_destroy(catalog);
     ada_ = CookieLine(Login("ada", "secret"));
+  }
+
+  GDEFCORE_Catalog * Catalog() {
+    GDEFCORE_Catalog * catalog = NULL;
+    EXPECT_EQ(GDEFCORE_OK,
+        gdefcore_inst_catalog_open(inst_, id_, strlen(id_), &catalog));
+    return catalog;
   }
 
   /* A page the server answers as it answers one that does not exist: the empty
@@ -419,6 +427,52 @@ TEST_F(AssetAdmin, ANarrowGrantEditsOnlyTheFilesItNamesAndTheRestAreNotThere) {
   EXPECT_TRUE(Has(made.body, "That edit is not allowed.") ||
               Has(made.body, "was refused"));
   EXPECT_EQ("<404>", Served("/assets/site/third.css"));
+}
+
+TEST_F(AssetAdmin, AFileAStructureMakesIsShownAndNeverOfferedAForm) {
+  Open();
+  GDEFCORE_Catalog * catalog = Catalog();
+  GDEFCORE_Changeset * cs = NULL;
+  const std::string doc = "row stack medium\ncell main 8 1\ncell side 4 2\n";
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_prepare(catalog, NULL, 0, &cs));
+  ASSERT_EQ(GDEFCORE_OK,
+      gdefcore_structure_stage(cs, "grail", 5, doc.data(), doc.size(), 0));
+  const std::string confirm = std::string(GDEFCORE_ASSET_CSS_TYPE) + "\ncore.template";
+  ASSERT_EQ(GDEFCORE_OK, gdefcore_changeset_apply(cs, confirm.data(), confirm.size()));
+  gdefcore_changeset_destroy(cs);
+  gdefcore_catalog_destroy(catalog);
+  ASSERT_EQ(303, Create("/admin/stylesheets", ada_, "mine.css", "a{}").status);
+  /* The list says which template made it, and the site's own say nothing. */
+  Reply list = Get("/admin/stylesheets", ada_);
+  EXPECT_TRUE(Has(list.body, ">layout-grail.css</a>"));
+  EXPECT_TRUE(Has(list.body, "the structure of the page template grail"));
+  size_t mentions = 0;
+  for (size_t at = 0; (at = list.body.find("the structure of the page template", at)) != std::string::npos; at++) {
+    mentions++;
+  }
+  EXPECT_EQ(1u, mentions);
+  /* One page: the text, and no form to change it or take it away. */
+  Reply page = Get("/admin/stylesheets/layout-grail.css", ada_);
+  EXPECT_EQ(200, page.status);
+  EXPECT_TRUE(Has(page.body, "generated from the structure of the page template <code>grail</code>"));
+  EXPECT_TRUE(Has(page.body, ".pg-grail .row-box"));
+  EXPECT_FALSE(Has(page.body, "<form method=\"post\" action=\"/admin/stylesheets/layout-grail.css\""));
+  EXPECT_FALSE(Has(page.body, "<textarea"));
+  /* A post for it writes nothing, whoever signed it. */
+  const std::string css = Served("/assets/site/layout-grail.css");
+  EXPECT_TRUE(Has(css, ".pg-grail"));
+  const std::string token = TokenOf(Get("/admin/stylesheets/mine.css", ada_).body, "save");
+  Reply post = Post("/admin/stylesheets/layout-grail.css", ada_, token,
+      "&do=save&text=" + Enc("body { display: none }"));
+  EXPECT_EQ(200, post.status);
+  EXPECT_TRUE(Has(post.body, "was refused"));
+  EXPECT_EQ(css, Served("/assets/site/layout-grail.css"));
+  const std::string drop = TokenOf(Get("/admin/stylesheets/mine.css", ada_).body, "delete");
+  Reply gone = Post("/admin/stylesheets/layout-grail.css", ada_, drop,
+      "&do=delete&confirm=layout-grail.css");
+  EXPECT_TRUE(Has(gone.body, "was refused"));
+  EXPECT_EQ(css, Served("/assets/site/layout-grail.css"));
+  EXPECT_EQ("a{}", Served("/assets/site/mine.css")) << "CONTROL: the site's own file";
 }
 
 int main(int argc, char ** argv) {

@@ -223,6 +223,9 @@ with the text typed, so nothing is lost to a redirect. The form holds up to 32 K
 of text; a larger file is shipped by a module or written through the core. A
 name in an address is spelled as a file name or the page is not there, and a
 grant narrowed to some files lists and opens only those.
+A file a page template's structure generates (`layout-<template>.css`) is listed
+with the template that made it, and its page shows the text with no form: it is
+changed by changing the structure, or by marking the template custom.
 
 `/admin/settings` is the settings pages. The core generates the form of a group
 (`documentation/settings.md` there); this library draws the page around it, signs

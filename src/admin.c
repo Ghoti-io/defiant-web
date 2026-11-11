@@ -5541,14 +5541,18 @@ static int asset_list_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * c
       goto fail;
     }
   } else if (page_str(&page, "<table><thead><tr><th>Name</th><th>Version</th>"
-                             "<th>Bytes</th></tr></thead><tbody>") != 0) {
+                             "<th>Bytes</th><th>Made by</th></tr></thead><tbody>") != 0) {
     goto fail;
   }
   for (j = 0; j < nn; j++) {
     char hash[GDEFCORE_ASSET_HASH_LEN + 1];
     size_t bytes = 0;
     int have = asset_hash_of(catalog, names[j], hash, &bytes) == 0;
+    char made_by[GDEFCORE_ASSET_NAME_MAX + 1];
     char number[32];
+    if (!gdefcore_siteasset_generator(catalog, names[j], strlen(names[j]), made_by)) {
+      made_by[0] = '\0';
+    }
     snprintf(number, sizeof number, "%zu", bytes);
     if (page_str(&page, "<tr><td><a href=\"") != 0 ||
         page_str(&page, k->base) != 0 || page_str(&page, "/") != 0 ||
@@ -5558,6 +5562,10 @@ static int asset_list_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * c
         page_str(&page, "</a></td><td>") != 0 ||
         (have && page_esc(&page, hash, 12) != 0) ||
         page_str(&page, "</td><td>") != 0 || (have && page_str(&page, number) != 0) ||
+        page_str(&page, "</td><td>") != 0 ||
+        (made_by[0] != '\0' &&
+            (page_str(&page, "the structure of the page template ") != 0 ||
+                page_esc(&page, made_by, strlen(made_by)) != 0)) ||
         page_str(&page, "</td></tr>") != 0) {
       goto fail;
     }
@@ -5655,9 +5663,30 @@ static int asset_edit_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * c
   char * stored = NULL;
   size_t stored_n = 0;
   char hash[GDEFCORE_ASSET_HASH_LEN + 1];
+  char made_by[GDEFCORE_ASSET_NAME_MAX + 1];
   size_t bytes = 0;
   memset(&page, 0, sizeof page);
   page.alloc = alloc;
+  if (gdefcore_siteasset_generator(catalog, name, strlen(name), made_by)) {
+    /* A file a page template's structure makes is shown and not offered a form. */
+    if (text == NULL && stored_text(catalog, id, "text", &stored, &stored_n) != 0) {
+      goto fail;
+    }
+    if (page_begin(&page, k->title) != 0 || asset_pair(&page, "<h1>", name) != 0 ||
+        page_str(&page, "</h1><p>This file is generated from the structure of the page "
+                        "template <code>") != 0 ||
+        page_esc(&page, made_by, strlen(made_by)) != 0 ||
+        page_str(&page, "</code>. It cannot be edited here: change the structure, or mark "
+                        "the template custom to write it by hand.</p>") != 0 ||
+        asset_notice(&page, notice, said, said_n) != 0 ||
+        page_str(&page, "<pre class=\"stored\">") != 0 ||
+        page_esc(&page, text != NULL ? text : stored, text != NULL ? text_n : stored_n) != 0 ||
+        page_str(&page, "</pre>") != 0) {
+      goto fail;
+    }
+    free(stored);
+    return take_page(&page, out);
+  }
   if (asset_sign(alloc, catalog, request, keyring, root, root_len, session,
           session_len, "asset-save", id, name, &save) != 0 ||
       asset_sign(alloc, catalog, request, keyring, root, root_len, session,
@@ -5803,6 +5832,14 @@ static int asset_edit_post(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * c
   }
   if (opened > 0) {
     return unknown_admin("POST", out);
+  }
+  {
+    /* What a structure makes is not written here (the core refuses it too). */
+    char made_by[GDEFCORE_ASSET_NAME_MAX + 1];
+    if (gdefcore_siteasset_generator(catalog, name, name_len, made_by)) {
+      return asset_edit_page(alloc, catalog, request, keyring, root, root_len, session,
+          session_len, k, id, name, NULL, 0, AN_REFUSED, said, 0, out);
+    }
   }
   if (form_field_alloc(post, post_n, "do", 0, &action, &action_n) != 0) {
     return asset_location(out, k, name, "");

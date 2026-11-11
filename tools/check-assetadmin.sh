@@ -44,6 +44,7 @@ T_HIST=AssetAdmin.TheHistoryListsTheChangesAndTheLatestIsRevertedWithTheNameType
 T_NAMES=AssetAdmin.AFileOfTheOtherKindOrASpellingThatIsNotAFileNameIsNotThere
 T_NARROW=AssetAdmin.ANarrowGrantEditsOnlyTheFilesItNamesAndTheRestAreNotThere
 T_MADE=AssetAdmin.AStylesheetIsMadeByAFormAndServedAtOnce
+T_GEN=AssetAdmin.AFileAStructureMakesIsShownAndNeverOfferedAForm
 
 # The page is shown to whoever is signed in, whatever the route's check says.
 PLANT_NEED_TEXT='NotThere'
@@ -134,5 +135,11 @@ plant revert-without-its-name src/admin.c testAssetadmin $T_HIST \
   '  } else if (form_field_alloc(post, post_n, "confirm", 0, &confirm, &confirm_n) != 0 ||
              confirm_n == (size_t)-1) {
     notice = AN_WRONG_CONFIRM;'
+
+# A file a page template's structure makes is offered a form like any other.
+PLANT_NEED_TEXT='<textarea'
+plant generated-file-offered-a-form src/admin.c testAssetadmin $T_GEN \
+  '  if (gdefcore_siteasset_generator(catalog, name, strlen(name), made_by)) {' \
+  '  if (0 && gdefcore_siteasset_generator(catalog, name, strlen(name), made_by)) {'
 
 plant_finish
