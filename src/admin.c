@@ -44,6 +44,7 @@
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/settings.h>
 #include <ghoti.io/defiant-core/siteasset.h>
+#include <ghoti.io/defiant-core/structure.h>
 #include <ghoti.io/defiant-core/template.h>
 #include <ghoti.io/security/random.h>
 #include <ghoti.io/security/sha256.h>
@@ -419,8 +420,30 @@ static const char kJsLayoutB[] =
     "  if (said.length > 0) say(said.join(\" \"));\n"
     "}());\n";
 
-static const char * const kJsParts[] = {kJsPanes, kJsMenuA, kJsMenuB, kJsLayout, kJsLayoutB};
-static char kJs[sizeof kJsPanes + sizeof kJsMenuA + sizeof kJsMenuB + sizeof kJsLayout + sizeof kJsLayoutB];
+static const char kJsStruct[] =
+    "(function () {\n"
+    "  var box = document.getElementById(\"structure-preview\");\n"
+    "  var slider = document.getElementById(\"structure-width\");\n"
+    "  var shown = document.getElementById(\"structure-width-shown\");\n"
+    "  if (!box || !slider) return;\n"
+    "  function apply() {\n"
+    "    var width = parseInt(slider.value, 10);\n"
+    "    var rows = box.querySelectorAll(\".sp-row\");\n"
+    "    var i;\n"
+    "    box.style.width = width + \"px\";\n"
+    "    if (shown) shown.textContent = width + \" px\";\n"
+    "    for (i = 0; i < rows.length; i += 1) {\n"
+    "      var bp = parseInt(rows[i].getAttribute(\"data-bp\"), 10) || 0;\n"
+    "      if (bp > 0 && width < bp) rows[i].classList.add(\"folded\");\n"
+    "      else rows[i].classList.remove(\"folded\");\n"
+    "    }\n"
+    "  }\n"
+    "  slider.addEventListener(\"input\", apply);\n"
+    "  apply();\n"
+    "}());\n";
+
+static const char * const kJsParts[] = {kJsPanes, kJsMenuA, kJsMenuB, kJsLayout, kJsLayoutB, kJsStruct};
+static char kJs[sizeof kJsPanes + sizeof kJsMenuA + sizeof kJsMenuB + sizeof kJsLayout + sizeof kJsLayoutB + sizeof kJsStruct];
 static size_t kJsLen;
 
 static const char kCss[] =
@@ -485,7 +508,56 @@ static const char kCss[] =
     "}\n"
     ".live {\n"
     "  min-height: 1.5em;\n"
-    "}\n";
+    "}\n"
+    ".sp {\n"
+    "  max-width: 100%;\n"
+    "  border: 1px solid GrayText;\n"
+    "  padding: 2px;\n"
+    "}\n"
+    ".sp-row {\n"
+    "  display: flex;\n"
+    "  gap: 2px;\n"
+    "  margin: 2px 0;\n"
+    "}\n"
+    ".sp-row.wrap {\n"
+    "  flex-wrap: wrap;\n"
+    "}\n"
+    ".sp-row.folded {\n"
+    "  flex-direction: column;\n"
+    "}\n"
+    ".sp-cell {\n"
+    "  border: 1px solid GrayText;\n"
+    "  padding: 0.25rem;\n"
+    "  min-width: 2rem;\n"
+    "  overflow-wrap: anywhere;\n"
+    "}\n"
+    ".sp-row.wrap .sp-cell {\n"
+    "  flex: 1 1 8rem;\n"
+    "}\n"
+    ".sp-row .w-1 { flex: 1 1 0; }\n"
+    ".sp-row .w-2 { flex: 2 1 0; }\n"
+    ".sp-row .w-3 { flex: 3 1 0; }\n"
+    ".sp-row .w-4 { flex: 4 1 0; }\n"
+    ".sp-row .w-5 { flex: 5 1 0; }\n"
+    ".sp-row .w-6 { flex: 6 1 0; }\n"
+    ".sp-row .w-7 { flex: 7 1 0; }\n"
+    ".sp-row .w-8 { flex: 8 1 0; }\n"
+    ".sp-row .w-9 { flex: 9 1 0; }\n"
+    ".sp-row .w-10 { flex: 10 1 0; }\n"
+    ".sp-row .w-11 { flex: 11 1 0; }\n"
+    ".sp-row .w-12 { flex: 12 1 0; }\n"
+    ".sp-row.folded .st-1 { order: 1; flex: none; }\n"
+    ".sp-row.folded .st-2 { order: 2; flex: none; }\n"
+    ".sp-row.folded .st-3 { order: 3; flex: none; }\n"
+    ".sp-row.folded .st-4 { order: 4; flex: none; }\n"
+    ".sp-row.folded .st-5 { order: 5; flex: none; }\n"
+    ".sp-row.folded .st-6 { order: 6; flex: none; }\n"
+    ".sp-row.folded .st-7 { order: 7; flex: none; }\n"
+    ".sp-row.folded .st-8 { order: 8; flex: none; }\n"
+    ".sp-row.folded .st-9 { order: 9; flex: none; }\n"
+    ".sp-row.folded .st-10 { order: 10; flex: none; }\n"
+    ".sp-row.folded .st-11 { order: 11; flex: none; }\n"
+    ".sp-row.folded .st-12 { order: 12; flex: none; }\n";
 
 static char kHash[80];
 static char kPolicy[320];
@@ -7071,6 +7143,821 @@ static int layouts_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cat
 }
 
 /*
+ * The page structure editor (layout editor story 27): /admin/structures lists the
+ * page templates and starts a new one; /admin/structures/<name> shows one
+ * template's structure as rows of cells, a preview at any width, and one signed
+ * form for every action (the core's gdefcore_structure_stage_edit()). Every action
+ * works with scripts off; the slider that previews the width is the only script.
+ */
+
+enum {
+  SN_NONE = 0,
+  SN_REFUSED,
+  SN_BAD_FORM,
+  SN_STALE,
+  SN_MOVED
+};
+
+static const char kTemplateType[] = "core.template";
+
+/* The id of page template @p name if this principal may edit it: 0 yes, 1 no
+ * (none, not a page template, or not theirs: one answer), -1 an error. */
+static int structure_open(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    const char * name, size_t name_len, char id[GDEFCORE_PUBLIC_ID_LEN + 1]) {
+  int ok = 0;
+  int found;
+  char kind[32];
+  if (!gdefcore_structure_name_ok(name, name_len)) {
+    return 1;
+  }
+  found = find_by_name(catalog, kTemplateType, name, name_len, id);
+  if (found < 0) {
+    return -1;
+  }
+  if (found != 0) {
+    return 1;
+  }
+  if (field_copy(catalog, id, "kind", kind, sizeof kind) != 0 || strcmp(kind, "core.page") != 0) {
+    return 1;
+  }
+  ok = gdefcore_template_may_edit(catalog, request, "core.page", 9);
+  return ok ? 0 : 1;
+}
+
+static int structure_sign(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * form_id,
+    const char * id, const char * name, char ** token) {
+  if (name == NULL) {
+    return sign_b64(alloc, catalog, request, keyring, root, root_len, session, session_len,
+        form_id, id, NULL, 0, token);
+  }
+  /* The grant to edit a template is conditioned on its kind, so the token is signed
+   * with the template's values as a template edit is. */
+  return tpl_sign(alloc, catalog, request, keyring, root, root_len, session, session_len, form_id,
+      id, name, "core.page", token);
+}
+
+static int structure_notice(struct Page * page, int notice, const char * said, size_t said_n) {
+  const char * text = NULL;
+  if (notice == SN_BAD_FORM) {
+    text = "That form is out of date. Nothing was changed. Showing the current structure.";
+  } else if (notice == SN_REFUSED || notice == SN_STALE) {
+    if (said != NULL && said_n > 0) {
+      return page_str(page, "<p class=\"notice\">") != 0 || page_esc(page, said, said_n) != 0 ||
+             page_str(page, "</p>");
+    }
+    text = "That change was refused. Nothing was changed.";
+  }
+  if (text == NULL) {
+    return 0;
+  }
+  return page_str(page, "<p class=\"notice\">") != 0 || page_str(page, text) != 0 ||
+         page_str(page, "</p>");
+}
+
+/* A form of the page: its token, the version drawn and the action. */
+static int st_open(struct Page * page, const char * name, const char * token, const char * version,
+    const char * act) {
+  return page_str(page, "<form method=\"post\" action=\"/admin/structures/") != 0 ||
+         page_seg(page, name, strlen(name)) != 0 || page_str(page, "\">") != 0 ||
+         page_token(page, token) != 0 ||
+         page_str(page, "<input type=\"hidden\" name=\"version\" value=\"") != 0 ||
+         page_esc(page, version, strlen(version)) != 0 ||
+         page_str(page, "\"><input type=\"hidden\" name=\"act\" value=\"") != 0 ||
+         page_str(page, act) != 0 || page_str(page, "\">") != 0;
+}
+
+static int st_num(struct Page * page, const char * field, size_t v) {
+  char number[24];
+  snprintf(number, sizeof number, "%zu", v);
+  return page_str(page, "<input type=\"hidden\" name=\"") != 0 || page_str(page, field) != 0 ||
+         page_str(page, "\" value=\"") != 0 || page_str(page, number) != 0 ||
+         page_str(page, "\">");
+}
+
+static int st_number_input(struct Page * page, const char * label, const char * field, int value,
+    int min, int max) {
+  char number[24];
+  char lo[24];
+  char hi[24];
+  snprintf(number, sizeof number, "%d", value);
+  snprintf(lo, sizeof lo, "%d", min);
+  snprintf(hi, sizeof hi, "%d", max);
+  return page_str(page, "<label>") != 0 || page_str(page, label) != 0 ||
+         page_str(page, " <input type=\"number\" name=\"") != 0 || page_str(page, field) != 0 ||
+         page_str(page, "\" min=\"") != 0 || page_str(page, lo) != 0 ||
+         page_str(page, "\" max=\"") != 0 || page_str(page, hi) != 0 ||
+         page_str(page, "\" value=\"") != 0 || page_str(page, number) != 0 ||
+         page_str(page, "\"></label> ");
+}
+
+static int st_behavior_select(struct Page * page, int behavior, int breakpoint) {
+  static const char * const kB[] = {"", "stack", "wrap", "fixed"};
+  static const char * const kP[] = {"", "narrow", "medium", "wide"};
+  int i;
+  if (page_str(page, "<label>Behavior <select name=\"behavior\">") != 0) {
+    return -1;
+  }
+  for (i = 1; i <= 3; i++) {
+    if (page_str(page, "<option value=\"") != 0 || page_str(page, kB[i]) != 0 ||
+        page_str(page, i == behavior ? "\" selected>" : "\">") != 0 || page_str(page, kB[i]) != 0 ||
+        page_str(page, "</option>") != 0) {
+      return -1;
+    }
+  }
+  if (page_str(page, "</select></label> <label>Folds at <select name=\"breakpoint\">") != 0) {
+    return -1;
+  }
+  for (i = 1; i <= 3; i++) {
+    if (page_str(page, "<option value=\"") != 0 || page_str(page, kP[i]) != 0 ||
+        page_str(page, (breakpoint == 0 ? i == 2 : i == breakpoint) ? "\" selected>" : "\">") != 0 ||
+        page_str(page, kP[i]) != 0 || page_str(page, "</option>") != 0) {
+      return -1;
+    }
+  }
+  return page_str(page, "</select></label> ");
+}
+
+static int st_button(struct Page * page, const char * label) {
+  return page_str(page, "<button type=\"submit\">") != 0 || page_str(page, label) != 0 ||
+         page_str(page, "</button></form>");
+}
+
+/* The preview: the structure drawn at the width the slider says, rows folding as the generated stylesheet does. */
+static int st_preview(struct Page * page, GDEFCORE_Catalog * catalog, const char * template_name,
+    const GDEFCORE_Structure_View * v) {
+  static const int kPx[] = {0, 480, 720, 960};
+  size_t r;
+  size_t k;
+  if (page_str(page, "<h2>Preview</h2><p><label>Width <input id=\"structure-width\" type=\"range\" "
+                     "min=\"320\" max=\"1200\" step=\"40\" value=\"1200\"></label> "
+                     "<span id=\"structure-width-shown\">1200 px</span></p>"
+                     "<div id=\"structure-preview\" class=\"sp\">") != 0) {
+    return -1;
+  }
+  for (r = 0; r < v->nrows; r++) {
+    const GDEFCORE_Structure_Row * row = &v->rows[r];
+    char px[24];
+    snprintf(px, sizeof px, "%d", row->behavior == GDEFCORE_STRUCTURE_STACK ? kPx[row->breakpoint] : 0);
+    if (page_str(page, "<div class=\"sp-row") != 0 ||
+        page_str(page, row->behavior == GDEFCORE_STRUCTURE_WRAP ? " wrap" : "") != 0 ||
+        page_str(page, "\" data-bp=\"") != 0 || page_str(page, px) != 0 || page_str(page, "\">") != 0) {
+      return -1;
+    }
+    for (k = 0; k < row->ncells; k++) {
+      const GDEFCORE_Structure_Cell * c = &row->cells[k];
+      GDEFCORE_Region_Info info;
+      char w[24];
+      char st[24];
+      memset(&info, 0, sizeof info);
+      info.size = sizeof info;
+      if (gdefcore_region_describe(catalog, template_name, strlen(template_name), c->region,
+              strlen(c->region), &info) != GDEFCORE_OK) {
+        return -1;
+      }
+      snprintf(w, sizeof w, "%d", c->width);
+      snprintf(st, sizeof st, "%d", c->stacked);
+      if (page_str(page, "<div class=\"sp-cell") != 0 ||
+          (c->width > 0 && (page_str(page, " w-") != 0 || page_str(page, w) != 0)) ||
+          (c->stacked > 0 && (page_str(page, " st-") != 0 || page_str(page, st) != 0)) ||
+          page_str(page, "\">") != 0 || page_esc(page, info.label, info.label_len) != 0 ||
+          page_str(page, "</div>") != 0) {
+        gdefcore_region_info_free(catalog, &info);
+        return -1;
+      }
+      gdefcore_region_info_free(catalog, &info);
+    }
+    if (page_str(page, "</div>") != 0) {
+      return -1;
+    }
+  }
+  return page_str(page, "</div>");
+}
+
+static int structure_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * id, const char * name,
+    int notice, const char * said, size_t said_n, struct GDEFWEB_Admin_Reply * out) {
+  static const char * const kBName[] = {"", "stack", "wrap", "fixed"};
+  struct Page page;
+  GDEFCORE_Structure_View v;
+  char * token = NULL;
+  size_t r;
+  size_t k;
+  size_t i;
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  memset(&v, 0, sizeof v);
+  v.size = sizeof v;
+  if (gdefcore_structure_view(catalog, name, strlen(name), &v) != GDEFCORE_OK ||
+      structure_sign(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          "structure-edit", id, name, &token) != 0) {
+    goto fail;
+  }
+  if (page_begin(&page, "Page structure") != 0 ||
+      page_str(&page, "<div id=\"structure-editor\"><h1>Page structure of ") != 0 ||
+      page_esc(&page, name, strlen(name)) != 0 || page_str(&page, "</h1>") != 0 ||
+      structure_notice(&page, notice, said, said_n) != 0) {
+    goto fail;
+  }
+  if (v.kind == GDEFCORE_STRUCTURE_KIND_CUSTOM) {
+    if (page_str(&page, "<p>This template is written by hand, so its structure is not edited here. "
+                        "Starting a new structure replaces its source.</p>") != 0) {
+      goto fail;
+    }
+  } else if (v.kind == GDEFCORE_STRUCTURE_KIND_NONE) {
+    if (page_str(&page, "<p>This template has no structure yet. Start from one below.</p>") != 0) {
+      goto fail;
+    }
+  } else {
+    if (st_preview(&page, catalog, name, &v) != 0) {
+      goto fail;
+    }
+    for (r = 0; r < v.nrows; r++) {
+      const GDEFCORE_Structure_Row * row = &v.rows[r];
+      char n1[24];
+      snprintf(n1, sizeof n1, "%zu", r + 1);
+      if (page_str(&page, "<h2>Row ") != 0 || page_str(&page, n1) != 0 || page_str(&page, ": ") != 0 ||
+          page_str(&page, kBName[row->behavior]) != 0 || page_str(&page, "</h2>") != 0) {
+        goto fail;
+      }
+      /* The row's own forms. */
+      if (st_open(&page, name, token, v.version, "set-row") != 0 || st_num(&page, "row", r) != 0 ||
+          st_behavior_select(&page, row->behavior, row->breakpoint) != 0 ||
+          st_button(&page, "Change the row") != 0) {
+        goto fail;
+      }
+      if (r > 0 && (st_open(&page, name, token, v.version, "move-row") != 0 ||
+                       st_num(&page, "row", r) != 0 || st_num(&page, "to_row", r - 1) != 0 ||
+                       st_button(&page, "Move the row up") != 0)) {
+        goto fail;
+      }
+      if (r + 1 < v.nrows && (st_open(&page, name, token, v.version, "move-row") != 0 ||
+                                 st_num(&page, "row", r) != 0 || st_num(&page, "to_row", r + 1) != 0 ||
+                                 st_button(&page, "Move the row down") != 0)) {
+        goto fail;
+      }
+      if (st_open(&page, name, token, v.version, "remove-row") != 0 || st_num(&page, "row", r) != 0 ||
+          st_button(&page, "Remove the row") != 0 || page_str(&page, "<ol>") != 0) {
+        goto fail;
+      }
+      for (k = 0; k < row->ncells; k++) {
+        const GDEFCORE_Structure_Cell * c = &row->cells[k];
+        GDEFCORE_Region_Info info;
+        memset(&info, 0, sizeof info);
+        info.size = sizeof info;
+        if (gdefcore_region_describe(catalog, name, strlen(name), c->region, strlen(c->region),
+                &info) != GDEFCORE_OK) {
+          goto fail;
+        }
+        if (page_str(&page, "<li data-cell=\"") != 0 || page_esc(&page, c->region, strlen(c->region)) != 0 ||
+            page_str(&page, "\"><strong>") != 0 || page_esc(&page, info.label, info.label_len) != 0 ||
+            page_str(&page, "</strong> (<code>") != 0 || page_esc(&page, c->region, strlen(c->region)) != 0 ||
+            page_str(&page, "</code>)") != 0) {
+          gdefcore_region_info_free(catalog, &info);
+          goto fail;
+        }
+        gdefcore_region_info_free(catalog, &info);
+        if (row->behavior != GDEFCORE_STRUCTURE_WRAP) {
+          if (st_open(&page, name, token, v.version, "set-width") != 0 || st_num(&page, "row", r) != 0 ||
+              st_num(&page, "cell", k) != 0 || st_number_input(&page, "Width", "width", c->width, 1, 12) != 0 ||
+              st_button(&page, "Set the width") != 0 ||
+              st_open(&page, name, token, v.version, "set-stacked") != 0 || st_num(&page, "row", r) != 0 ||
+              st_num(&page, "cell", k) != 0 ||
+              st_number_input(&page, "Place when folded", "stacked", c->stacked, 1, (int)row->ncells) != 0 ||
+              st_button(&page, "Set the place") != 0) {
+            goto fail;
+          }
+        }
+        if (st_open(&page, name, token, v.version, "rename-cell") != 0 || st_num(&page, "row", r) != 0 ||
+            st_num(&page, "cell", k) != 0 ||
+            page_str(&page, "<label>Rename to <input name=\"region\" value=\"") != 0 ||
+            page_esc(&page, c->region, strlen(c->region)) != 0 ||
+            page_str(&page, "\"></label> ") != 0 || st_button(&page, "Rename (placements follow)") != 0) {
+          goto fail;
+        }
+        if (k > 0 && (st_open(&page, name, token, v.version, "move-cell") != 0 || st_num(&page, "row", r) != 0 ||
+                         st_num(&page, "cell", k) != 0 || st_num(&page, "to_row", r) != 0 ||
+                         st_num(&page, "to_cell", k - 1) != 0 || st_button(&page, "Move earlier") != 0)) {
+          goto fail;
+        }
+        if (k + 1 < row->ncells && (st_open(&page, name, token, v.version, "move-cell") != 0 ||
+                                       st_num(&page, "row", r) != 0 || st_num(&page, "cell", k) != 0 ||
+                                       st_num(&page, "to_row", r) != 0 || st_num(&page, "to_cell", k + 1) != 0 ||
+                                       st_button(&page, "Move later") != 0)) {
+          goto fail;
+        }
+        /* To another row. */
+        if (v.nrows > 1) {
+          if (st_open(&page, name, token, v.version, "move-cell") != 0 || st_num(&page, "row", r) != 0 ||
+              st_num(&page, "cell", k) != 0 || st_num(&page, "to_cell", 99) != 0 ||
+              page_str(&page, "<label>To row <select name=\"to_row\">") != 0) {
+            goto fail;
+          }
+          for (i = 0; i < v.nrows; i++) {
+            char n[24];
+            if (i == r) {
+              continue;
+            }
+            snprintf(n, sizeof n, "%zu", i);
+            snprintf(n1, sizeof n1, "%zu", i + 1);
+            if (page_str(&page, "<option value=\"") != 0 || page_str(&page, n) != 0 ||
+                page_str(&page, "\">") != 0 || page_str(&page, n1) != 0 || page_str(&page, "</option>") != 0) {
+              goto fail;
+            }
+          }
+          if (page_str(&page, "</select></label> ") != 0 || st_button(&page, "Move") != 0) {
+            goto fail;
+          }
+        }
+        if (st_open(&page, name, token, v.version, "remove-cell") != 0 || st_num(&page, "row", r) != 0 ||
+            st_num(&page, "cell", k) != 0 || st_button(&page, "Remove the cell") != 0 ||
+            page_str(&page, "</li>") != 0) {
+          goto fail;
+        }
+      }
+      if (page_str(&page, "</ol>") != 0) {
+        goto fail;
+      }
+      if (row->ncells < GDEFCORE_STRUCTURE_ROW_CELLS_MAX) {
+        if (st_open(&page, name, token, v.version, "add-cell") != 0 || st_num(&page, "row", r) != 0 ||
+            page_str(&page, "<label>Add a cell holding the region <input name=\"region\"></label> ") != 0 ||
+            (row->behavior != GDEFCORE_STRUCTURE_WRAP &&
+                st_number_input(&page, "Width", "width", 1, 1, 12) != 0) ||
+            st_button(&page, "Add the cell") != 0) {
+          goto fail;
+        }
+      }
+    }
+    if (st_open(&page, name, token, v.version, "add-row") != 0 || st_num(&page, "row", 99) != 0 ||
+        page_str(&page, "<h2>Add a row</h2>") != 0 || st_behavior_select(&page, GDEFCORE_STRUCTURE_STACK, 0) != 0 ||
+        page_str(&page, "<label>Its first cell holds the region <input name=\"region\"></label> ") != 0 ||
+        st_number_input(&page, "Width", "width", 12, 1, 12) != 0 || st_button(&page, "Add the row") != 0) {
+      goto fail;
+    }
+  }
+  /* Starting points and the hand-written path. */
+  if (page_str(&page, "<h2>Start from a starting point</h2><p>This replaces the structure; a placement of a "
+                      "region the new one does not have is set aside in its layout, not lost.</p>") != 0 ||
+      st_open(&page, name, token, v.version, "start") != 0 ||
+      page_str(&page, "<label>Starting point <select name=\"region\">") != 0) {
+    goto fail;
+  }
+  for (i = 0;; i++) {
+    const char * pname;
+    const char * plabel;
+    if (!gdefcore_structure_starting_point(i, &pname, &plabel, NULL)) {
+      break;
+    }
+    if (page_str(&page, "<option value=\"") != 0 || page_str(&page, pname) != 0 || page_str(&page, "\">") != 0 ||
+        page_str(&page, plabel) != 0 || page_str(&page, "</option>") != 0) {
+      goto fail;
+    }
+  }
+  if (page_str(&page, "</select></label> ") != 0 || st_button(&page, "Start from it") != 0 ||
+      st_open(&page, name, token, v.version, "start-new") != 0 ||
+      page_str(&page, "<label>Or start new with one region <input name=\"region\" value=\"main\"></label> ") != 0 ||
+      st_button(&page, "Start new") != 0) {
+    goto fail;
+  }
+  if (v.kind != GDEFCORE_STRUCTURE_KIND_CUSTOM) {
+    if (page_str(&page, "<h2>Write this template by hand</h2><p>Its source and its stylesheet become yours "
+                        "to edit, and this page stops editing them. Type the template's name to confirm.</p>") != 0 ||
+        st_open(&page, name, token, v.version, "custom") != 0 ||
+        page_str(&page, "<label>Name <input name=\"confirm\" autocomplete=\"off\"></label> ") != 0 ||
+        st_button(&page, "Write it by hand") != 0) {
+      goto fail;
+    }
+  }
+  if (page_str(&page, "</div>") != 0) {
+    goto fail;
+  }
+  gdefcore_structure_view_free(&v);
+  gcu_allocator_free(alloc, token);
+  return take_page(&page, out);
+fail:
+  gdefcore_structure_view_free(&v);
+  gcu_allocator_free(alloc, token);
+  page_free(&page);
+  return -1;
+}
+
+static int structure_location(struct GDEFWEB_Admin_Reply * out, const char * name) {
+  if (snprintf(out->location_buf, sizeof out->location_buf, "/admin/structures/%s", name) >=
+      (int)sizeof out->location_buf) {
+    return redirect(out, "/admin/structures");
+  }
+  return redirect(out, out->location_buf);
+}
+
+static int structure_act_of(const char * act) {
+  static const struct {
+    const char * name;
+    int act;
+  } kActs[] = {{"add-row", GDEFCORE_STRUCTURE_ACT_ADD_ROW},
+      {"remove-row", GDEFCORE_STRUCTURE_ACT_REMOVE_ROW}, {"move-row", GDEFCORE_STRUCTURE_ACT_MOVE_ROW},
+      {"set-row", GDEFCORE_STRUCTURE_ACT_SET_ROW}, {"add-cell", GDEFCORE_STRUCTURE_ACT_ADD_CELL},
+      {"remove-cell", GDEFCORE_STRUCTURE_ACT_REMOVE_CELL}, {"move-cell", GDEFCORE_STRUCTURE_ACT_MOVE_CELL},
+      {"set-width", GDEFCORE_STRUCTURE_ACT_SET_WIDTH}, {"set-stacked", GDEFCORE_STRUCTURE_ACT_SET_STACKED},
+      {"rename-cell", GDEFCORE_STRUCTURE_ACT_RENAME_CELL}, {"start", GDEFCORE_STRUCTURE_ACT_START},
+      {"start-new", GDEFCORE_STRUCTURE_ACT_START_NEW}, {"custom", GDEFCORE_STRUCTURE_ACT_CUSTOM}};
+  size_t i;
+  for (i = 0; i < sizeof kActs / sizeof kActs[0]; i++) {
+    if (strcmp(act, kActs[i].name) == 0) {
+      return kActs[i].act;
+    }
+  }
+  return 0;
+}
+
+static int structures_post(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * name, size_t name_len,
+    const char * post, size_t post_n, struct GDEFWEB_Admin_Reply * out) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  char act[24];
+  char version[GDEFCORE_STRUCTURE_VERSION_LEN + 8];
+  char region[GDEFCORE_REGION_NAME_MAX + 2];
+  char confirm[128];
+  char said[900];
+  char * moved = NULL;
+  size_t moved_len = 0;
+  size_t n = 0;
+  int number;
+  GDEFCORE_Structure_Edit edit;
+  GDEFCORE_Changeset * cs = NULL;
+  const char * who;
+  size_t who_n = 0;
+  uint64_t base = 0;
+  int notice = SN_BAD_FORM;
+  int opened = structure_open(catalog, request, name, name_len, id);
+  GDEFCORE_Result rc;
+  said[0] = '\0';
+  if (opened < 0) {
+    return -1;
+  }
+  if (opened > 0) {
+    return unknown_admin("POST", out);
+  }
+  if (!asset_token_ok(catalog, request, keyring, root, root_len, session, session_len, post, post_n,
+          "structure-edit", id, &base) ||
+      !base_matches(catalog, id, base) || layout_field_text(post, post_n, "act", act, sizeof act) != 0 ||
+      layout_field_text(post, post_n, "version", version, sizeof version) != 0 ||
+      layout_field_text(post, post_n, "region", region, sizeof region) != 0 ||
+      layout_field_text(post, post_n, "confirm", confirm, sizeof confirm) != 0) {
+    return structure_page(alloc, catalog, request, keyring, root, root_len, session, session_len, id,
+        name, SN_BAD_FORM, NULL, 0, out);
+  }
+  memset(&edit, 0, sizeof edit);
+  edit.size = sizeof edit;
+  edit.act = structure_act_of(act);
+  edit.version = version;
+  edit.version_len = strlen(version);
+  edit.region = region;
+  edit.region_len = strlen(region);
+  if (edit.act == 0) {
+    return structure_page(alloc, catalog, request, keyring, root, root_len, session, session_len, id,
+        name, SN_BAD_FORM, NULL, 0, out);
+  }
+  if (layout_field_int(post, post_n, "row", &n) == 0) {
+    edit.row = n;
+  }
+  if (layout_field_int(post, post_n, "cell", &n) == 0) {
+    edit.cell = n;
+  }
+  if (layout_field_int(post, post_n, "to_row", &n) == 0) {
+    edit.to_row = n;
+  }
+  if (layout_field_int(post, post_n, "to_cell", &n) == 0) {
+    edit.to_cell = n;
+  }
+  if (layout_field_int(post, post_n, "width", &n) == 0) {
+    edit.width = (int)n;
+  }
+  if (layout_field_int(post, post_n, "stacked", &n) == 0) {
+    edit.stacked = (int)n;
+  }
+  {
+    char word[16];
+    if (layout_field_text(post, post_n, "behavior", word, sizeof word) == 0) {
+      edit.behavior = strcmp(word, "stack") == 0 ? GDEFCORE_STRUCTURE_STACK
+                      : strcmp(word, "wrap") == 0 ? GDEFCORE_STRUCTURE_WRAP
+                      : strcmp(word, "fixed") == 0 ? GDEFCORE_STRUCTURE_FIXED : 0;
+    }
+    if (layout_field_text(post, post_n, "breakpoint", word, sizeof word) == 0) {
+      edit.breakpoint = strcmp(word, "narrow") == 0 ? GDEFCORE_STRUCTURE_NARROW
+                        : strcmp(word, "medium") == 0 ? GDEFCORE_STRUCTURE_MEDIUM
+                        : strcmp(word, "wide") == 0 ? GDEFCORE_STRUCTURE_WIDE : 0;
+    }
+  }
+  if (edit.act == GDEFCORE_STRUCTURE_ACT_CUSTOM &&
+      (strlen(confirm) != name_len || memcmp(confirm, name, name_len) != 0)) {
+    return structure_page(alloc, catalog, request, keyring, root, root_len, session, session_len, id,
+        name, SN_REFUSED, "The name typed does not match this template. Nothing was changed.",
+        sizeof "The name typed does not match this template. Nothing was changed." - 1, out);
+  }
+  who = gdefcore_request_principal(request, &who_n);
+  if (gdefcore_changeset_prepare(catalog, who, who_n, &cs) != GDEFCORE_OK) {
+    return -1;
+  }
+  gdefcore_changeset_set_request(cs, request);
+  rc = gdefcore_structure_stage_edit(cs, name, name_len, &edit, &moved, &moved_len);
+  if (rc == GDEFCORE_ERR_OOM) {
+    gdefcore_changeset_destroy(cs);
+    return -1;
+  }
+  if (rc == GDEFCORE_OK) {
+    /* The confirmation a high-risk apply wants is the machine names the stage touched. */
+    char names[256];
+    size_t at = 0;
+    size_t t;
+    size_t touched = gdefcore_changeset_touched_count(cs);
+    names[0] = '\0';
+    for (t = 0; t < touched; t++) {
+      const char * tid;
+      size_t tid_n;
+      const char * type;
+      size_t type_n;
+      int op;
+      size_t j;
+      int seen = 0;
+      if (gdefcore_changeset_touched_at(cs, t, &tid, &tid_n, &type, &type_n, &op) != GDEFCORE_OK) {
+        continue;
+      }
+      /* Unique, in the order the core wants: sorted. */
+      for (j = 0; j < at && !seen; ) {
+        size_t e = j;
+        while (e < at && names[e] != '\n') {
+          e++;
+        }
+        seen = e - j == type_n && memcmp(names + j, type, type_n) == 0;
+        j = e + 1;
+      }
+      if (!seen && at + type_n + 2 < sizeof names) {
+        if (at > 0) {
+          names[at++] = '\n';
+        }
+        memcpy(names + at, type, type_n);
+        at += type_n;
+        names[at] = '\0';
+      }
+    }
+    {
+      /* Sort the lines. */
+      char * lines[8];
+      size_t nl = 0;
+      char * p = names;
+      size_t x;
+      size_t y;
+      char joined[256];
+      size_t jl = 0;
+      while (*p != '\0' && nl < 8) {
+        lines[nl++] = p;
+        p = strchr(p, '\n');
+        if (p == NULL) {
+          break;
+        }
+        *p++ = '\0';
+      }
+      for (x = 0; x < nl; x++) {
+        for (y = x + 1; y < nl; y++) {
+          if (strcmp(lines[y], lines[x]) < 0) {
+            char * swap = lines[x];
+            lines[x] = lines[y];
+            lines[y] = swap;
+          }
+        }
+      }
+      for (x = 0; x < nl; x++) {
+        jl += (size_t)snprintf(joined + jl, sizeof joined - jl, "%s%s", x > 0 ? "\n" : "", lines[x]);
+      }
+      rc = gdefcore_changeset_apply(cs, joined, jl);
+    }
+  }
+  (void)number;
+  if (rc == GDEFCORE_OK) {
+    gdefcore_changeset_destroy(cs);
+    if (moved != NULL && moved_len > 0) {
+      snprintf(said, sizeof said, "Saved. Placements set aside, because their region is gone: ");
+      {
+        size_t at = strlen(said);
+        size_t i;
+        for (i = 0; i < moved_len && at + 2 < sizeof said; i++) {
+          said[at++] = moved[i] == '\n' ? ';' : moved[i];
+        }
+        said[at] = '\0';
+      }
+      say(catalog, request, GDEFCORE_MESSAGE_STATUS, said);
+    } else {
+      say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Saved.");
+    }
+    free(moved);
+    return structure_location(out, name);
+  }
+  {
+    size_t rn = 0;
+    const char * refusal = gdefcore_changeset_refusal(cs, &rn);
+    if (gdefcore_changeset_conflict(cs, NULL) != NULL) {
+      snprintf(said, sizeof said, "%s", GDEFCORE_STRUCTURE_REFUSED_STALE);
+      notice = SN_STALE;
+    } else if (refusal != NULL && rn > 0 && rn < sizeof said) {
+      memcpy(said, refusal, rn);
+      said[rn] = '\0';
+      notice = strcmp(said, GDEFCORE_STRUCTURE_REFUSED_STALE) == 0 ? SN_STALE : SN_REFUSED;
+    } else {
+      notice = SN_REFUSED;
+    }
+  }
+  gdefcore_changeset_destroy(cs);
+  free(moved);
+  return structure_page(alloc, catalog, request, keyring, root, root_len, session, session_len, id,
+      name, notice, said, strlen(said), out);
+}
+
+/* The page templates this principal may edit, and the form that makes a new one. */
+static int structures_list_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, int notice, const char * said,
+    size_t said_n, struct GDEFWEB_Admin_Reply * out) {
+  struct Page page;
+  char ** ids = NULL;
+  size_t count = 0;
+  size_t i;
+  size_t shown = 0;
+  char * token = NULL;
+  char self[GDEFCORE_PUBLIC_ID_LEN + 1];
+  const char * who;
+  size_t who_n = 0;
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  who = gdefcore_request_principal(request, &who_n);
+  if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN) {
+    return -1;
+  }
+  memcpy(self, who, GDEFCORE_PUBLIC_ID_LEN);
+  self[GDEFCORE_PUBLIC_ID_LEN] = '\0';
+  if (gdefcore_entity_ids(catalog, kTemplateType, sizeof kTemplateType - 1, &ids, &count) != GDEFCORE_OK) {
+    return -1;
+  }
+  if (page_begin(&page, "Page structures") != 0 || page_str(&page, "<h1>Page structures</h1>") != 0 ||
+      structure_notice(&page, notice, said, said_n) != 0 || page_str(&page, "<ul>") != 0) {
+    goto fail;
+  }
+  for (i = 0; i < count; i++) {
+    char name[128];
+    char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+    if (strlen(ids[i]) != GDEFCORE_PUBLIC_ID_LEN || field_copy(catalog, ids[i], "name", name, sizeof name) != 0) {
+      continue;
+    }
+    if (structure_open(catalog, request, name, strlen(name), id) != 0) {
+      continue;
+    }
+    if (page_str(&page, "<li><a href=\"/admin/structures/") != 0 || page_seg(&page, name, strlen(name)) != 0 ||
+        page_str(&page, "\">") != 0 || page_esc(&page, name, strlen(name)) != 0 || page_str(&page, "</a></li>") != 0) {
+      goto fail;
+    }
+    shown++;
+  }
+  if (page_str(&page, "</ul>") != 0 ||
+      (shown == 0 && page_str(&page, "<p>There are no page templates you may edit.</p>") != 0)) {
+    goto fail;
+  }
+  if (gdefcore_template_may_edit(catalog, request, "core.page", 9)) {
+    if (structure_sign(alloc, catalog, request, keyring, root, root_len, session, session_len,
+            "structure-new", self, NULL, &token) != 0 ||
+        page_str(&page, "<h2>A new page template</h2><form method=\"post\" action=\"/admin/structures\">") != 0 ||
+        page_token(&page, token) != 0 ||
+        page_str(&page, "<p><label>Name <input name=\"name\"></label> <label>Its first region <input name=\"region\" "
+                        "value=\"main\"></label> <button type=\"submit\">Make it</button></p></form>") != 0) {
+      goto fail;
+    }
+  }
+  gdefcore_ids_free(catalog, ids, count);
+  gcu_allocator_free(alloc, token);
+  return take_page(&page, out);
+fail:
+  gdefcore_ids_free(catalog, ids, count);
+  gcu_allocator_free(alloc, token);
+  page_free(&page);
+  return -1;
+}
+
+static int structures_new_post(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * post, size_t post_n,
+    struct GDEFWEB_Admin_Reply * out) {
+  char name[128];
+  char region[GDEFCORE_REGION_NAME_MAX + 2];
+  char self[GDEFCORE_PUBLIC_ID_LEN + 1];
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  const char * who;
+  size_t who_n = 0;
+  GDEFCORE_Structure_Edit edit;
+  GDEFCORE_Changeset * cs = NULL;
+  GDEFCORE_Result rc;
+  const char * said = "That change was refused. Nothing was changed.";
+  who = gdefcore_request_principal(request, &who_n);
+  if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN) {
+    return -1;
+  }
+  memcpy(self, who, GDEFCORE_PUBLIC_ID_LEN);
+  self[GDEFCORE_PUBLIC_ID_LEN] = '\0';
+  if (!gdefcore_template_may_edit(catalog, request, "core.page", 9)) {
+    return unknown_admin("POST", out);
+  }
+  if (!asset_token_ok(catalog, request, keyring, root, root_len, session, session_len, post, post_n,
+          "structure-new", self, NULL) ||
+      layout_field_text(post, post_n, "name", name, sizeof name) != 0 ||
+      layout_field_text(post, post_n, "region", region, sizeof region) != 0) {
+    return structures_list_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+        SN_BAD_FORM, NULL, 0, out);
+  }
+  if (!gdefcore_structure_name_ok(name, strlen(name)) || find_by_name(catalog, kTemplateType, name, strlen(name), id) == 0) {
+    said = "A page template's name is a-z first, then a-z, 0-9 and '-', and is not one that exists.";
+    return structures_list_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+        SN_REFUSED, said, strlen(said), out);
+  }
+  memset(&edit, 0, sizeof edit);
+  edit.size = sizeof edit;
+  edit.act = GDEFCORE_STRUCTURE_ACT_START_NEW;
+  edit.version = "";
+  edit.version_len = 0;
+  edit.region = region;
+  edit.region_len = strlen(region);
+  {
+    if (gdefcore_changeset_prepare(catalog, self, GDEFCORE_PUBLIC_ID_LEN, &cs) != GDEFCORE_OK) {
+      return -1;
+    }
+    gdefcore_changeset_set_request(cs, request);
+    rc = gdefcore_structure_stage_edit(cs, name, strlen(name), &edit, NULL, NULL);
+  }
+  if (rc == GDEFCORE_OK) {
+    rc = gdefcore_changeset_apply(cs, "core.css-asset\ncore.template", sizeof "core.css-asset\ncore.template" - 1);
+  }
+  if (rc == GDEFCORE_OK) {
+    gdefcore_changeset_destroy(cs);
+    say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Saved.");
+    return structure_location(out, name);
+  }
+  {
+    size_t rn = 0;
+    const char * refusal = gdefcore_changeset_refusal(cs, &rn);
+    char buf[400];
+    if (refusal != NULL && rn > 0 && rn < sizeof buf) {
+      memcpy(buf, refusal, rn);
+      buf[rn] = '\0';
+    } else {
+      snprintf(buf, sizeof buf, "%s", said);
+    }
+    gdefcore_changeset_destroy(cs);
+    return structures_list_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+        SN_REFUSED, buf, strlen(buf), out);
+  }
+}
+
+static int structures_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * method,
+    const char * path, const char * body, size_t body_len, struct GDEFWEB_Admin_Reply * out) {
+  static const char kBase[] = "/admin/structures";
+  const char * rest = path + sizeof kBase - 1;
+  char name[128];
+  size_t name_len = 0;
+  int is_get = strcmp(method, "GET") == 0;
+  int is_post = strcmp(method, "POST") == 0;
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  if (*rest == '\0') {
+    if (is_get) {
+      return structures_list_page(alloc, catalog, request, keyring, root, root_len, session, session_len,
+          SN_NONE, NULL, 0, out);
+    }
+    return is_post ? structures_new_post(alloc, catalog, request, keyring, root, root_len, session,
+                         session_len, body, body_len, out)
+                   : unknown_admin(method, out);
+  }
+  if (*rest != '/' || rest[1] == '\0' || strchr(rest + 1, '/') != NULL || strlen(rest + 1) > 100 ||
+      seg_decode(rest + 1, strlen(rest + 1), name, sizeof name, &name_len) != 0 ||
+      !gdefcore_structure_name_ok(name, name_len) || name_len != strlen(rest + 1)) {
+    return unknown_admin(method, out);
+  }
+  if (is_get) {
+    int opened = structure_open(catalog, request, name, name_len, id);
+    if (opened < 0) {
+      return -1;
+    }
+    if (opened > 0) {
+      return unknown_admin(method, out);
+    }
+    return structure_page(alloc, catalog, request, keyring, root, root_len, session, session_len, id,
+        name, SN_NONE, NULL, 0, out);
+  }
+  return is_post ? structures_post(alloc, catalog, request, keyring, root, root_len, session,
+                       session_len, name, name_len, body, body_len, out)
+                 : unknown_admin(method, out);
+}
+
+/*
  * The selector rules and the checker (layout editor story 26): /admin/layout-rules
  * lists the site's rules in the order the engine uses (the more specific pattern
  * first, then the lower weight, then the name), each with the rank the engine gives
@@ -7694,6 +8581,15 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
       rc = unknown_admin(method, out);
     } else {
       rc = layouts_route(alloc, catalog, request, keyring, root, root_len, (const char *)raw,
+          raw_n, method, path, body, body_len, out);
+    }
+  } else if (strcmp(path, "/admin/structures") == 0 || starts_with(path, "/admin/structures/")) {
+    /* The list is there for whoever the route's own check lets follow it, and a
+     * template for whoever the core says may edit it. */
+    if (!gdefweb_nav_follows(routes, request, "/admin/structures", "core.admin-structures")) {
+      rc = unknown_admin(method, out);
+    } else {
+      rc = structures_route(alloc, catalog, request, keyring, root, root_len, (const char *)raw,
           raw_n, method, path, body, body_len, out);
     }
   } else if (asset_kind_of(path) != NULL) {

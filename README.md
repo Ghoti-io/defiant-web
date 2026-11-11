@@ -231,6 +231,25 @@ have, so it is not part of `make test`. Who may edit a layout is the core's one
 decision about it, so a layout someone may not edit is not in the list and is the
 page that does not exist. Every text on the page is escaped.
 
+`/admin/structures` is the page structure editor: the page templates the principal
+may edit and a form that makes a new one (a name and a first region), and for one
+template its structure drawn as rows of cells. A preview shows the structure at
+the width a slider says, folding each row where the generated stylesheet would
+(a script of a few lines, which changes only the preview's width and classes);
+under it every row has forms to change its behavior and breakpoint, to move or
+remove it, and every cell forms to set its width and its place when folded, to
+rename it (every layout's placements follow the region), to move it earlier,
+later or into another row, and to remove it, with a form to add a cell and a row,
+and a list of starting points to start from. Every action is a signed form that
+needs no script and one changeset: the structure, the template's source, its
+stylesheet and each layout that draws with it. A region a change removes has its
+placements set aside in that layout's Not placed list, and the page says which.
+A form that was drawn before another change is refused, a refusal says why and
+writes nothing, and a template written by hand is not edited here; it is handed
+over by typing its name, and only a new start takes it back. The page needs the
+permission to edit templates of the page kind, and the apply asks for the
+stylesheet and layout permissions as it writes them.
+
 `/admin/layout-rules` lists the site's selector rules in the order the engine uses
 (the more specific pattern first, then the lower weight, then the name), each with
 the rank the engine gives its pattern as a plain number, and adds, changes and

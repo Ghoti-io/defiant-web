@@ -112,10 +112,10 @@ plant stale-token-accepted src/admin.c testLayoutadmin $T_STALE \
 # The core's refusal is not shown: the page says only that something went wrong.
 PLANT_NEED_TEXT='That region is not in this template.'
 plant refusal-sentence-hidden src/admin.c testLayoutadmin $T_REFUSED \
-  '    if (said != NULL && said_n > 0) {
-      return page_str(page, "<p class=\"notice\">") != 0 || page_esc(page, said, said_n) != 0 ||' \
-  '    if (0 && said != NULL && said_n > 0) {
-      return page_str(page, "<p class=\"notice\">") != 0 || page_esc(page, said, said_n) != 0 ||'
+  '  if (notice == LN_REFUSED || notice == LN_STALE) {
+    if (said != NULL && said_n > 0) {' \
+  '  if (notice == LN_REFUSED || notice == LN_STALE) {
+    if (0 && said != NULL && said_n > 0) {'
 
 # A placement's title is written into the page as it is.
 PLANT_NEED_TEXT='Latest'
