@@ -445,6 +445,9 @@ static const char kJsLayoutB[] =
     "    clear();\n"
     "    dragged = null;\n"
     "  });\n"
+    ;
+
+static const char kJsLayoutC[] =
     "  if (catalog) {\n"
     "    catalog.hidden = false;\n"
     "    catalog.addEventListener(\"dragstart\", function (event) {\n"
@@ -585,6 +588,9 @@ static const char kJsStructB[] =
     "    var box = head.getBoundingClientRect();\n"
     "    return event.clientY >= box.top + box.height / 2;\n"
     "  }\n"
+    ;
+
+static const char kJsStructC[] =
     "  root.addEventListener(\"keydown\", function (event) {\n"
     "    var key = event.key;\n"
     "    var cell = up(event.target, \"data-cell\");\n"
@@ -649,6 +655,9 @@ static const char kJsStructB[] =
     "      else say(\"It cannot move further that way.\");\n"
     "    }\n"
     "  });\n"
+    ;
+
+static const char kJsStructD[] =
     "  root.addEventListener(\"dragstart\", function (event) {\n"
     "    var cell = up(event.target, \"data-cell\");\n"
     "    var head = up(event.target, \"data-rowhead\");\n"
@@ -703,8 +712,8 @@ static const char kJsStructB[] =
     "  });\n"
     "}());\n";
 
-static const char * const kJsParts[] = {kJsPanes, kJsMenuA, kJsMenuB, kJsLayout, kJsLayoutB, kJsStruct, kJsStructB};
-static char kJs[sizeof kJsPanes + sizeof kJsMenuA + sizeof kJsMenuB + sizeof kJsLayout + sizeof kJsLayoutB + sizeof kJsStruct + sizeof kJsStructB];
+static const char * const kJsParts[] = {kJsPanes, kJsMenuA, kJsMenuB, kJsLayout, kJsLayoutB, kJsLayoutC, kJsStruct, kJsStructB, kJsStructC, kJsStructD};
+static char kJs[sizeof kJsPanes + sizeof kJsMenuA + sizeof kJsMenuB + sizeof kJsLayout + sizeof kJsLayoutB + sizeof kJsLayoutC + sizeof kJsStruct + sizeof kJsStructB + sizeof kJsStructC + sizeof kJsStructD];
 static size_t kJsLen;
 
 static const char kCss[] =
