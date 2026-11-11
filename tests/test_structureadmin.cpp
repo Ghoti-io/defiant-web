@@ -301,17 +301,18 @@ TEST_F(StructureAdmin, TheUndoPageTakesBackTheLastStructureChangeWholeAndOnlyOnc
   ASSERT_FALSE(form.empty()) << Get("/admin/undo", ada_).body;
   Reply undone = PostRaw("/admin/undo", ada_, form);
   EXPECT_EQ(303, undone.status);
+  /* The answer is said on the next page drawn (any page shows it once), so it is read first. */
+  EXPECT_TRUE(Has(Get("/admin/undo", ada_).body, "The last page structure change was undone."));
   EXPECT_EQ(before, Cells(Page("layout", ada_))) << "the structure is back";
   const std::string layout = LayoutPage("post");
   EXPECT_TRUE(Has(layout, "<strong>recent</strong>")) << layout;
   EXPECT_TRUE(Has(layout, "Nothing is set aside.")) << "the placement is back in its region";
-  EXPECT_TRUE(Has(Get("/admin/undo", ada_).body, "The last page structure change was undone."));
   /* A change is undone once: the same form again takes nothing back. */
   EXPECT_TRUE(UndoBody(ada_, "<h2>Page structure</h2>").empty());
   Reply again = PostRaw("/admin/undo", ada_, form);
   EXPECT_EQ(303, again.status);
-  EXPECT_EQ(before, Cells(Page("layout", ada_)));
   EXPECT_TRUE(Has(Get("/admin/undo", ada_).body, "There is no page structure change to undo."));
+  EXPECT_EQ(before, Cells(Page("layout", ada_)));
 }
 
 TEST_F(StructureAdmin, AnUndoIsRefusedOnceALayoutItWroteIsWrittenAgainAndSaysSo) {
@@ -333,12 +334,15 @@ TEST_F(StructureAdmin, AnUndoIsRefusedOnceALayoutItWroteIsWrittenAgainAndSaysSo)
         InputValue(part, "version", 0) + "&act=place&index=0&widget=menu&region=main&position=0";
     ASSERT_EQ(303, PostRaw("/admin/layouts/post", ada_, body).status);
   }
-  const std::string layout = LayoutPage("post");
   EXPECT_EQ(303, PostRaw("/admin/undo", ada_, form).status);
   EXPECT_TRUE(Has(Get("/admin/undo", ada_).body,
       "That page was changed after that edit, so the edit cannot be undone."));
   EXPECT_EQ("main", Cells(Page("layout", ada_))) << "nothing was undone";
-  EXPECT_EQ(layout, LayoutPage("post")) << "nothing was undone";
+  /* The layout is as it was left (a page's tokens are new each time, so it is read, not compared). */
+  const std::string layout = LayoutPage("post");
+  EXPECT_TRUE(Has(layout, "<strong>menu</strong>")) << "the later write stands";
+  EXPECT_TRUE(Has(layout, "<h2>Not placed</h2>"));
+  EXPECT_FALSE(Has(layout, "Nothing is set aside.")) << "the set-aside placement was not brought back";
 }
 
 TEST_F(StructureAdmin, TheStructureUndoIsOfferedOnlyToWhoMayEditAndAnotherPrincipalsFormDoesNothing) {
