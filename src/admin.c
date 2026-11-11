@@ -31,13 +31,16 @@
 #include <ghoti.io/cutil/allocator.h>
 #include <ghoti.io/defiant-core/access.h>
 #include <ghoti.io/defiant-core/adminarea.h>
+#include <ghoti.io/defiant-core/asset.h>
 #include <ghoti.io/defiant-core/entity.h>
 #include <ghoti.io/defiant-core/form.h>
 #include <ghoti.io/defiant-core/layout.h>
 #include <ghoti.io/defiant-core/menu.h>
 #include <ghoti.io/defiant-core/message.h>
+#include <ghoti.io/defiant-core/module.h>
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/settings.h>
+#include <ghoti.io/defiant-core/siteasset.h>
 #include <ghoti.io/defiant-core/template.h>
 #include <ghoti.io/security/random.h>
 #include <ghoti.io/security/sha256.h>
@@ -5259,6 +5262,900 @@ static int unknown_admin(const char * method, struct GDEFWEB_Admin_Reply * out) 
   return 0;
 }
 
+/*
+ * The site's own stylesheets and scripts (layout editor story 21): a list of
+ * every file of one kind (the site's, which can be edited, and the modules',
+ * which are shown and cannot), one file to edit or delete, and its history.
+ * /admin/stylesheets and /admin/scripts are the same page for the two kinds,
+ * and are two pages because they are two permissions (siteasset.h): the route's
+ * own check asks the one, and the apply asks it again for each file.
+ *
+ * Every action is a signed form that answers with a 303 and a message. A form
+ * that is refused (the text, the name, a stale version, a missing confirmation)
+ * writes nothing and is drawn again with what was typed, in the reply to the
+ * post, so that no text is lost to a redirect. A script is saved only with its
+ * name typed, since it runs with the authority of whoever loads it; a delete and
+ * a revert type the name for both kinds. Nothing here needs a script, and a
+ * file is public: it is served to anyone who asks, so the page says so.
+ */
+
+#define ASSET_TEXT_MAX (32u * 1024u)
+#define ASSET_LIST_MAX 256
+
+struct AssetKind {
+  int kind;
+  const char * base;
+  const char * machine;
+  const char * type;
+  const char * action;
+  const char * title;
+  const char * one;
+  int typed;
+};
+
+static const struct AssetKind kAssetKinds[] = {
+    {GDEFCORE_ASSET_CSS, "/admin/stylesheets", "core.admin-stylesheets",
+        GDEFCORE_ASSET_CSS_TYPE, GDEFCORE_ASSET_CSS_EDIT, "Stylesheets",
+        "stylesheet", 0},
+    {GDEFCORE_ASSET_JS, "/admin/scripts", "core.admin-scripts",
+        GDEFCORE_ASSET_JS_TYPE, GDEFCORE_ASSET_JS_EDIT, "Scripts", "script", 1},
+};
+
+/* What a refused form says, drawn above the form it came from. */
+enum {
+  AN_NONE = 0,
+  AN_REFUSED,
+  AN_CONFLICT,
+  AN_WRONG_CONFIRM,
+  AN_BAD_FORM,
+  AN_BAD_NAME,
+  AN_BAD_TEXT,
+  AN_TOO_LARGE,
+  AN_EXISTS
+};
+
+static const char * asset_notice_text(int notice) {
+  switch (notice) {
+    case AN_REFUSED:
+      return "That edit was refused. Nothing was saved.";
+    case AN_CONFLICT:
+      return "Not saved: this file changed while you were editing it. "
+             "Your text is below.";
+    case AN_WRONG_CONFIRM:
+      return "Not done: the name typed does not match this file's name.";
+    case AN_BAD_FORM:
+      return "Not done: that form is out of date. Your text is below.";
+    case AN_BAD_NAME:
+      return "Not saved: a file name is 1 to 128 letters, digits, dots, "
+             "underscores and hyphens, starting with a letter or digit, with "
+             "no two dots in a row.";
+    case AN_BAD_TEXT:
+      return "Not saved: the text is empty, or holds a character that a file "
+             "cannot hold.";
+    case AN_TOO_LARGE:
+      return "Not saved: the text is too large for this form.";
+    case AN_EXISTS:
+      return "Not saved: the site already has a file of that name.";
+    default:
+      return NULL;
+  }
+}
+
+/* The kind a path belongs to, or NULL. */
+static const struct AssetKind * asset_kind_of(const char * path) {
+  size_t i;
+  for (i = 0; i < sizeof kAssetKinds / sizeof kAssetKinds[0]; i++) {
+    size_t n = strlen(kAssetKinds[i].base);
+    if (strncmp(path, kAssetKinds[i].base, n) == 0 &&
+        (path[n] == '\0' || path[n] == '/')) {
+      return &kAssetKinds[i];
+    }
+  }
+  return NULL;
+}
+
+/* The file called @p name, if this principal may edit it. 0 yes, with @p id; 1
+ * for anything else (there is none, or it is not theirs: one answer); -1 for an
+ * error. */
+static int asset_open(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    const struct AssetKind * k, const char * name, size_t name_len,
+    char id[GDEFCORE_PUBLIC_ID_LEN + 1]) {
+  int ok = 0;
+  int found;
+  if (!gdefcore_siteasset_name_ok(name, name_len)) {
+    return 1;
+  }
+  found = find_by_name(catalog, k->type, name, name_len, id);
+  if (found < 0) {
+    return -1;
+  }
+  if (found != 0) {
+    return 1;
+  }
+  if (gdefcore_access_can(catalog, request, k->action, strlen(k->action), k->type,
+          strlen(k->type), id, &ok) != GDEFCORE_OK) {
+    return -1;
+  }
+  return ok ? 0 : 1;
+}
+
+/* A token for a form about the file @p id (with its name, so the type's fields
+ * have something to sign), or, with a NULL @p name, about the principal @p id. */
+static int asset_sign(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len, const char * form_id,
+    const char * id, const char * name, char ** token) {
+  GDEFCORE_Value values[2];
+  const char * slots[2];
+  size_t lens[2];
+  if (name == NULL) {
+    return sign_b64(alloc, catalog, request, keyring, root, root_len, session,
+        session_len, form_id, id, NULL, 0, token);
+  }
+  one_value(&values[0], "name", name, &slots[0], &lens[0]);
+  one_value(&values[1], "text", "", &slots[1], &lens[1]);
+  return sign_b64(alloc, catalog, request, keyring, root, root_len, session,
+      session_len, form_id, id, values, 2, token);
+}
+
+/* Whether the form's token is ours: this session's, for @p form_id, and for the
+ * entity @p id. On success @p base is the version the form was signed at. */
+static int asset_token_ok(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    GDEFCORE_Keyring * keyring, const uint8_t * root, size_t root_len,
+    const char * session, size_t session_len, const char * post, size_t post_n,
+    const char * form_id, const char * id, uint64_t * base) {
+  char * token = NULL;
+  size_t token_n = 0;
+  unsigned char raw[3072];
+  size_t raw_n = 0;
+  char got_form[32];
+  size_t got_len = 0;
+  char target[GDEFCORE_PUBLIC_ID_LEN + 1];
+  uint64_t b = 0;
+  int ok = 0;
+  if (form_field_alloc(post, post_n, "token", 0, &token, &token_n) == 0 &&
+      b64_decode(token, raw, sizeof raw, &raw_n) == 0 &&
+      gdefcore_form_check(catalog, request, keyring, root, root_len, session,
+          session_len, (const char *)raw, raw_n, NULL) == GDEFCORE_OK &&
+      token_meta(raw, raw_n, got_form, sizeof got_form, &got_len, target, &b) == 0 &&
+      memcmp(target, id, GDEFCORE_PUBLIC_ID_LEN) == 0 &&
+      got_len == strlen(form_id) && memcmp(got_form, form_id, got_len) == 0) {
+    ok = 1;
+    if (base != NULL) {
+      *base = b;
+    }
+  }
+  if (token != NULL) {
+    wipe(token, token_n);
+  }
+  free(token);
+  wipe(raw, sizeof raw);
+  return ok;
+}
+
+static int asset_pair(struct Page * page, const char * a, const char * b) {
+  return page_str(page, a) != 0 || page_esc(page, b, strlen(b)) != 0;
+}
+
+/* The notice, if there is one, as a paragraph. */
+static int asset_notice(struct Page * page, int notice, const char * said,
+    size_t said_n) {
+  const char * text = asset_notice_text(notice);
+  if (text == NULL) {
+    return 0;
+  }
+  if (page_str(page, "<p class=\"notice\">") != 0 || page_str(page, text) != 0) {
+    return -1;
+  }
+  if (said != NULL && said_n > 0 &&
+      (page_str(page, " ") != 0 || page_esc(page, said, said_n) != 0)) {
+    return -1;
+  }
+  return page_str(page, "</p>");
+}
+
+/* The text a form shows, drawn the way every textarea of the admin is: a
+ * leading line break is dropped by the parser, so one is kept. */
+static int asset_textarea(struct Page * page, const char * text, size_t n) {
+  return page_str(page, "<p><label>Text<br><textarea name=\"text\" "
+                        "spellcheck=\"false\">\n") != 0 ||
+         page_esc(page, text, n) != 0 || page_str(page, "</textarea></label></p>");
+}
+
+static int asset_hash_of(GDEFCORE_Catalog * catalog, const char * name,
+    char hash[GDEFCORE_ASSET_HASH_LEN + 1], size_t * bytes) {
+  char ref[GDEFCORE_ASSET_NAME_MAX + 8];
+  GDEFCORE_Asset a;
+  memset(&a, 0, sizeof a);
+  a.size = sizeof a;
+  if (snprintf(ref, sizeof ref, "site/%s", name) >= (int)sizeof ref ||
+      gdefcore_asset_find(catalog, NULL, ref, strlen(ref), &a) != GDEFCORE_OK) {
+    return -1;
+  }
+  memcpy(hash, a.hash, GDEFCORE_ASSET_HASH_LEN + 1);
+  *bytes = a.bytes_len;
+  gdefcore_asset_release(&a);
+  return 0;
+}
+
+/* The page of one kind: the site's files, the form for a new one, and the files
+ * modules ship. */
+static int asset_list_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len,
+    const struct AssetKind * k, int notice, const char * said, size_t said_n,
+    const char * new_name, const char * new_text, size_t new_text_n,
+    struct GDEFWEB_Admin_Reply * out) {
+  struct Page page;
+  char ** ids = NULL;
+  size_t count = 0;
+  char names[ASSET_LIST_MAX][GDEFCORE_ASSET_NAME_MAX + 1];
+  size_t nn = 0;
+  size_t i;
+  size_t j;
+  const GDEFCORE_Module_Declared_Asset ** items = NULL;
+  size_t nitems = 0;
+  GDEFCORE_Host * host = gdefcore_catalog_host(catalog);
+  const char * who;
+  size_t who_n = 0;
+  char self[GDEFCORE_PUBLIC_ID_LEN + 1];
+  char * token = NULL;
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  who = gdefcore_request_principal(request, &who_n);
+  if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN ||
+      gdefcore_entity_ids(catalog, k->type, strlen(k->type), &ids, &count) !=
+          GDEFCORE_OK) {
+    return -1;
+  }
+  memcpy(self, who, GDEFCORE_PUBLIC_ID_LEN);
+  self[GDEFCORE_PUBLIC_ID_LEN] = '\0';
+  for (i = 0; i < count && nn < ASSET_LIST_MAX; i++) {
+    char name[GDEFCORE_ASSET_NAME_MAX + 1];
+    int ok = 0;
+    if (strlen(ids[i]) != GDEFCORE_PUBLIC_ID_LEN ||
+        field_copy(catalog, ids[i], "name", name, sizeof name) != 0 ||
+        gdefcore_access_can(catalog, request, k->action, strlen(k->action), k->type,
+            strlen(k->type), ids[i], &ok) != GDEFCORE_OK ||
+        !ok) {
+      continue;
+    }
+    j = nn;
+    while (j > 0 && strcmp(names[j - 1], name) > 0) {
+      memcpy(names[j], names[j - 1], sizeof names[j]);
+      j -= 1;
+    }
+    memcpy(names[j], name, strlen(name) + 1);
+    nn += 1;
+  }
+  gdefcore_ids_free(catalog, ids, count);
+  if (page_begin(&page, k->title) != 0 || asset_pair(&page, "<h1>", k->title) != 0 ||
+      page_str(&page, "</h1><p>A file here is public: it is sent to anyone who asks "
+                      "for its address, so nothing secret belongs in one.</p>") != 0 ||
+      asset_notice(&page, notice, said, said_n) != 0 ||
+      page_str(&page, "<h2>The site's files</h2>") != 0) {
+    goto fail;
+  }
+  if (nn == 0) {
+    if (page_str(&page, "<p>The site has none yet.</p>") != 0) {
+      goto fail;
+    }
+  } else if (page_str(&page, "<table><thead><tr><th>Name</th><th>Version</th>"
+                             "<th>Bytes</th></tr></thead><tbody>") != 0) {
+    goto fail;
+  }
+  for (j = 0; j < nn; j++) {
+    char hash[GDEFCORE_ASSET_HASH_LEN + 1];
+    size_t bytes = 0;
+    int have = asset_hash_of(catalog, names[j], hash, &bytes) == 0;
+    char number[32];
+    snprintf(number, sizeof number, "%zu", bytes);
+    if (page_str(&page, "<tr><td><a href=\"") != 0 ||
+        page_str(&page, k->base) != 0 || page_str(&page, "/") != 0 ||
+        page_seg(&page, names[j], strlen(names[j])) != 0 ||
+        page_str(&page, "\">") != 0 ||
+        page_esc(&page, names[j], strlen(names[j])) != 0 ||
+        page_str(&page, "</a></td><td>") != 0 ||
+        (have && page_esc(&page, hash, 12) != 0) ||
+        page_str(&page, "</td><td>") != 0 || (have && page_str(&page, number) != 0) ||
+        page_str(&page, "</td></tr>") != 0) {
+      goto fail;
+    }
+  }
+  if (nn > 0 && page_str(&page, "</tbody></table>") != 0) {
+    goto fail;
+  }
+  if (gdefcore_siteasset_may_edit(catalog, request, k->kind)) {
+    if (asset_sign(alloc, catalog, request, keyring, root, root_len, session,
+            session_len, "asset-new", self, NULL, &token) != 0) {
+      goto fail;
+    }
+    if (page_str(&page, "<h2>A new ") != 0 || page_str(&page, k->one) != 0 ||
+        page_str(&page, "</h2><form method=\"post\" action=\"") != 0 ||
+        page_str(&page, k->base) != 0 || page_str(&page, "\">") != 0 ||
+        page_token(&page, token) != 0 ||
+        page_str(&page, "<p><label>Name <input name=\"name\" autocomplete=\"off\" "
+                        "value=\"") != 0 ||
+        (new_name != NULL && page_esc(&page, new_name, strlen(new_name)) != 0) ||
+        page_str(&page, "\"></label></p>") != 0 ||
+        asset_textarea(&page, new_text == NULL ? "" : new_text, new_text_n) != 0) {
+      goto fail;
+    }
+    if (k->typed &&
+        page_str(&page, "<p><label>To save a script, type its name again to confirm: "
+                        "<input name=\"confirm\" autocomplete=\"off\" value=\"\">"
+                        "</label></p>") != 0) {
+      goto fail;
+    }
+    if (page_str(&page, "<p><button type=\"submit\" name=\"do\" value=\"create\">"
+                        "Save</button></p></form>") != 0) {
+      goto fail;
+    }
+  }
+  if (host != NULL) {
+    size_t tenant_n = 0;
+    const uint8_t * tenant = gdefcore_catalog_tenant(catalog, &tenant_n);
+    int shown = 0;
+    if (tenant != NULL &&
+        gdefcore_module_assets(host, tenant, tenant_n, NULL, &items, &nitems) ==
+            GDEFCORE_OK) {
+      for (i = 0; i < nitems; i++) {
+        const GDEFCORE_Module_Declared_Asset * a = items[i];
+        char number[32];
+        if (a->kind != k->kind) {
+          continue;
+        }
+        if (!shown &&
+            page_str(&page, "<h2>Shipped by modules</h2><p>These are read only. A "
+                            "module ships them, and they stop when it is "
+                            "disabled.</p><table><thead><tr><th>File</th><th>Version"
+                            "</th><th>Bytes</th></tr></thead><tbody>") != 0) {
+          goto fail;
+        }
+        shown = 1;
+        snprintf(number, sizeof number, "%zu", a->bytes_len);
+        if (page_str(&page, "<tr><td>") != 0 ||
+            page_esc(&page, a->module, a->module_len) != 0 ||
+            page_str(&page, "/") != 0 || page_esc(&page, a->name, a->name_len) != 0 ||
+            page_str(&page, "</td><td>") != 0 || page_esc(&page, a->hash, 12) != 0 ||
+            page_str(&page, "</td><td>") != 0 || page_str(&page, number) != 0 ||
+            page_str(&page, "</td></tr>") != 0) {
+          goto fail;
+        }
+      }
+      if (shown && page_str(&page, "</tbody></table>") != 0) {
+        goto fail;
+      }
+      gdefcore_module_declared_free(host, items);
+      items = NULL;
+    }
+  }
+  gcu_allocator_free(alloc, token);
+  return take_page(&page, out);
+fail:
+  if (items != NULL) {
+    gdefcore_module_declared_free(host, items);
+  }
+  gcu_allocator_free(alloc, token);
+  page_free(&page);
+  return -1;
+}
+
+/* One file's page. @p text is what the textarea shows (the stored text unless a
+ * refused form brought its own). */
+static int asset_edit_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len,
+    const struct AssetKind * k, const char * id, const char * name,
+    const char * text, size_t text_n, int notice, const char * said, size_t said_n,
+    struct GDEFWEB_Admin_Reply * out) {
+  struct Page page;
+  char * save = NULL;
+  char * drop = NULL;
+  char * stored = NULL;
+  size_t stored_n = 0;
+  char hash[GDEFCORE_ASSET_HASH_LEN + 1];
+  size_t bytes = 0;
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  if (asset_sign(alloc, catalog, request, keyring, root, root_len, session,
+          session_len, "asset-save", id, name, &save) != 0 ||
+      asset_sign(alloc, catalog, request, keyring, root, root_len, session,
+          session_len, "asset-delete", id, name, &drop) != 0) {
+    goto fail;
+  }
+  if (text == NULL) {
+    if (stored_text(catalog, id, "text", &stored, &stored_n) != 0) {
+      goto fail;
+    }
+    text = stored;
+    text_n = stored_n;
+  }
+  if (page_begin(&page, k->title) != 0 || asset_pair(&page, "<h1>", name) != 0 ||
+      page_str(&page, "</h1>") != 0 ||
+      asset_notice(&page, notice, said, said_n) != 0) {
+    goto fail;
+  }
+  if (asset_hash_of(catalog, name, hash, &bytes) == 0 &&
+      (page_str(&page, "<p>Public address: <code>/assets/site/") != 0 ||
+          page_esc(&page, name, strlen(name)) != 0 ||
+          page_str(&page, "?v=") != 0 || page_esc(&page, hash, strlen(hash)) != 0 ||
+          page_str(&page, "</code>. Anyone can read this file.</p>") != 0)) {
+    goto fail;
+  }
+  if (page_str(&page, "<form method=\"post\" action=\"") != 0 ||
+      page_str(&page, k->base) != 0 || page_str(&page, "/") != 0 ||
+      page_seg(&page, name, strlen(name)) != 0 || page_str(&page, "\">") != 0 ||
+      page_token(&page, save) != 0 || asset_textarea(&page, text, text_n) != 0) {
+    goto fail;
+  }
+  if (k->typed &&
+      page_str(&page, "<p><label>To save a script, type its name to confirm: "
+                      "<input name=\"confirm\" autocomplete=\"off\" value=\"\">"
+                      "</label></p>") != 0) {
+    goto fail;
+  }
+  if (page_str(&page, "<p><button type=\"submit\" name=\"do\" value=\"save\">Save"
+                      "</button></p></form><h2>Delete</h2><form method=\"post\" "
+                      "action=\"") != 0 ||
+      page_str(&page, k->base) != 0 || page_str(&page, "/") != 0 ||
+      page_seg(&page, name, strlen(name)) != 0 || page_str(&page, "\">") != 0 ||
+      page_token(&page, drop) != 0 ||
+      page_str(&page, "<p><label>To delete this file, type its name: <input "
+                      "name=\"confirm\" autocomplete=\"off\" value=\"\"></label></p>"
+                      "<p><button type=\"submit\" name=\"do\" value=\"delete\">Delete"
+                      "</button></p></form>") != 0) {
+    goto fail;
+  }
+  free(stored);
+  gcu_allocator_free(alloc, save);
+  gcu_allocator_free(alloc, drop);
+  return take_page(&page, out);
+fail:
+  free(stored);
+  gcu_allocator_free(alloc, save);
+  gcu_allocator_free(alloc, drop);
+  page_free(&page);
+  return -1;
+}
+
+/* The location of one file's page, or of the list when @p name is NULL. */
+static int asset_location(struct GDEFWEB_Admin_Reply * out, const struct AssetKind * k,
+    const char * name, const char * tail) {
+  if (name == NULL) {
+    return redirect_to(out, k->base);
+  }
+  if (snprintf(out->location_buf, sizeof out->location_buf, "%s/%s%s", k->base, name,
+          tail) >= (int)sizeof out->location_buf) {
+    return redirect(out, "/admin");
+  }
+  return redirect(out, out->location_buf);
+}
+
+/* Stage and apply one change, then say how it went. Returns the notice, 0 for
+ * done; -1 for an error that is not the editor's. @p said gets the core's own
+ * sentence when it refused. */
+static int asset_apply(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+    const struct AssetKind * k, const char * name, const char * text, size_t text_n,
+    int forget, char * said, size_t said_cap) {
+  GDEFCORE_Changeset * cs = NULL;
+  const char * who;
+  size_t who_n = 0;
+  GDEFCORE_Result rc;
+  int notice = AN_REFUSED;
+  who = gdefcore_request_principal(request, &who_n);
+  if (gdefcore_changeset_prepare(catalog, who, who_n, &cs) != GDEFCORE_OK) {
+    return -1;
+  }
+  gdefcore_changeset_set_request(cs, request);
+  rc = forget ? gdefcore_siteasset_stage_forget(cs, name, strlen(name))
+              : gdefcore_siteasset_stage(cs, name, strlen(name), k->kind, text,
+                    text_n);
+  if (rc == GDEFCORE_ERR_OOM) {
+    gdefcore_changeset_destroy(cs);
+    return -1;
+  }
+  if (rc != GDEFCORE_OK) {
+    gdefcore_changeset_destroy(cs);
+    return forget ? AN_REFUSED : AN_BAD_TEXT;
+  }
+  /* A file is configuration, so the core's confirmation is the type. */
+  rc = gdefcore_changeset_apply(cs, k->type, strlen(k->type));
+  if (rc == GDEFCORE_OK) {
+    notice = 0;
+  } else if (rc == GDEFCORE_ERR_OOM) {
+    notice = -1;
+  } else if (gdefcore_changeset_conflict(cs, NULL) != NULL) {
+    notice = AN_CONFLICT;
+  } else {
+    size_t rn = 0;
+    const char * refusal = gdefcore_changeset_refusal(cs, &rn);
+    if (refusal != NULL && rn > 0 && rn < said_cap) {
+      memcpy(said, refusal, rn);
+      said[rn] = '\0';
+    }
+  }
+  gdefcore_changeset_destroy(cs);
+  return notice;
+}
+
+static int asset_edit_post(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len,
+    const struct AssetKind * k, const char * name, size_t name_len, const char * post,
+    size_t post_n, struct GDEFWEB_Admin_Reply * out) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  char * action = NULL;
+  size_t action_n = 0;
+  char * text = NULL;
+  size_t text_n = 0;
+  char * confirm = NULL;
+  size_t confirm_n = 0;
+  char said[400];
+  uint64_t base = 0;
+  int save;
+  int notice;
+  int rc = -1;
+  int opened = asset_open(catalog, request, k, name, name_len, id);
+  said[0] = '\0';
+  if (opened < 0) {
+    return -1;
+  }
+  if (opened > 0) {
+    return unknown_admin("POST", out);
+  }
+  if (form_field_alloc(post, post_n, "do", 0, &action, &action_n) != 0) {
+    return asset_location(out, k, name, "");
+  }
+  save = action_n == 4 && memcmp(action, "save", 4) == 0;
+  if (!save && !(action_n == 6 && memcmp(action, "delete", 6) == 0)) {
+    free(action);
+    return asset_location(out, k, name, "");
+  }
+  free(action);
+  if (form_field_alloc(post, post_n, "text", 0, &text, &text_n) != 0) {
+    text = dup_bytes("", 0);
+    text_n = 0;
+    if (text == NULL) {
+      return -1;
+    }
+  }
+  text_n = normalize_newlines(text, text_n);
+  if (!asset_token_ok(catalog, request, keyring, root, root_len, session, session_len,
+          post, post_n, save ? "asset-save" : "asset-delete", id, &base)) {
+    notice = AN_BAD_FORM;
+  } else if (save && memchr(text, '\0', text_n) != NULL) {
+    notice = AN_BAD_TEXT;
+  } else if (save && text_n > ASSET_TEXT_MAX) {
+    notice = AN_TOO_LARGE;
+  } else if (!base_matches(catalog, id, base)) {
+    notice = AN_CONFLICT;
+  } else if ((save && !k->typed) ? 0
+             : (form_field_alloc(post, post_n, "confirm", 0, &confirm, &confirm_n) != 0 ||
+                   confirm_n != name_len || memcmp(confirm, name, name_len) != 0)) {
+    notice = AN_WRONG_CONFIRM;
+  } else {
+    notice = asset_apply(catalog, request, k, name, text, text_n, !save, said,
+        sizeof said);
+    if (notice < 0) {
+      goto done;
+    }
+    if (notice == 0) {
+      say(catalog, request, GDEFCORE_MESSAGE_STATUS, save ? "Saved." : "Deleted.");
+      rc = asset_location(out, k, save ? name : NULL, "");
+      goto done;
+    }
+  }
+  /* Refused: the same page again, with what was typed. */
+  rc = asset_edit_page(alloc, catalog, request, keyring, root, root_len, session,
+      session_len, k, id, name, save ? text : NULL, save ? text_n : 0, notice, said,
+      strlen(said), out);
+done:
+  free(confirm);
+  if (text != NULL) {
+    wipe(text, text_n);
+  }
+  free(text);
+  return rc;
+}
+
+static int asset_create_post(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len,
+    const struct AssetKind * k, const char * post, size_t post_n,
+    struct GDEFWEB_Admin_Reply * out) {
+  char * name = NULL;
+  size_t name_n = 0;
+  char * text = NULL;
+  size_t text_n = 0;
+  char * confirm = NULL;
+  size_t confirm_n = 0;
+  char * action = NULL;
+  size_t action_n = 0;
+  char said[400];
+  char ref[GDEFCORE_ASSET_NAME_MAX + 8];
+  GDEFCORE_Asset found;
+  const char * who;
+  size_t who_n = 0;
+  char self[GDEFCORE_PUBLIC_ID_LEN + 1];
+  int notice;
+  int rc = -1;
+  said[0] = '\0';
+  who = gdefcore_request_principal(request, &who_n);
+  if (who == NULL || who_n != GDEFCORE_PUBLIC_ID_LEN) {
+    return -1;
+  }
+  /* The request's principal is rebound when a form is checked, so it is copied
+   * first. */
+  memcpy(self, who, GDEFCORE_PUBLIC_ID_LEN);
+  self[GDEFCORE_PUBLIC_ID_LEN] = '\0';
+  if (form_field_alloc(post, post_n, "do", 0, &action, &action_n) != 0 ||
+      action_n != 6 || memcmp(action, "create", 6) != 0) {
+    free(action);
+    return asset_location(out, k, NULL, "");
+  }
+  free(action);
+  if (form_field_alloc(post, post_n, "name", 0, &name, &name_n) != 0) {
+    name = dup_bytes("", 0);
+    name_n = 0;
+  }
+  if (form_field_alloc(post, post_n, "text", 0, &text, &text_n) != 0) {
+    text = dup_bytes("", 0);
+    text_n = 0;
+  }
+  if (name == NULL || text == NULL) {
+    goto done;
+  }
+  text_n = normalize_newlines(text, text_n);
+  memset(&found, 0, sizeof found);
+  found.size = sizeof found;
+  if (!asset_token_ok(catalog, request, keyring, root, root_len, session, session_len,
+          post, post_n, "asset-new", self, NULL)) {
+    notice = AN_BAD_FORM;
+  } else if (!gdefcore_siteasset_name_ok(name, name_n)) {
+    notice = AN_BAD_NAME;
+  } else if (memchr(text, '\0', text_n) != NULL || text_n == 0) {
+    notice = AN_BAD_TEXT;
+  } else if (text_n > ASSET_TEXT_MAX) {
+    notice = AN_TOO_LARGE;
+  } else if (snprintf(ref, sizeof ref, "site/%s", name) < (int)sizeof ref &&
+             gdefcore_asset_find(catalog, NULL, ref, strlen(ref), &found) ==
+                 GDEFCORE_OK) {
+    gdefcore_asset_release(&found);
+    notice = AN_EXISTS;
+  } else if (k->typed &&
+             (form_field_alloc(post, post_n, "confirm", 0, &confirm, &confirm_n) != 0 ||
+                 confirm_n != name_n || memcmp(confirm, name, name_n) != 0)) {
+    notice = AN_WRONG_CONFIRM;
+  } else {
+    notice = asset_apply(catalog, request, k, name, text, text_n, 0, said, sizeof said);
+    if (notice < 0) {
+      goto done;
+    }
+    if (notice == 0) {
+      say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Saved.");
+      rc = asset_location(out, k, name, "");
+      goto done;
+    }
+  }
+  rc = asset_list_page(alloc, catalog, request, keyring, root, root_len, session,
+      session_len, k, notice, said, strlen(said), name, text, text_n, out);
+done:
+  free(confirm);
+  free(name);
+  if (text != NULL) {
+    wipe(text, text_n);
+  }
+  free(text);
+  return rc;
+}
+
+static int asset_history_get(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len,
+    const struct AssetKind * k, const char * name, size_t name_len, int notice,
+    struct GDEFWEB_Admin_Reply * out) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  struct Page page;
+  size_t count = 0;
+  size_t i;
+  char * token = NULL;
+  int opened = asset_open(catalog, request, k, name, name_len, id);
+  if (opened < 0) {
+    return -1;
+  }
+  if (opened > 0) {
+    return unknown_admin("GET", out);
+  }
+  memset(&page, 0, sizeof page);
+  page.alloc = alloc;
+  if (gdefcore_entity_revision_count(catalog, id, GDEFCORE_PUBLIC_ID_LEN, &count) !=
+      GDEFCORE_OK) {
+    return -1;
+  }
+  if (page_begin(&page, "History") != 0 || page_str(&page, "<h1>History of ") != 0 ||
+      page_esc(&page, name, name_len) != 0 || page_str(&page, "</h1>") != 0 ||
+      asset_notice(&page, notice, NULL, 0) != 0 ||
+      page_str(&page, "<ol class=\"history\">") != 0) {
+    goto fail;
+  }
+  /* Newest first. The sequence numbers stay on the server. */
+  for (i = count; i > 0; i--) {
+    uint64_t seq = 0;
+    char * actor = NULL;
+    size_t actor_n = 0;
+    if (gdefcore_entity_revision_at(catalog, id, GDEFCORE_PUBLIC_ID_LEN, i - 1, &seq,
+            &actor, &actor_n) != GDEFCORE_OK) {
+      goto fail;
+    }
+    (void)seq;
+    if (page_str(&page, "<li>") != 0 ||
+        page_str(&page, i == count ? "The current version, by " : "By ") != 0 ||
+        (actor != NULL && actor_n > 0 ? page_esc(&page, actor, actor_n)
+                                       : page_str(&page, "the installation")) != 0 ||
+        page_str(&page, "</li>") != 0) {
+      gdefcore_text_free(catalog, actor);
+      goto fail;
+    }
+    gdefcore_text_free(catalog, actor);
+  }
+  if (page_str(&page, "</ol>") != 0) {
+    goto fail;
+  }
+  if (count >= 2) {
+    if (asset_sign(alloc, catalog, request, keyring, root, root_len, session,
+            session_len, "asset-revert", id, name, &token) != 0 ||
+        page_str(&page, "<form method=\"post\" action=\"") != 0 ||
+        page_str(&page, k->base) != 0 || page_str(&page, "/") != 0 ||
+        page_seg(&page, name, name_len) != 0 || page_str(&page, "/history\">") != 0 ||
+        page_token(&page, token) != 0 ||
+        page_str(&page, "<p><label>To restore the version before the current one, "
+                        "type this file's name to confirm: <input name=\"confirm\" "
+                        "autocomplete=\"off\" value=\"\"></label></p><p><button "
+                        "type=\"submit\" name=\"do\" value=\"revert\">Revert the "
+                        "latest change</button></p></form>") != 0) {
+      goto fail;
+    }
+  } else if (page_str(&page, "<p>There is no earlier version to restore.</p>") != 0) {
+    goto fail;
+  }
+  gcu_allocator_free(alloc, token);
+  return take_page(&page, out);
+fail:
+  gcu_allocator_free(alloc, token);
+  page_free(&page);
+  return -1;
+}
+
+static int asset_history_post(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len,
+    const struct AssetKind * k, const char * name, size_t name_len, const char * post,
+    size_t post_n, struct GDEFWEB_Admin_Reply * out) {
+  char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+  char * confirm = NULL;
+  size_t confirm_n = 0;
+  uint64_t base = 0;
+  int notice = AN_BAD_FORM;
+  int rc = -1;
+  int opened = asset_open(catalog, request, k, name, name_len, id);
+  if (opened < 0) {
+    return -1;
+  }
+  if (opened > 0) {
+    return unknown_admin("POST", out);
+  }
+  if (!asset_token_ok(catalog, request, keyring, root, root_len, session, session_len,
+          post, post_n, "asset-revert", id, &base) ||
+      !base_matches(catalog, id, base)) {
+    notice = AN_BAD_FORM;
+  } else if (form_field_alloc(post, post_n, "confirm", 0, &confirm, &confirm_n) != 0 ||
+             confirm_n != name_len || memcmp(confirm, name, name_len) != 0) {
+    notice = AN_WRONG_CONFIRM;
+  } else {
+    GDEFCORE_Changeset * cs = NULL;
+    const char * who;
+    size_t who_n = 0;
+    GDEFCORE_Result r;
+    who = gdefcore_request_principal(request, &who_n);
+    r = gdefcore_changeset_revert(catalog, id, GDEFCORE_PUBLIC_ID_LEN, who, who_n, &cs);
+    if (r == GDEFCORE_OK) {
+      gdefcore_changeset_set_request(cs, request);
+      r = gdefcore_changeset_apply(cs, k->type, strlen(k->type));
+      gdefcore_changeset_destroy(cs);
+    }
+    if (r == GDEFCORE_ERR_OOM) {
+      goto done;
+    }
+    if (r == GDEFCORE_OK) {
+      say(catalog, request, GDEFCORE_MESSAGE_STATUS, "Reverted.");
+      rc = asset_location(out, k, name, "/history");
+      goto done;
+    }
+    notice = AN_REFUSED;
+  }
+  rc = asset_history_get(alloc, catalog, request, keyring, root, root_len, session,
+      session_len, k, name, name_len, notice, out);
+done:
+  free(confirm);
+  return rc;
+}
+
+/*
+ * /admin/stylesheets and /admin/scripts           the list (GET), a new file (POST)
+ * .../<name>                                      one file (GET), save or delete (POST)
+ * .../<name>/history                              its history (GET), revert (POST)
+ */
+static int asset_route(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+    GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
+    size_t root_len, const char * session, size_t session_len,
+    const struct AssetKind * k, const char * method, const char * path,
+    const char * body, size_t body_len, struct GDEFWEB_Admin_Reply * out) {
+  const char * rest = path + strlen(k->base);
+  const char * slash;
+  const char * tail;
+  char name[GDEFCORE_ASSET_NAME_MAX + 1];
+  size_t name_len = 0;
+  int is_get = strcmp(method, "GET") == 0;
+  int is_post = strcmp(method, "POST") == 0;
+  int history = 0;
+  if (*rest == '\0') {
+    if (is_get) {
+      return asset_list_page(alloc, catalog, request, keyring, root, root_len, session,
+          session_len, k, AN_NONE, NULL, 0, NULL, NULL, 0, out);
+    }
+    return is_post ? asset_create_post(alloc, catalog, request, keyring, root, root_len,
+                         session, session_len, k, body, body_len, out)
+                   : unknown_admin(method, out);
+  }
+  if (*rest != '/' || rest[1] == '\0') {
+    return unknown_admin(method, out);
+  }
+  rest += 1;
+  slash = strchr(rest, '/');
+  tail = slash == NULL ? rest + strlen(rest) : slash;
+  /* A name is what a file name is made of, so a segment holding anything else
+   * (an encoded form, a dot segment, a NUL) is not looked up. */
+  if ((size_t)(tail - rest) > GDEFCORE_ASSET_NAME_MAX ||
+      seg_decode(rest, (size_t)(tail - rest), name, sizeof name, &name_len) != 0 ||
+      !gdefcore_siteasset_name_ok(name, name_len) ||
+      name_len != (size_t)(tail - rest)) {
+    return unknown_admin(method, out);
+  }
+  if (*tail == '\0') {
+    /* the file's own page */
+  } else if (strcmp(tail, "/history") == 0) {
+    history = 1;
+  } else {
+    return unknown_admin(method, out);
+  }
+  if (history) {
+    if (is_get) {
+      return asset_history_get(alloc, catalog, request, keyring, root, root_len,
+          session, session_len, k, name, name_len, AN_NONE, out);
+    }
+    return is_post ? asset_history_post(alloc, catalog, request, keyring, root,
+                         root_len, session, session_len, k, name, name_len, body,
+                         body_len, out)
+                   : unknown_admin(method, out);
+  }
+  if (is_get) {
+    char id[GDEFCORE_PUBLIC_ID_LEN + 1];
+    int opened = asset_open(catalog, request, k, name, name_len, id);
+    if (opened < 0) {
+      return -1;
+    }
+    if (opened > 0) {
+      return unknown_admin(method, out);
+    }
+    return asset_edit_page(alloc, catalog, request, keyring, root, root_len, session,
+        session_len, k, id, name, NULL, 0, AN_NONE, NULL, 0, out);
+  }
+  return is_post ? asset_edit_post(alloc, catalog, request, keyring, root, root_len,
+                       session, session_len, k, name, name_len, body, body_len, out)
+                 : unknown_admin(method, out);
+}
+
 int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * method, const char * path, const char * session,
@@ -5369,6 +6266,16 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
     } else {
       rc = tpl_route(alloc, catalog, request, keyring, root, root_len, (const char *)raw, raw_n,
         method, path, body, body_len, out);
+    }
+  } else if (asset_kind_of(path) != NULL) {
+    /* One page for each kind of file, because each is its own permission; the
+     * route's own check asks it, and a file is asked again by its own. */
+    const struct AssetKind * k = asset_kind_of(path);
+    if (!gdefweb_nav_follows(routes, request, k->base, k->machine)) {
+      rc = unknown_admin(method, out);
+    } else {
+      rc = asset_route(alloc, catalog, request, keyring, root, root_len,
+          (const char *)raw, raw_n, k, method, path, body, body_len, out);
     }
   } else {
     rc = unknown_admin(method, out);

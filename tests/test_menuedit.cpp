@@ -289,7 +289,7 @@ TEST_F(MenuEditor, EveryActionIsAFormThatWorksWithScriptsOff) {
   std::string after = Get("/admin/menus", cookie_).body;
   EXPECT_TRUE(Has(Messages(after), "Moved core.l-admin-more up.")) << Messages(after);
   EXPECT_NE(Tree(page), Tree(after));
-  EXPECT_LT(Tree(after).find(kMore), Tree(after).find("core.l-admin-settings under"))
+  EXPECT_LT(Tree(after).find(kMore), Tree(after).find("core.l-admin-scripts under"))
       << "up is before the entry that was above it";
   /* The rest, each as a plain post. */
   for (const char * action : {"down", "indent", "outdent"}) {
@@ -349,15 +349,15 @@ TEST_F(MenuEditor, ADragIsOneSignedPostOneChangesetAndTheExistingUndoTakesItBack
   EXPECT_EQ(before, Tree(Page())) << "the earlier tree";
   EXPECT_EQ("0 live, 1 revisions", Stored(GDEFCORE_MENU_OVERRIDE_TYPE));
   /* A drag among entries with no room between them numbers the siblings again,
-   * in the same one changeset: seven entries written, and one undo. */
+   * in the same one changeset: nine entries written, and one undo. */
   Reply many = Post(DragBody(Page(), kMore, "core.l-admin", 5));
   EXPECT_EQ(200, many.status);
   EXPECT_NE(before, Tree(many.body));
-  EXPECT_EQ("7 live, 8 revisions", Stored(GDEFCORE_MENU_OVERRIDE_TYPE))
-      << "(the one the first drag made and its undo cleared is the first of the eight)";
+  EXPECT_EQ("9 live, 10 revisions", Stored(GDEFCORE_MENU_OVERRIDE_TYPE))
+      << "(the one the first drag made and its undo cleared is the first of the ten)";
   UndoLast();
   EXPECT_EQ(before, Tree(Page()));
-  EXPECT_EQ("0 live, 8 revisions", Stored(GDEFCORE_MENU_OVERRIDE_TYPE));
+  EXPECT_EQ("0 live, 10 revisions", Stored(GDEFCORE_MENU_OVERRIDE_TYPE));
   /* An undo is once. */
   Reply again = UndoLast();
   EXPECT_TRUE(Has(Messages(again.body), GDEFCORE_MENU_REFUSED_NOTHING)) << Messages(again.body);

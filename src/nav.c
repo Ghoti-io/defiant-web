@@ -34,6 +34,7 @@
 #include <ghoti.io/defiant-core/module.h>
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/settings.h>
+#include <ghoti.io/defiant-core/siteasset.h>
 #include <ghoti.io/defiant-core/template.h>
 
 #include <string.h>
@@ -51,6 +52,8 @@
 #define PERM_TEMPLATES GDEFCORE_TEMPLATE_EDIT
 #define PERM_MENUS GDEFCORE_MENU_EDIT
 #define PERM_SETTINGS GDEFCORE_SETTINGS_EDIT
+#define PERM_CSS GDEFCORE_ASSET_CSS_EDIT
+#define PERM_JS GDEFCORE_ASSET_JS_EDIT
 
 struct PageRoute {
   const char * name;
@@ -81,6 +84,22 @@ static const struct PageRoute kPages[] = {
         PERM_TEMPLATES, GDEFCORE_ROUTE_TAB, "core.admin-template", 0, 1},
     {"core.admin-menus", "/admin/menus", "Menus", PERM_MENUS, GDEFCORE_ROUTE_PAGE,
         NULL, 0, 0},
+    {"core.admin-stylesheets", "/admin/stylesheets", "Stylesheets", PERM_CSS,
+        GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-stylesheet", "/admin/stylesheets/:name", "Stylesheet", PERM_CSS,
+        GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-stylesheet-edit", "/admin/stylesheets/:name/edit", "Edit", PERM_CSS,
+        GDEFCORE_ROUTE_TAB, "core.admin-stylesheet", 1, 0},
+    {"core.admin-stylesheet-history", "/admin/stylesheets/:name/history", "History",
+        PERM_CSS, GDEFCORE_ROUTE_TAB, "core.admin-stylesheet", 0, 1},
+    {"core.admin-scripts", "/admin/scripts", "Scripts", PERM_JS, GDEFCORE_ROUTE_PAGE,
+        NULL, 0, 0},
+    {"core.admin-script", "/admin/scripts/:name", "Script", PERM_JS,
+        GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-script-edit", "/admin/scripts/:name/edit", "Edit", PERM_JS,
+        GDEFCORE_ROUTE_TAB, "core.admin-script", 1, 0},
+    {"core.admin-script-history", "/admin/scripts/:name/history", "History", PERM_JS,
+        GDEFCORE_ROUTE_TAB, "core.admin-script", 0, 1},
     {"core.admin-settings", "/admin/settings", "Settings", PERM_SETTINGS,
         GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
     {"core.admin-settings-core", "/admin/settings/core", "Site settings",
@@ -113,6 +132,12 @@ static const struct PageLink kLinks[] = {
     {"core.l-admin-template", "Template", "core.admin-template",
         "core.l-admin-templates", 0},
     {"core.l-admin-menus", "Menus", "core.admin-menus", "core.l-admin", 4},
+    {"core.l-admin-stylesheets", "Stylesheets", "core.admin-stylesheets",
+        "core.l-admin", 6},
+    {"core.l-admin-stylesheet", "Stylesheet", "core.admin-stylesheet",
+        "core.l-admin-stylesheets", 0},
+    {"core.l-admin-scripts", "Scripts", "core.admin-scripts", "core.l-admin", 7},
+    {"core.l-admin-script", "Script", "core.admin-script", "core.l-admin-scripts", 0},
     {"core.l-admin-settings", "Settings", "core.admin-settings", "core.l-admin", 5},
     {"core.l-admin-settings-core", "Site settings", "core.admin-settings-core",
         "core.l-admin-settings", 0},
