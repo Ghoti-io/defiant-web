@@ -114,11 +114,17 @@ plant label-unescaped-in-the-attribute src/admin.c testMenuedit \
   '               page_str(&page, "\" data-label=\"") != 0 ||
                page_add(&page, it.label, it.label_len) != 0 ||'
 
-PLANT_NEED_TEXT='live.textContent = text'
+PLANT_NEED_TEXT='innerHTML'
 plant script-sets-markup src/admin.c testMenuedit \
   'MenuEditor.ALabelWithMarkupIsShownAsTextInThePageAndTheScriptNeverMakesMarkup' \
-  'live.textContent = text;' \
-  'live.innerHTML = text;'
+  'return form.querySelector(\"[name=\" + name + \"]\");\n"
+    "  }\n"
+    "  function say(text) {\n"
+    "    live.textContent = text;' \
+  'return form.querySelector(\"[name=\" + name + \"]\");\n"
+    "  }\n"
+    "  function say(text) {\n"
+    "    live.innerHTML = text;'
 
 plant key-map-differs-from-the-buttons src/admin.c testMenuedit \
   'MenuEditor.TheEditorIsOperableWithTheKeyboardAlone' \
