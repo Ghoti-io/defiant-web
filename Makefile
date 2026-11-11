@@ -1027,11 +1027,12 @@ check-assetadmin: ## Plants in scratch copies of the stylesheet and script edito
 	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-assetadmin.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 check-layoutrules: ## Plants in scratch copies of the selector rules editor and the checker turn its named tests red
 	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-layoutrules.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
-check-layoutjs: ## The layout editor's script against a fake page, with defects made in a copy (needs node; not part of test)
+check-layoutjs: ## The layout and structure editors' script against a fake page, with defects made in a copy (needs node; not part of test)
 check-layoutjs: $(APP_DIR)/testLayoutadmin$(EXE_EXTENSION)
 	@command -v node >/dev/null 2>&1 || { printf 'check-layoutjs: node is required and is not installed\n' >&2; exit 1; }
 	@GDEFWEB_JS_OUT=$(BUILD_DIR)/defiant.js $(APP_DIR)/testLayoutadmin$(EXE_EXTENSION) --gtest_filter='*TheScriptTheServerSends*' >/dev/null
 	@node tools/check-layoutjs.js $(BUILD_DIR)/defiant.js
+	@node tools/check-structurejs.js $(BUILD_DIR)/defiant.js
 check-layoutadmin: ## Plants in scratch copies of the layout editor turn its named tests red
 	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-layoutadmin.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 check-structureadmin: ## Plants in scratch copies of the page structure editor turn its named tests red

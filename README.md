@@ -250,7 +250,14 @@ under it every row has forms to change its behavior and breakpoint, to move or
 remove it, and every cell forms to set its width and its place when folded, to
 rename it (every layout's placements follow the region), to move it earlier,
 later or into another row, and to remove it, with a form to add a cell and a row,
-and a list of starting points to start from. Every action is a signed form that
+and a list of starting points to start from. The one script the library serves adds
+a drag of a cell onto a row (the pointer's place among the row's cells is the place
+it goes to) and of a row by its heading onto another heading (above or below it),
+and the keys Alt and Shift with the arrows (left and right within a row, up and down
+to the next row, and a row's heading up and down); plain arrows move the focus between
+cells, and Enter goes to a cell's width. Both fill in and submit the cell's or the
+row's own move form, so a drag, a key and the form make the same post, and a live
+region says what is being done. Every action is a signed form that
 needs no script and one changeset: the structure, the template's source, its
 stylesheet and each layout that draws with it. A region a change removes has its
 placements set aside in that layout's Not placed list, and the page says which.

@@ -206,7 +206,7 @@ TEST_F(StructureAdmin, ATemplateWithNoStructureStartsFromAPointAndIsDrawnAsPrevi
   EXPECT_EQ(303, started.status) << Notice(started);
   EXPECT_EQ("/admin/structures/layout", HeaderValue(started, "Location"));
   page = Page("layout", ada_);
-  EXPECT_TRUE(Has(page, "<h2>Row 1: stack</h2>"));
+  EXPECT_TRUE(Has(page, ">Row 1: stack</h2>"));
   EXPECT_EQ("main side", Cells(page));
   EXPECT_TRUE(Has(page, "<div id=\"structure-preview\" class=\"sp\">"));
   EXPECT_TRUE(Has(page, "<div class=\"sp-row\" data-bp=\"720\">"));
@@ -236,7 +236,7 @@ TEST_F(StructureAdmin, EveryActionIsASignedFormThatWorksWithScriptsOff) {
   EXPECT_EQ(303, Do("layout", ada_, "add-row", 0, "&behavior=wrap&region=card").status);
   EXPECT_EQ("side main extra card", Cells(Page("layout", ada_)));
   EXPECT_EQ(303, Do("layout", ada_, "set-row", 0, "&behavior=fixed").status);
-  EXPECT_TRUE(Has(Page("layout", ada_), "<h2>Row 1: fixed</h2>"));
+  EXPECT_TRUE(Has(Page("layout", ada_), ">Row 1: fixed</h2>"));
   EXPECT_EQ(303, Do("layout", ada_, "move-row", 0, "").status);
   EXPECT_EQ("card side main extra", Cells(Page("layout", ada_)));
   EXPECT_EQ(303, Do("layout", ada_, "remove-row", 0, "").status);
@@ -357,6 +357,36 @@ TEST_F(StructureAdmin, TheStructureUndoIsOfferedOnlyToWhoMayEditAndAnotherPrinci
   PostRaw("/admin/undo", bob, form);
   EXPECT_EQ("main", Cells(Page("layout", ada_))) << "nothing was undone";
   EXPECT_FALSE(UndoBody(ada_, "<h2>Page structure</h2>").empty()) << "the record was not taken";
+}
+
+TEST_F(StructureAdmin, TheEditorCanBeDraggedAndOperatedByKeysAndEveryFormIsStillThereWithoutTheScript) {
+  Open();
+  ASSERT_EQ(303, Do("layout", ada_, "start", 0, "&region=two-columns-right").status);
+  Reply js = Get("/defiant.js", std::string());
+  ASSERT_EQ(200, js.status);
+  for (const char * hook : {"structure-editor", "structure-live", "li[data-cell]", "ol[data-row]",
+           "h2[data-rowhead]", "move-cell", "move-row", "form.submit()", "altKey", "dragstart", "drop"}) {
+    EXPECT_TRUE(Has(js.body, hook)) << hook;
+  }
+  EXPECT_FALSE(Has(js.body, "innerHTML"));
+  EXPECT_FALSE(Has(js.body, "eval("));
+  const std::string page = Page("layout", ada_);
+  EXPECT_TRUE(Has(page, "id=\"structure-live\" class=\"live\" role=\"status\" aria-live=\"polite\""));
+  EXPECT_TRUE(Has(page, "<h2 data-rowhead=\"0\" tabindex=\"0\" draggable=\"true\">Row 1: "));
+  EXPECT_TRUE(Has(page, "<ol data-row=\"0\">"));
+  EXPECT_TRUE(Has(page, "<li data-cell=\"main\" tabindex=\"0\" draggable=\"true\">"));
+  EXPECT_TRUE(Has(page, "<li data-cell=\"side\" tabindex=\"0\" draggable=\"true\">"));
+  /* The page carries no script of its own, only the one the policy names. */
+  EXPECT_FALSE(Has(page, "<script>"));
+  /* Every form the script fills in is there to be filled in without it: a cell's own move
+   * form, with the fields the script sets. */
+  EXPECT_TRUE(Has(page, "name=\"act\" value=\"move-cell\">"));
+  EXPECT_TRUE(Has(page, "name=\"to_row\""));
+  EXPECT_TRUE(Has(page, "name=\"to_cell\""));
+  /* With a second row, the row's own move form is there too. */
+  ASSERT_EQ(303, Do("layout", ada_, "add-row", 0, "&behavior=wrap&region=card").status);
+  EXPECT_TRUE(Has(Page("layout", ada_), "name=\"act\" value=\"move-row\">"));
+  /* The script itself is checked by tools/check-structurejs.js, from the layout test's copy. */
 }
 
 TEST_F(StructureAdmin, AFormDrawnBeforeAnotherChangeAndATokenOfAnotherFormWriteNothing) {

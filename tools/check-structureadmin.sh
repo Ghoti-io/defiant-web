@@ -37,6 +37,7 @@ plant_control 'testStructureadmin' '*'
 
 T_LIST=StructureAdmin.TheListIsTheTemplatesThePrincipalMayEditAndNobodyElseIsToldOfThem
 T_ACTIONS=StructureAdmin.EveryActionIsASignedFormThatWorksWithScriptsOff
+T_DRAG=StructureAdmin.TheEditorCanBeDraggedAndOperatedByKeysAndEveryFormIsStillThereWithoutTheScript
 T_UNDO=StructureAdmin.TheUndoPageTakesBackTheLastStructureChangeWholeAndOnlyOnce
 T_UNDO_SINCE=StructureAdmin.AnUndoIsRefusedOnceALayoutItWroteIsWrittenAgainAndSaysSo
 T_UNDO_WHO=StructureAdmin.TheStructureUndoIsOfferedOnlyToWhoMayEditAndAnotherPrincipalsFormDoesNothing
@@ -149,5 +150,26 @@ plant structure-undo-refusal-hidden src/admin.c testStructureadmin $T_UNDO_SINCE
   '      say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, "That change was not made.");
     } else {
       say(catalog, request, GDEFCORE_MESSAGE_REFUSAL, "That change was not made.");'
+
+# ---- keys and drag over the structure forms ----------------------------------------------
+# (The script itself is checked by tools/check-structurejs.js, which makes its own defects.)
+
+# A cell cannot be focused or dragged.
+PLANT_NEED_TEXT=''
+plant structure-cells-not-draggable src/admin.c testStructureadmin $T_DRAG \
+  'page_str(&page, "\" tabindex=\"0\" draggable=\"true\"><strong>") != 0' \
+  'page_str(&page, "\"><strong>") != 0'
+
+# The script has nowhere to say what it is doing.
+plant structure-live-region-missing src/admin.c testStructureadmin $T_DRAG \
+  '      page_str(&page, "<div id=\"structure-live\" class=\"live\" role=\"status\" aria-live=\"polite\"></div>") != 0 ||
+' \
+  ''
+
+# A row's cells are not a list the script can find.
+plant structure-row-list-unmarked src/admin.c testStructureadmin $T_DRAG \
+  'page_str(&page, "<ol data-row=\"") != 0 ||
+          page_str(&page, nr) != 0 || page_str(&page, "\">") != 0' \
+  'page_str(&page, "<ol>") != 0'
 
 plant_finish

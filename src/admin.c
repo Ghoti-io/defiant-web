@@ -442,8 +442,213 @@ static const char kJsStruct[] =
     "  apply();\n"
     "}());\n";
 
-static const char * const kJsParts[] = {kJsPanes, kJsMenuA, kJsMenuB, kJsLayout, kJsLayoutB, kJsStruct};
-static char kJs[sizeof kJsPanes + sizeof kJsMenuA + sizeof kJsMenuB + sizeof kJsLayout + sizeof kJsLayoutB + sizeof kJsStruct];
+static const char kJsStructB[] =
+    /* The structure editor: drag and the keys fill in a cell's or a row's own move
+     * form and submit it, so the post is the one the form makes. */
+    "(function () {\n"
+    "  var root = document.getElementById(\"structure-editor\");\n"
+    "  var live = document.getElementById(\"structure-live\");\n"
+    "  var dragged = null;\n"
+    "  var marked = null;\n"
+    "  var shown = null;\n"
+    "  if (!root || !live) return;\n"
+    "  function say(text) {\n"
+    "    live.textContent = text;\n"
+    "  }\n"
+    "  function lists() {\n"
+    "    return Array.prototype.slice.call(root.querySelectorAll(\"ol[data-row]\"));\n"
+    "  }\n"
+    "  function cells(list, skip) {\n"
+    "    return Array.prototype.slice.call(list.querySelectorAll(\"li[data-cell]\")).filter(function (li) {\n"
+    "      return li !== skip;\n"
+    "    });\n"
+    "  }\n"
+    "  function heads() {\n"
+    "    return Array.prototype.slice.call(root.querySelectorAll(\"h2[data-rowhead]\"));\n"
+    "  }\n"
+    "  function up(node, attr) {\n"
+    "    while (node && node !== root) {\n"
+    "      if (node.nodeType === 1 && node.hasAttribute(attr)) return node;\n"
+    "      node = node.parentNode;\n"
+    "    }\n"
+    "    return null;\n"
+    "  }\n"
+    "  function num(node, attr) {\n"
+    "    return parseInt(node.getAttribute(attr), 10);\n"
+    "  }\n"
+    "  function formOf(scope, act, row) {\n"
+    "    var found = scope.querySelectorAll(\"form input[name=act][value=\" + act + \"]\");\n"
+    "    var j;\n"
+    "    var f;\n"
+    "    for (j = 0; j < found.length; j += 1) {\n"
+    "      f = found[j].form;\n"
+    "      if (row === null || f.querySelector(\"[name=row]\").value === String(row)) return f;\n"
+    "    }\n"
+    "    return null;\n"
+    "  }\n"
+    "  function label(cell) {\n"
+    "    return cell.getAttribute(\"data-cell\") || \"the cell\";\n"
+    "  }\n"
+    "  function sendCell(cell, row, place) {\n"
+    "    var form = formOf(cell, \"move-cell\", null);\n"
+    "    if (!form) return;\n"
+    "    form.querySelector(\"[name=to_row]\").value = String(row);\n"
+    "    form.querySelector(\"[name=to_cell]\").value = String(place);\n"
+    "    say(\"Moving \" + label(cell) + \" to row \" + String(row + 1) + \", place \" + String(place + 1) + \".\");\n"
+    "    form.submit();\n"
+    "  }\n"
+    "  function sendRow(row, place) {\n"
+    "    var form = formOf(root, \"move-row\", row);\n"
+    "    if (!form) return;\n"
+    "    form.querySelector(\"[name=to_row]\").value = String(place);\n"
+    "    say(\"Moving row \" + String(row + 1) + \" to place \" + String(place + 1) + \".\");\n"
+    "    form.submit();\n"
+    "  }\n"
+    "  function spot(event, list) {\n"
+    "    var all = cells(list, dragged);\n"
+    "    var j;\n"
+    "    var box;\n"
+    "    for (j = 0; j < all.length; j += 1) {\n"
+    "      box = all[j].getBoundingClientRect();\n"
+    "      if (event.clientY < box.top + box.height / 2) return j;\n"
+    "    }\n"
+    "    return all.length;\n"
+    "  }\n"
+    "  function clear() {\n"
+    "    if (marked) {\n"
+    "      marked.classList.remove(\"drop-here\");\n"
+    "      marked = null;\n"
+    "    }\n"
+    "    if (shown) {\n"
+    "      shown.classList.remove(\"drop-before\");\n"
+    "      shown.classList.remove(\"drop-after\");\n"
+    "      shown = null;\n"
+    "    }\n"
+    "  }\n"
+    "  function after(event, head) {\n"
+    "    var box = head.getBoundingClientRect();\n"
+    "    return event.clientY >= box.top + box.height / 2;\n"
+    "  }\n"
+    "  root.addEventListener(\"keydown\", function (event) {\n"
+    "    var key = event.key;\n"
+    "    var cell = up(event.target, \"data-cell\");\n"
+    "    var head = up(event.target, \"data-rowhead\");\n"
+    "    var list;\n"
+    "    var all;\n"
+    "    var rows;\n"
+    "    var r;\n"
+    "    var k;\n"
+    "    var to;\n"
+    "    var field;\n"
+    "    var move = event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey;\n"
+    "    var plain = !event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey;\n"
+    "    var arrow = key === \"ArrowUp\" || key === \"ArrowDown\" || key === \"ArrowLeft\" || key === \"ArrowRight\";\n"
+    "    if (cell && event.target === cell) {\n"
+    "      list = up(cell, \"data-row\");\n"
+    "      rows = lists();\n"
+    "      r = rows.indexOf(list);\n"
+    "      all = cells(list, null);\n"
+    "      k = all.indexOf(cell);\n"
+    "      if (key === \"Enter\" && plain) {\n"
+    "        field = cell.querySelector(\"input[name=width]\") || cell.querySelector(\"input[name=region]\");\n"
+    "        if (field) {\n"
+    "          event.preventDefault();\n"
+    "          field.focus();\n"
+    "          say(\"Editing \" + label(cell) + \".\");\n"
+    "        }\n"
+    "        return;\n"
+    "      }\n"
+    "      if (!arrow) return;\n"
+    "      if (move) {\n"
+    "        event.preventDefault();\n"
+    "        if (key === \"ArrowLeft\" || key === \"ArrowRight\") {\n"
+    "          to = k + (key === \"ArrowLeft\" ? -1 : 1);\n"
+    "          if (to >= 0 && to < all.length) sendCell(cell, r, to);\n"
+    "          else say(\"It cannot move further that way.\");\n"
+    "        } else {\n"
+    "          to = r + (key === \"ArrowUp\" ? -1 : 1);\n"
+    "          if (to >= 0 && to < rows.length) sendCell(cell, to, Math.min(k, cells(rows[to], null).length));\n"
+    "          else say(\"There is no row that way.\");\n"
+    "        }\n"
+    "      } else if (plain) {\n"
+    "        if (key === \"ArrowLeft\" || key === \"ArrowRight\") {\n"
+    "          to = all[k + (key === \"ArrowLeft\" ? -1 : 1)];\n"
+    "        } else {\n"
+    "          to = rows[r + (key === \"ArrowUp\" ? -1 : 1)];\n"
+    "          to = to ? cells(to, null) : [];\n"
+    "          to = to[Math.min(k, to.length - 1)];\n"
+    "        }\n"
+    "        if (to) {\n"
+    "          event.preventDefault();\n"
+    "          to.focus();\n"
+    "        }\n"
+    "      }\n"
+    "      return;\n"
+    "    }\n"
+    "    if (head && event.target === head && move && (key === \"ArrowUp\" || key === \"ArrowDown\")) {\n"
+    "      event.preventDefault();\n"
+    "      r = num(head, \"data-rowhead\");\n"
+    "      to = r + (key === \"ArrowUp\" ? -1 : 1);\n"
+    "      if (to >= 0 && to < heads().length) sendRow(r, to);\n"
+    "      else say(\"It cannot move further that way.\");\n"
+    "    }\n"
+    "  });\n"
+    "  root.addEventListener(\"dragstart\", function (event) {\n"
+    "    var cell = up(event.target, \"data-cell\");\n"
+    "    var head = up(event.target, \"data-rowhead\");\n"
+    "    var item = cell && event.target === cell ? cell : head && event.target === head ? head : null;\n"
+    "    if (!item) return;\n"
+    "    dragged = item;\n"
+    "    event.dataTransfer.effectAllowed = \"move\";\n"
+    "    event.dataTransfer.setData(\"text/plain\", item === cell ? label(cell) : \"row\");\n"
+    "  });\n"
+    "  root.addEventListener(\"dragover\", function (event) {\n"
+    "    var list = up(event.target, \"data-row\");\n"
+    "    var head = up(event.target, \"data-rowhead\");\n"
+    "    clear();\n"
+    "    if (!dragged) return;\n"
+    "    if (dragged.hasAttribute(\"data-cell\") && list) {\n"
+    "      event.preventDefault();\n"
+    "      marked = list;\n"
+    "      marked.classList.add(\"drop-here\");\n"
+    "    } else if (dragged.hasAttribute(\"data-rowhead\") && head && head !== dragged) {\n"
+    "      event.preventDefault();\n"
+    "      shown = head;\n"
+    "      shown.classList.add(after(event, head) ? \"drop-after\" : \"drop-before\");\n"
+    "    }\n"
+    "  });\n"
+    "  root.addEventListener(\"drop\", function (event) {\n"
+    "    var item = dragged;\n"
+    "    var list = up(event.target, \"data-row\");\n"
+    "    var head = up(event.target, \"data-rowhead\");\n"
+    "    var from;\n"
+    "    var at;\n"
+    "    var place;\n"
+    "    var below = head ? after(event, head) : false;\n"
+    "    clear();\n"
+    "    if (!item) return;\n"
+    "    dragged = null;\n"
+    "    if (item.hasAttribute(\"data-cell\") && list) {\n"
+    "      event.preventDefault();\n"
+    "      sendCell(item, lists().indexOf(list), spot(event, list));\n"
+    "      return;\n"
+    "    }\n"
+    "    if (item.hasAttribute(\"data-rowhead\") && head && head !== item) {\n"
+    "      event.preventDefault();\n"
+    "      from = num(item, \"data-rowhead\");\n"
+    "      at = num(head, \"data-rowhead\");\n"
+    "      place = below ? (from < at ? at : at + 1) : (from < at ? at - 1 : at);\n"
+    "      if (place !== from) sendRow(from, place);\n"
+    "    }\n"
+    "  });\n"
+    "  root.addEventListener(\"dragend\", function () {\n"
+    "    clear();\n"
+    "    dragged = null;\n"
+    "  });\n"
+    "}());\n";
+
+static const char * const kJsParts[] = {kJsPanes, kJsMenuA, kJsMenuB, kJsLayout, kJsLayoutB, kJsStruct, kJsStructB};
+static char kJs[sizeof kJsPanes + sizeof kJsMenuA + sizeof kJsMenuB + sizeof kJsLayout + sizeof kJsLayoutB + sizeof kJsStruct + sizeof kJsStructB];
 static size_t kJsLen;
 
 static const char kCss[] =
@@ -501,6 +706,19 @@ static const char kCss[] =
     "li[data-placement]:focus {\n"
     "  outline: 2px solid Highlight;\n"
     "  outline-offset: 2px;\n"
+    "}\n"
+    "li[data-cell]:focus, h2[data-rowhead]:focus {\n"
+    "  outline: 2px solid Highlight;\n"
+    "  outline-offset: 2px;\n"
+    "}\n"
+    "li[data-cell], h2[data-rowhead] {\n"
+    "  cursor: grab;\n"
+    "}\n"
+    "h2.drop-before {\n"
+    "  box-shadow: inset 0 3px 0 Highlight;\n"
+    "}\n"
+    "h2.drop-after {\n"
+    "  box-shadow: inset 0 -3px 0 Highlight;\n"
     "}\n"
     "ol.drop-here {\n"
     "  outline: 2px dashed Highlight;\n"
@@ -7743,6 +7961,7 @@ static int structure_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * ca
   if (page_begin(&page, "Page structure") != 0 ||
       page_str(&page, "<div id=\"structure-editor\"><h1>Page structure of ") != 0 ||
       page_esc(&page, name, strlen(name)) != 0 || page_str(&page, "</h1>") != 0 ||
+      page_str(&page, "<div id=\"structure-live\" class=\"live\" role=\"status\" aria-live=\"polite\"></div>") != 0 ||
       structure_notice(&page, notice, said, said_n) != 0) {
     goto fail;
   }
@@ -7762,8 +7981,11 @@ static int structure_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * ca
     for (r = 0; r < v.nrows; r++) {
       const GDEFCORE_Structure_Row * row = &v.rows[r];
       char n1[24];
+      char nr[24];
       snprintf(n1, sizeof n1, "%zu", r + 1);
-      if (page_str(&page, "<h2>Row ") != 0 || page_str(&page, n1) != 0 || page_str(&page, ": ") != 0 ||
+      snprintf(nr, sizeof nr, "%zu", r);
+      if (page_str(&page, "<h2 data-rowhead=\"") != 0 || page_str(&page, nr) != 0 ||
+          page_str(&page, "\" tabindex=\"0\" draggable=\"true\">Row ") != 0 || page_str(&page, n1) != 0 || page_str(&page, ": ") != 0 ||
           page_str(&page, kBName[row->behavior]) != 0 || page_str(&page, "</h2>") != 0) {
         goto fail;
       }
@@ -7784,7 +8006,8 @@ static int structure_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * ca
         goto fail;
       }
       if (st_open(&page, name, token, v.version, "remove-row") != 0 || st_num(&page, "row", r) != 0 ||
-          st_button(&page, "Remove the row") != 0 || page_str(&page, "<ol>") != 0) {
+          st_button(&page, "Remove the row") != 0 || page_str(&page, "<ol data-row=\"") != 0 ||
+          page_str(&page, nr) != 0 || page_str(&page, "\">") != 0) {
         goto fail;
       }
       for (k = 0; k < row->ncells; k++) {
@@ -7797,7 +8020,7 @@ static int structure_page(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * ca
           goto fail;
         }
         if (page_str(&page, "<li data-cell=\"") != 0 || page_esc(&page, c->region, strlen(c->region)) != 0 ||
-            page_str(&page, "\"><strong>") != 0 || page_esc(&page, info.label, info.label_len) != 0 ||
+            page_str(&page, "\" tabindex=\"0\" draggable=\"true\"><strong>") != 0 || page_esc(&page, info.label, info.label_len) != 0 ||
             page_str(&page, "</strong> (<code>") != 0 || page_esc(&page, c->region, strlen(c->region)) != 0 ||
             page_str(&page, "</code>)") != 0) {
           gdefcore_region_info_free(catalog, &info);
