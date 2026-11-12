@@ -28,6 +28,7 @@
 #include "admin.h"
 #include "adminkit.h"
 #include "content.h"
+#include "views.h"
 #include "nav.h"
 
 #include <ghoti.io/cutil/allocator.h>
@@ -9213,6 +9214,9 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
       rc = undo_write(alloc, catalog, request, keyring, root, root_len,
           (const char *)raw, raw_n, body, body_len, out);
     }
+  } else if (gdefweb_views_path(path)) {
+    rc = gdefweb_views_serve(alloc, catalog, request, keyring, root, root_len,
+        (const char *)raw, raw_n, routes, method, path, body, body_len, out);
   } else if (gdefweb_content_path(path)) {
     /* One page for every content type: which types, and which entities, is the
      * core's access answer, asked inside. */

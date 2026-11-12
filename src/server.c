@@ -38,6 +38,7 @@
 #include <ghoti.io/defiant-core/request.h>
 #include "admin.h"
 #include "nav.h"
+#include "views.h"
 #include <ghoti.io/cutil/fiber.h>
 #include <ghoti.io/http/parser.h>
 #include <ghoti.io/http/writer.h>
@@ -1683,6 +1684,28 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
           in.path, client);
       goto out;
     }
+  }
+  if (span_eq(in.method, strlen(in.method), "GET") && gdefweb_views_public_path(in.path)) {
+    /* A view's page: whoever is signed in sees the rows they may, anyone else
+     * the rows that are public, through the same access filter. */
+    struct GDEFWEB_Admin_Reply page;
+    struct Extra pub;
+    memset(&page, 0, sizeof page);
+    memset(&pub, 0, sizeof pub);
+    (void)gdefweb_admin_authenticated(catalog, request, keyring, server->root,
+        sizeof server->root, session_value);
+    if (gdefweb_views_public(server->alloc, catalog, request, in.path, in.query, &page) != 0) {
+      reply(server, sock, 500, "Internal Server Error", "", 0, NULL, NULL, in.method, in.path,
+          client);
+    } else {
+      const char * policy = gdefweb_public_csp();
+      pub.csp = policy;
+      pub.nosniff = 1;
+      reply_full(server, sock, page.status, page.reason, page.body, page.len, NULL, page.type,
+          in.method, in.path, client, NULL, &pub);
+    }
+    gcu_allocator_free(server->alloc, page.body);
+    goto out;
   }
   if (gdefweb_admin_path(in.path) &&
       gdefweb_admin_authenticated(catalog, request, keyring, server->root,

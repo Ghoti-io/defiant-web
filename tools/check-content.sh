@@ -107,7 +107,7 @@ plant config-saved-without-confirmation src/content.c testContent ContentAdmin.C
   '          confirm_n == 0) {'
 
 # The core is not asked whether the values fit the fields.
-PLANT_NEED_TEXT='long_title.status'
+PLANT_NEED_TEXT='beside the field'
 plant constraints-not-asked src/content.c testContent ContentAdmin.ARequiredFieldAndALimitRefuseTheFormAndGiveWhatWasTypedBack \
   '  if (values_fit(c, body, body_len, given, ngiven)) {
     return;

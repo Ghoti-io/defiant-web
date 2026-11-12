@@ -36,6 +36,7 @@
 #include <ghoti.io/defiant-core/settings.h>
 #include <ghoti.io/defiant-core/siteasset.h>
 #include <ghoti.io/defiant-core/template.h>
+#include <ghoti.io/defiant-core/view.h>
 
 #include <string.h>
 
@@ -54,6 +55,7 @@
 #define PERM_SETTINGS GDEFCORE_SETTINGS_EDIT
 #define PERM_CSS GDEFCORE_ASSET_CSS_EDIT
 #define PERM_JS GDEFCORE_ASSET_JS_EDIT
+#define PERM_VIEWS GDEFCORE_VIEW_EDIT
 
 struct PageRoute {
   const char * name;
@@ -80,6 +82,9 @@ static const struct PageRoute kPages[] = {
         GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
     {"core.admin-content-page", "/admin/content/:type/page/:number", "Content",
         PERM_AREA, GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-views", "/admin/views", "Views", PERM_VIEWS, GDEFCORE_ROUTE_PAGE, NULL, 0, 0},
+    {"core.admin-view", "/admin/views/:name", "View", PERM_VIEWS, GDEFCORE_ROUTE_PAGE, NULL, 0,
+        0},
     {"core.admin-undo", "/admin/undo", "Undo", PERM_UNDO, GDEFCORE_ROUTE_PAGE, NULL,
         0, 0},
     {"core.admin-templates", "/admin/templates", "Edit templates", PERM_TEMPLATES,
@@ -146,6 +151,7 @@ static const struct PageLink kLinks[] = {
     {"core.l-admin-content", "Content", "core.admin-content", "core.l-admin", 10},
     {"core.l-admin-content-type", "Content of a type", "core.admin-content-type",
         "core.l-admin-content", 0},
+    {"core.l-admin-views", "Views", "core.admin-views", "core.l-admin", 11},
     {"core.l-admin-undo", "Undo", "core.admin-undo", "core.l-admin", 2},
     {"core.l-admin-templates", "Edit templates", "core.admin-templates",
         "core.l-admin", 3},

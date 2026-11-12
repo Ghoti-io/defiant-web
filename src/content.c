@@ -72,6 +72,9 @@ struct Ctx {
   const char * session;
   size_t session_len;
   GDEFCORE_Routes * routes;
+  /* The core's own words for the last refusal of a save, shown with the notice
+   * of it: a nested field is named by its path ("lines.sku: ..."). */
+  char reason[256];
 };
 
 /* What a page says about the last write, when it is drawn again. */
@@ -318,7 +321,7 @@ static int hidden_token(struct Ctx * c, struct Page * page, const char * form_id
   return rc;
 }
 
-static int page_notice_text(struct Page * page, int notice) {
+static int page_notice_text(struct Page * page, int notice, const char * reason) {
   const char * text = NULL;
   if (notice == NOTICE_INVALID) {
     text = "Not saved: a value does not fit the field it is for. Nothing was changed.";
@@ -331,7 +334,10 @@ static int page_notice_text(struct Page * page, int notice) {
     return 0;
   }
   return page_str(page, "<p class=\"notice\" role=\"alert\">") != 0 ||
-         page_str(page, text) != 0 || page_str(page, "</p>");
+         page_str(page, text) != 0 ||
+         (notice == NOTICE_INVALID && reason != NULL && reason[0] != '\0' &&
+             (page_str(page, " ") != 0 || page_esc(page, reason, strlen(reason)) != 0)) ||
+         page_str(page, "</p>");
 }
 
 /* Section of a segment of the path, after @p prefix, up to the next slash. */
@@ -1321,7 +1327,7 @@ static int draw_form(struct Ctx * c, struct Page * page, const char * type, int 
   d.again = again;
   d.src = src;
   d.form = form;
-  if (page_notice_text(page, notice) != 0 ||
+  if (page_notice_text(page, notice, c->reason) != 0 ||
       page_str(page, "<form method=\"post\" action=\"" CONTENT_BASE "/") != 0 ||
       page_esc(page, type, strlen(type)) != 0 || page_str(page, "/") != 0 ||
       page_esc(page, id, strlen(id)) != 0 || page_str(page, "\">") != 0 ||
@@ -1473,7 +1479,7 @@ static int edit_page(struct Ctx * c, const char * type, int kind, const char * i
       page_esc(&page, type, strlen(type)) != 0 || page_str(&page, "</h1>") != 0 ||
       (form != NULL &&
           draw_form(c, &page, type, kind, id, stored, &schema, &src, form, again, notice) != 0) ||
-      (form == NULL && page_notice_text(&page, notice) != 0) ||
+      (form == NULL && page_notice_text(&page, notice, c->reason) != 0) ||
       (stored && allowed(c, GDEFCORE_ACTION_DELETE, type, id) &&
           draw_delete(c, &page, type, kind, id) != 0) ||
       page_str(&page, "<p><a href=\"" CONTENT_BASE "/") != 0 ||
@@ -2157,6 +2163,13 @@ static int save_post(struct Ctx * c, const char * type, int kind, const char * i
       if (r == GDEFCORE_ERR_OOM) {
         goto done;
       }
+      {
+        size_t why_n = 0;
+        const char * why = gdefcore_changeset_refusal(cs, &why_n);
+        if (why != NULL && why_n > 0) {
+          snprintf(c->reason, sizeof c->reason, "%.*s", (int)why_n, why);
+        }
+      }
       goto again_invalid;
     }
     if (gdefcore_changeset_rate(cs, &risk) != GDEFCORE_OK) {
@@ -2340,6 +2353,7 @@ int gdefweb_content_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * ca
   c.session = session;
   c.session_len = session_len;
   c.routes = routes;
+  c.reason[0] = '\0';
   if (strcmp(path, CONTENT_BASE) == 0) {
     return is_get && gdefweb_nav_follows(routes, request, path, "core.admin-content")
                ? index_page(&c, out)

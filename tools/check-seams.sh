@@ -8,7 +8,8 @@
 # header is private: only admin.c and server.c, which routes to it, may include
 # it. content (src/content.c) is the content administration pages, which share
 # what admin.c draws with through adminkit.h; both headers are private to the
-# two. nav (src/nav.c, src/nav.h) is the admin area's navigation: its routes,
+# two. views (src/views.c) is the editor of stored views and a view's public page, built on
+# the same adminkit.h; its header is private to it, admin.c and server.c. nav (src/nav.c, src/nav.h) is the admin area's navigation: its routes,
 # links and the widgets that draw them. Its header is private to nav.c and the
 # admin pages that splice it in, and server.c, which asks where a sign-in lands. core.c (results and the default allocator),
 # the public headers, the defiant program and demo under app/ and the tests use
@@ -34,10 +35,11 @@ ROOT="${1:?usage: check-seams.sh <root>}"
 
 owners_of() {
   case "$1" in
-    admin.h) printf '%s\n' 'admin.c content.c server.c' ;;
-    nav.h) printf '%s\n' 'admin.c content.c nav.c server.c' ;;
-    adminkit.h) printf '%s\n' 'admin.c content.c' ;;
+    admin.h) printf '%s\n' 'admin.c content.c views.c server.c' ;;
+    nav.h) printf '%s\n' 'admin.c content.c views.c nav.c server.c' ;;
+    adminkit.h) printf '%s\n' 'admin.c content.c views.c' ;;
     content.h) printf '%s\n' 'admin.c content.c' ;;
+    views.h) printf '%s\n' 'admin.c views.c server.c' ;;
     *) printf '\n' ;;
   esac
 }
