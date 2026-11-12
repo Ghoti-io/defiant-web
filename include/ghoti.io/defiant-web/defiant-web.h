@@ -31,5 +31,6 @@
 #include <ghoti.io/defiant-web/allocator.h>
 #include <ghoti.io/defiant-web/core.h>
 #include <ghoti.io/defiant-web/server.h>
+#include <ghoti.io/defiant-web/uploads.h>
 
 #endif /* GHOTI_IO_GDEFWEB_DEFIANT_WEB_H */

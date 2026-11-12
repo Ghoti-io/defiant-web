@@ -8,7 +8,9 @@
 # header is private: only admin.c and server.c, which routes to it, may include
 # it. content (src/content.c) is the content administration pages, which share
 # what admin.c draws with through adminkit.h; both headers are private to the
-# two. views (src/views.c) is the editor of stored views and a view's public page, built on
+# two. files (src/files.c, src/multipart.c, src/blobdir.c) is the upload page, a file's public
+# address and the reader of a multipart body; files.c is built on adminkit.h and nav.h, and
+# files.h and multipart.h are private to them. views (src/views.c) is the editor of stored views and a view's public page, built on
 # the same adminkit.h; its header is private to it, admin.c and server.c. nav (src/nav.c, src/nav.h) is the admin area's navigation: its routes,
 # links and the widgets that draw them. Its header is private to nav.c and the
 # admin pages that splice it in, and server.c, which asks where a sign-in lands. core.c (results and the default allocator),
@@ -35,11 +37,13 @@ ROOT="${1:?usage: check-seams.sh <root>}"
 
 owners_of() {
   case "$1" in
-    admin.h) printf '%s\n' 'admin.c content.c views.c server.c' ;;
-    nav.h) printf '%s\n' 'admin.c content.c views.c nav.c server.c' ;;
-    adminkit.h) printf '%s\n' 'admin.c content.c views.c' ;;
+    admin.h) printf '%s\n' 'admin.c content.c views.c files.c server.c' ;;
+    nav.h) printf '%s\n' 'admin.c content.c views.c files.c nav.c server.c' ;;
+    adminkit.h) printf '%s\n' 'admin.c content.c views.c files.c' ;;
     content.h) printf '%s\n' 'admin.c content.c' ;;
     views.h) printf '%s\n' 'admin.c views.c server.c' ;;
+    files.h) printf '%s\n' 'admin.c files.c server.c' ;;
+    multipart.h) printf '%s\n' 'files.c multipart.c' ;;
     *) printf '\n' ;;
   esac
 }

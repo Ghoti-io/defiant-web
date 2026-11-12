@@ -52,6 +52,11 @@
 #define gdefweb_server_serving GHOTIIO_DEFWEB(gdefweb_server_serving)
 #define gdefweb_server_set_host GHOTIIO_DEFWEB(gdefweb_server_set_host)
 #define gdefweb_server_set_inst GHOTIIO_DEFWEB(gdefweb_server_set_inst)
+#define GDEFWEB_Blob_Dir GHOTIIO_DEFWEB(GDEFWEB_Blob_Dir)
+#define gdefweb_blob_dir_open GHOTIIO_DEFWEB(gdefweb_blob_dir_open)
+#define gdefweb_blob_dir_store GHOTIIO_DEFWEB(gdefweb_blob_dir_store)
+#define gdefweb_blob_dir_close GHOTIIO_DEFWEB(gdefweb_blob_dir_close)
+#define gdefweb_uploads_bind GHOTIIO_DEFWEB(gdefweb_uploads_bind)
 
 /// @endcond
 

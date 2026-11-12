@@ -42,6 +42,11 @@ struct GDEFWEB_Admin_Reply {
   char location_buf[512];
   char * body;
   size_t len;
+  /* A file served to a visitor: the policy and the Content-Disposition it is
+   * sent with (empty for a page). */
+  const char * csp;
+  char disposition[320];
+  char type_buf[130];
 };
 
 const char * gdefweb_admin_csp(void);

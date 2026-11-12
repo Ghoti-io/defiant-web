@@ -36,8 +36,10 @@
 #include <ghoti.io/defiant-core/module.h>
 #include <ghoti.io/defiant-core/render.h>
 #include <ghoti.io/defiant-core/request.h>
+#include <ghoti.io/defiant-core/upload.h>
 #include "admin.h"
 #include "nav.h"
+#include "files.h"
 #include "views.h"
 #include <ghoti.io/cutil/fiber.h>
 #include <ghoti.io/http/parser.h>
@@ -50,6 +52,8 @@
 #define kAttempts 64
 #define kAttemptKey 512
 #define kBodyCap (64u * 1024u)
+/* Room for a file's form besides the file (files.c). */
+#define kUploadRoom (16u * 1024u)
 #define kStack (1024u * 1024u)
 #define kSessionLife ((uint64_t)24 * 60 * 60)
 
@@ -978,6 +982,7 @@ struct Extra {
   const char * csp;
   const char * cache;
   const char * etag;
+  const char * disposition;
   int nosniff;
 };
 
@@ -1017,6 +1022,10 @@ static int reply_full(GDEFWEB_Server * server, GCU_Socket * sock, int status,
   }
   if (extra != NULL && extra->nosniff &&
       ghttp_headers_add(headers, "X-Content-Type-Options", "nosniff") != GHTTP_OK) {
+    goto done;
+  }
+  if (extra != NULL && extra->disposition != NULL &&
+      ghttp_headers_add(headers, "Content-Disposition", extra->disposition) != GHTTP_OK) {
     goto done;
   }
   if (location != NULL &&
@@ -1098,6 +1107,9 @@ static void in_free(const GDEFWEB_Allocator * alloc, struct InReq * in) {
 
 static int read_request(GDEFWEB_Server * server, GCU_Socket * sock, struct InReq * in) {
   GHTTP_Parser * parser = NULL;
+  GHTTP_Limits limits;
+  size_t body_cap = kBodyCap;
+  int cap_decided = 0;
   char buf[4096];
   char * body = NULL;
   size_t body_len = 0;
@@ -1111,7 +1123,11 @@ static int read_request(GDEFWEB_Server * server, GCU_Socket * sock, struct InReq
   size_t query_len = 0;
   const GHTTP_Headers * headers;
   memset(in, 0, sizeof *in);
-  if (ghttp_parser_create(GHTTP_PARSE_REQUEST, NULL, NULL, &parser) != GHTTP_OK) {
+  ghttp_limits_default(&limits);
+  /* The parser may carry the largest file a policy can allow; what a route may
+   * hold is held below, before the bytes are. */
+  limits.max_body_bytes = (uint64_t)GDEFCORE_UPLOAD_HARD_MAX + (uint64_t)kUploadRoom;
+  if (ghttp_parser_create(GHTTP_PARSE_REQUEST, &limits, NULL, &parser) != GHTTP_OK) {
     return -1;
   }
   while (!saw_end) {
@@ -1147,7 +1163,24 @@ static int read_request(GDEFWEB_Server * server, GCU_Socket * sock, struct InReq
         size_t len = 0;
         char * next;
         ghttp_parser_body(parser, &data, &len);
-        if (body_len + len > kBodyCap) {
+        if (!cap_decided) {
+          /* Only a file posted to its own page may hold more than a form does. */
+          const GHTTP_Request * head_req = ghttp_parser_request(parser);
+          const char * head_path = NULL;
+          size_t head_path_len = 0;
+          const char * head_query = NULL;
+          size_t head_query_len = 0;
+          cap_decided = 1;
+          if (head_req != NULL && strcmp(ghttp_request_method(head_req), "POST") == 0 &&
+              ghttp_request_target_split(head_req, &head_path, &head_path_len, &head_query,
+                  &head_query_len) == GHTTP_OK &&
+              head_path_len == sizeof "/admin/files" - 1 &&
+              memcmp(head_path, "/admin/files", head_path_len) == 0 &&
+              gdefweb_files_body_cap() > body_cap) {
+            body_cap = gdefweb_files_body_cap();
+          }
+        }
+        if (body_len + len > body_cap) {
           goto done;
         }
         next = (char *)server->alloc->realloc_fn(server->alloc->ctx, body,
@@ -1684,6 +1717,28 @@ static void serve_connection(GDEFWEB_Server * server, GCU_Socket * sock,
           in.path, client);
       goto out;
     }
+  }
+  if (span_eq(in.method, strlen(in.method), "GET") && gdefweb_files_public_path(in.path)) {
+    /* A file: the bytes go to whoever the core says may have them, as opaque
+     * data that no browser runs or draws as the site. */
+    struct GDEFWEB_Admin_Reply page;
+    struct Extra pub;
+    memset(&page, 0, sizeof page);
+    memset(&pub, 0, sizeof pub);
+    (void)gdefweb_admin_authenticated(catalog, request, keyring, server->root,
+        sizeof server->root, session_value);
+    if (gdefweb_files_public(server->alloc, catalog, request, in.path, &page) != 0) {
+      reply(server, sock, 500, "Internal Server Error", "", 0, NULL, NULL, in.method, in.path,
+          client);
+    } else {
+      pub.csp = page.csp != NULL ? page.csp : gdefweb_public_csp();
+      pub.nosniff = 1;
+      pub.disposition = page.disposition[0] != '\0' ? page.disposition : NULL;
+      reply_full(server, sock, page.status, page.reason, page.body, page.len, NULL, page.type,
+          in.method, in.path, client, NULL, &pub);
+    }
+    gcu_allocator_free(server->alloc, page.body);
+    goto out;
   }
   if (span_eq(in.method, strlen(in.method), "GET") && gdefweb_views_public_path(in.path)) {
     /* A view's page: whoever is signed in sees the rows they may, anyone else

@@ -28,6 +28,7 @@
 #include "admin.h"
 #include "adminkit.h"
 #include "content.h"
+#include "files.h"
 #include "views.h"
 #include "nav.h"
 
@@ -9152,7 +9153,10 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
     return unknown_admin(method, out);
   }
   if (is_post &&
-      (ctype == NULL || strncmp(ctype, "application/x-www-form-urlencoded", 33) != 0)) {
+      (ctype == NULL || strncmp(ctype, "application/x-www-form-urlencoded", 33) != 0) &&
+      /* A file is posted as multipart/form-data, to its page alone. */
+      !(gdefweb_files_path(path) && ctype != NULL &&
+          strncmp(ctype, "multipart/form-data", 19) == 0)) {
     out->status = 400;
     out->reason = "Bad Request";
     out->type = "text/plain; charset=utf-8";
@@ -9217,6 +9221,11 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
   } else if (gdefweb_views_path(path)) {
     rc = gdefweb_views_serve(alloc, catalog, request, keyring, root, root_len,
         (const char *)raw, raw_n, routes, method, path, body, body_len, out);
+  } else if (gdefweb_files_path(path)) {
+    /* The one place a file is posted: the page asks its route's check, and
+     * posts the file with the form's token. */
+    rc = gdefweb_files_serve(alloc, catalog, request, keyring, root, root_len,
+        (const char *)raw, raw_n, routes, method, path, ctype, body, body_len, out);
   } else if (gdefweb_content_path(path)) {
     /* One page for every content type: which types, and which entities, is the
      * core's access answer, asked inside. */
