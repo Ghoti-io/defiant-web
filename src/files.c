@@ -62,6 +62,20 @@ GDEFWEB_Result gdefweb_uploads_bind(const GDEFCORE_Blob_Store * blobs,
   return GDEFWEB_OK;
 }
 
+GDEFWEB_Result gdefweb_uploads_sweep(GDEFCORE_Catalog * catalog, uint64_t now_ms,
+    size_t * out_promoted, size_t * out_demoted, size_t * out_removed) {
+  GDEFCORE_Result rc;
+  if (catalog == NULL || g_blobs == NULL || g_policy == NULL) {
+    return GDEFWEB_ERR_INVALID;
+  }
+  rc = gdefcore_upload_sweep(catalog, g_blobs, g_policy, now_ms, out_promoted, out_demoted,
+      out_removed);
+  if (rc == GDEFCORE_OK) {
+    return GDEFWEB_OK;
+  }
+  return rc == GDEFCORE_ERR_OOM ? GDEFWEB_ERR_OOM : GDEFWEB_ERR_IO;
+}
+
 int gdefweb_files_enabled(void) {
   return g_blobs != NULL && g_policy != NULL;
 }

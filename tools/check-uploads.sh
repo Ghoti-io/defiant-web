@@ -187,4 +187,19 @@ plant removing-what-is-not-there-fails $B testUploads "$T_DIR" \
   '  return r == GCU_FILE_OK || r == GCU_FILE_ERR_NOT_FOUND ? 0 : 1;' \
   '  return r == GCU_FILE_OK ? 0 : 1;'
 
+# The host's sweep runs although uploads are not bound, and says it did.
+plant sweep-runs-unbound $F testUploads \
+  'Uploads.AnEditorAttachesAFileFromTheContentFormAndTheReferenceKeepsItPastItsExpiry' \
+  '  if (catalog == NULL || g_blobs == NULL || g_policy == NULL) {
+    return GDEFWEB_ERR_INVALID;
+  }
+  rc = gdefcore_upload_sweep(' \
+  '  if (catalog == NULL) {
+    return GDEFWEB_ERR_INVALID;
+  }
+  if (g_blobs == NULL || g_policy == NULL) {
+    return GDEFWEB_OK;
+  }
+  rc = gdefcore_upload_sweep('
+
 plant_finish

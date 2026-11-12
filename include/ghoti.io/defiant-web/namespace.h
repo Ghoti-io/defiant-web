@@ -57,6 +57,7 @@
 #define gdefweb_blob_dir_store GHOTIIO_DEFWEB(gdefweb_blob_dir_store)
 #define gdefweb_blob_dir_close GHOTIIO_DEFWEB(gdefweb_blob_dir_close)
 #define gdefweb_uploads_bind GHOTIIO_DEFWEB(gdefweb_uploads_bind)
+#define gdefweb_uploads_sweep GHOTIIO_DEFWEB(gdefweb_uploads_sweep)
 
 /// @endcond
 

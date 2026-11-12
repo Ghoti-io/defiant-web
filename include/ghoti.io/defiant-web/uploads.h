@@ -84,6 +84,26 @@ GDEFWEB_API void gdefweb_blob_dir_close(GDEFWEB_Blob_Dir * dir);
 GDEFWEB_API GDEFWEB_Result gdefweb_uploads_bind(const GDEFCORE_Blob_Store * blobs,
     const GDEFCORE_Upload_Policy * policy);
 
+/**
+ * @brief Run the upload sweep once for @p catalog's tenant, with the store and
+ * the policy bound by gdefweb_uploads_bind().
+ *
+ * This is the one call a host's own timer makes to keep files tidy, beside
+ * gdefcore_schedule_run() for scheduled publishing. Neither library owns a
+ * timer: the core's schedule holds one job row per entity to publish, which is
+ * not what a recurring tidy-up is, and a server that started its own thread
+ * would decide the cadence for every host. A sweep is safe at any time and as
+ * often as the host likes (it changes nothing that is not due), and from more
+ * than one host at once: a file is promoted, staged again or removed under
+ * the store's own transaction rules. Each out count may be NULL.
+ *
+ * @param now_ms The time, in milliseconds since 1970 UTC.
+ * @return ::GDEFWEB_OK; ::GDEFWEB_ERR_INVALID when uploads are not bound or
+ *   @p catalog is NULL; ::GDEFWEB_ERR_OOM; otherwise ::GDEFWEB_ERR_IO.
+ */
+GDEFWEB_API GDEFWEB_Result gdefweb_uploads_sweep(GDEFCORE_Catalog * catalog,
+    uint64_t now_ms, size_t * out_promoted, size_t * out_demoted, size_t * out_removed);
+
 #ifdef __cplusplus
 }
 #endif

@@ -412,8 +412,13 @@ TEST_F(Uploads, AnEditorAttachesAFileFromTheContentFormAndTheReferenceKeepsItPas
   /* A week later, the sweep keeps the file the entity names and removes the other. */
   GDEFCORE_Catalog * catalog = Catalog();
   size_t promoted = 0, demoted = 0, removed = 0;
-  ASSERT_EQ(GDEFCORE_OK, gdefcore_upload_sweep(catalog, gdefweb_blob_dir_store(blobs_), &policy_,
+  ASSERT_EQ(GDEFWEB_OK, gdefweb_uploads_sweep(catalog,
       (uint64_t)time(NULL) * 1000 + 7ull * 24 * 3600 * 1000, &promoted, &demoted, &removed));
+  /* The sweep is the host's one call, and it needs uploads to be bound. */
+  ASSERT_EQ(GDEFWEB_OK, gdefweb_uploads_bind(NULL, NULL));
+  EXPECT_EQ(GDEFWEB_ERR_INVALID, gdefweb_uploads_sweep(catalog, 0, NULL, NULL, NULL));
+  EXPECT_EQ(GDEFWEB_ERR_INVALID, gdefweb_uploads_sweep(NULL, 0, NULL, NULL, NULL));
+  ASSERT_EQ(GDEFWEB_OK, gdefweb_uploads_bind(gdefweb_blob_dir_store(blobs_), &policy_));
   gdefcore_catalog_destroy(catalog);
   EXPECT_EQ(1u, promoted);
   EXPECT_EQ(1u, removed);
