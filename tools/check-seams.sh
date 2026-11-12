@@ -6,7 +6,9 @@
 #
 # admin (src/admin.c, src/admin.h) is the server-rendered admin pages. Its
 # header is private: only admin.c and server.c, which routes to it, may include
-# it. nav (src/nav.c, src/nav.h) is the admin area's navigation: its routes,
+# it. content (src/content.c) is the content administration pages, which share
+# what admin.c draws with through adminkit.h; both headers are private to the
+# two. nav (src/nav.c, src/nav.h) is the admin area's navigation: its routes,
 # links and the widgets that draw them. Its header is private to nav.c and the
 # admin pages that splice it in, and server.c, which asks where a sign-in lands. core.c (results and the default allocator),
 # the public headers, the defiant program and demo under app/ and the tests use
@@ -32,8 +34,10 @@ ROOT="${1:?usage: check-seams.sh <root>}"
 
 owners_of() {
   case "$1" in
-    admin.h) printf '%s\n' 'admin.c server.c' ;;
-    nav.h) printf '%s\n' 'admin.c nav.c server.c' ;;
+    admin.h) printf '%s\n' 'admin.c content.c server.c' ;;
+    nav.h) printf '%s\n' 'admin.c content.c nav.c server.c' ;;
+    adminkit.h) printf '%s\n' 'admin.c content.c' ;;
+    content.h) printf '%s\n' 'admin.c content.c' ;;
     *) printf '\n' ;;
   esac
 }

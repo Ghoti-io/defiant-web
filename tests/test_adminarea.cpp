@@ -390,10 +390,12 @@ TEST_F(AdminArea, MoreListsOnlyWhatTheViewerMayReach) {
   Reply usher_more = Get("/admin/more", usher);
   ASSERT_EQ(200, usher_more.status);
   std::set<std::string> links = MoreLinks(usher_more.body);
-  EXPECT_EQ("/admin ", Join(links)) << "MORE: lists a page the viewer may not reach\n" << usher_more.body;
+  /* The content administration is a page of the area itself: what is on it is
+   * decided per type, so for someone who may manage none it says so. */
+  EXPECT_EQ("/admin /admin/content ", Join(links)) << "MORE: lists a page the viewer may not reach\n" << usher_more.body;
   /* CONTROL: with the grant for one more page, that page is listed, and only it. */
   Reply dave_more = Get("/admin/more", dave);
-  EXPECT_EQ("/admin /admin/menus ", Join(MoreLinks(dave_more.body)))
+  EXPECT_EQ("/admin /admin/content /admin/menus ", Join(MoreLinks(dave_more.body)))
       << "MORE: not the viewer's pages\n" << dave_more.body;
   /* The administrator's lists them all, the ones that have a page of their own. */
   SignIn("ada", &ada_);

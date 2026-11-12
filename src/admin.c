@@ -26,6 +26,8 @@
  */
 
 #include "admin.h"
+#include "adminkit.h"
+#include "content.h"
 #include "nav.h"
 
 #include <ghoti.io/cutil/allocator.h>
@@ -869,7 +871,7 @@ static const char kPublicBase[] =
     "font-src 'self'; frame-ancestors 'none'";
 static int kAssets;
 
-static void wipe(void * p, size_t n) {
+void wipe(void * p, size_t n) {
   volatile unsigned char * b = (volatile unsigned char *)p;
   size_t i;
   for (i = 0; i < n; i++) {
@@ -1044,7 +1046,7 @@ static int b64_val(char c) {
   return -1;
 }
 
-static int b64_decode(const char * in, unsigned char * out, size_t cap,
+int b64_decode(const char * in, unsigned char * out, size_t cap,
     size_t * out_n) {
   size_t n;
   size_t i = 0;
@@ -1087,7 +1089,7 @@ static int b64_decode(const char * in, unsigned char * out, size_t cap,
   return 0;
 }
 
-static char * b64_encode(const GDEFWEB_Allocator * alloc, const unsigned char * in,
+char * b64_encode(const GDEFWEB_Allocator * alloc, const unsigned char * in,
     size_t n, size_t * out_n) {
   static const char kTab[] =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -1136,7 +1138,7 @@ static int hex_nibble(char c) {
   return -1;
 }
 
-static int pct_decode(const char * in, size_t n, char * out, size_t cap,
+int pct_decode(const char * in, size_t n, char * out, size_t cap,
     size_t * out_n) {
   size_t i = 0;
   size_t o = 0;
@@ -1213,14 +1215,7 @@ int gdefweb_admin_authenticated(GDEFCORE_Catalog * catalog,
   return ok;
 }
 
-struct Page {
-  const GDEFWEB_Allocator * alloc;
-  char * p;
-  size_t n;
-  size_t cap;
-};
-
-static int page_add(struct Page * page, const char * s, size_t n) {
+int page_add(struct Page * page, const char * s, size_t n) {
   if (page->n + n + 1 < page->n) {
     return -1;
   }
@@ -1248,11 +1243,11 @@ static int page_add(struct Page * page, const char * s, size_t n) {
   return 0;
 }
 
-static int page_str(struct Page * page, const char * s) {
+int page_str(struct Page * page, const char * s) {
   return page_add(page, s, strlen(s));
 }
 
-static int page_esc(struct Page * page, const char * s, size_t n) {
+int page_esc(struct Page * page, const char * s, size_t n) {
   size_t i;
   for (i = 0; i < n; i++) {
     char c = s[i];
@@ -1277,7 +1272,7 @@ static int page_esc(struct Page * page, const char * s, size_t n) {
   return 0;
 }
 
-static int page_begin(struct Page * page, const char * title) {
+int page_begin(struct Page * page, const char * title) {
   ensure_assets();
   if (page_str(page, "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>") !=
           0 ||
@@ -1291,18 +1286,18 @@ static int page_begin(struct Page * page, const char * title) {
   return 0;
 }
 
-static int page_end(struct Page * page) {
+int page_end(struct Page * page) {
   return page_str(page, "</body></html>");
 }
 
-static void page_free(struct Page * page) {
+void page_free(struct Page * page) {
   gcu_allocator_free(page->alloc, page->p);
   page->p = NULL;
   page->n = 0;
   page->cap = 0;
 }
 
-static int take_page(struct Page * page, struct GDEFWEB_Admin_Reply * out) {
+int take_page(struct Page * page, struct GDEFWEB_Admin_Reply * out) {
   if (page_end(page) != 0) {
     page_free(page);
     return -1;
@@ -1318,7 +1313,7 @@ static int take_page(struct Page * page, struct GDEFWEB_Admin_Reply * out) {
   return 0;
 }
 
-static int session_raw(const char * session, unsigned char * raw, size_t cap,
+int session_raw(const char * session, unsigned char * raw, size_t cap,
     size_t * out_n) {
   if (session == NULL || session[0] == '\0') {
     return -1;
@@ -1326,7 +1321,7 @@ static int session_raw(const char * session, unsigned char * raw, size_t cap,
   return b64_decode(session, raw, cap, out_n);
 }
 
-static int token_meta(const unsigned char * raw, size_t n, char * form_id,
+int token_meta(const unsigned char * raw, size_t n, char * form_id,
     size_t form_cap, size_t * form_len, char * target, uint64_t * base) {
   size_t at;
   size_t fid;
@@ -1358,7 +1353,7 @@ static int token_meta(const unsigned char * raw, size_t n, char * form_id,
   return 0;
 }
 
-static int sign_b64(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
+int sign_b64(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
     GDEFCORE_Request * request, GDEFCORE_Keyring * keyring, const uint8_t * root,
     size_t root_len, const char * session, size_t session_len, const char * form_id,
     const char * target, const GDEFCORE_Value * values, size_t nvalues,
@@ -1377,7 +1372,7 @@ static int sign_b64(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
   return *out == NULL ? -1 : 0;
 }
 
-static int one_value(GDEFCORE_Value * value, const char * field, const char * text,
+int one_value(GDEFCORE_Value * value, const char * field, const char * text,
     const char ** slot, size_t * lens) {
   memset(value, 0, sizeof *value);
   value->size = sizeof *value;
@@ -1398,7 +1393,7 @@ static int one_value(GDEFCORE_Value * value, const char * field, const char * te
  * unpublished can still be found by its name: the published view would show
  * neither (SPEC decision 9).
  */
-static int field_copy(GDEFCORE_Catalog * catalog, const char * id, const char * field,
+int field_copy(GDEFCORE_Catalog * catalog, const char * id, const char * field,
     char * out, size_t cap) {
   char ** texts = NULL;
   size_t * lens = NULL;
@@ -1543,7 +1538,7 @@ static int save_panes(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
 /* A signed form's base is the entity's version when it was signed
  * (gdefcore_form_sign(), since story S6b), which every write moves, a draft
  * included: the form is current only while the entity has not moved. */
-static int base_matches(GDEFCORE_Catalog * catalog, const char * id, uint64_t base) {
+int base_matches(GDEFCORE_Catalog * catalog, const char * id, uint64_t base) {
   uint64_t current = 0;
   if (gdefcore_entity_version(catalog, id, GDEFCORE_PUBLIC_ID_LEN, &current) !=
       GDEFCORE_OK) {
@@ -1552,7 +1547,7 @@ static int base_matches(GDEFCORE_Catalog * catalog, const char * id, uint64_t ba
   return current == base;
 }
 
-static int redirect(struct GDEFWEB_Admin_Reply * out, const char * location) {
+int redirect(struct GDEFWEB_Admin_Reply * out, const char * location) {
   out->status = 303;
   out->reason = "See Other";
   out->type = "text/plain; charset=utf-8";
@@ -1563,7 +1558,7 @@ static int redirect(struct GDEFWEB_Admin_Reply * out, const char * location) {
 }
 
 /* A redirect to a path this file made (an admin page's own). */
-static int redirect_to(struct GDEFWEB_Admin_Reply * out, const char * path) {
+int redirect_to(struct GDEFWEB_Admin_Reply * out, const char * path) {
   if (snprintf(out->location_buf, sizeof out->location_buf, "%s", path) >=
       (int)sizeof out->location_buf) {
     return redirect(out, "/admin");
@@ -1579,7 +1574,7 @@ static int redirect_to(struct GDEFWEB_Admin_Reply * out, const char * path) {
  * cannot take it, loses the message and not the redirect: the write it reports
  * has been decided already.
  */
-static void say(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request, int kind,
+void say(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request, int kind,
     const char * text) {
   (void)gdefcore_message_post(catalog, request, kind, text, strlen(text));
 }
@@ -1760,7 +1755,7 @@ fail:
   return -1;
 }
 
-static int unknown_admin(const char * method, struct GDEFWEB_Admin_Reply * out);
+int unknown_admin(const char * method, struct GDEFWEB_Admin_Reply * out);
 
 /*
  * /admin/access: what is granted, and by whom. Read only. The rows come from
@@ -2077,7 +2072,7 @@ fail:
 /* Whether the request holds @p permission: the core's one question, asked by
  * the action's name. The undo page covers several kinds of thing, and each is
  * undone only by who holds what governs that kind. */
-static int holds(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
+int holds(GDEFCORE_Catalog * catalog, GDEFCORE_Request * request,
     const char * permission) {
   return gdefcore_access_permits(catalog, request, permission, strlen(permission));
 }
@@ -2263,7 +2258,7 @@ static int undo_menu_write(GDEFCORE_Catalog * catalog, GDEFCORE_Request * reques
   return redirect(out, "/admin/undo");
 }
 
-static size_t touched_confirm(GDEFCORE_Changeset * cs, char * buf, size_t cap);
+size_t touched_confirm(GDEFCORE_Changeset * cs, char * buf, size_t cap);
 
 /*
  * The undo of the last page structure edit, or template save that carried layouts.
@@ -3115,7 +3110,7 @@ static int page_number(struct Page * page, long v) {
 }
 
 /* A name in a URL: unreserved bytes as they are, the rest as %XX. */
-static int page_seg(struct Page * page, const char * s, size_t n) {
+int page_seg(struct Page * page, const char * s, size_t n) {
   size_t i;
   for (i = 0; i < n; i++) {
     unsigned char c = (unsigned char)s[i];
@@ -3171,7 +3166,7 @@ static int seg_decode(const char * in, size_t n, char * out, size_t cap,
 
 /* Form fields, heap-decoded, because a template body is longer than any buffer
  * the other pages keep. @p nth picks the nth field of that name. */
-static int form_field_alloc(const char * body, size_t n, const char * name,
+int form_field_alloc(const char * body, size_t n, const char * name,
     size_t nth, char ** out, size_t * out_n) {
   size_t nlen = strlen(name);
   size_t i = 0;
@@ -3525,7 +3520,7 @@ fail:
 
 /* Pages ---------------------------------------------------------------- */
 
-static int unknown_admin(const char * method, struct GDEFWEB_Admin_Reply * out);
+int unknown_admin(const char * method, struct GDEFWEB_Admin_Reply * out);
 
 static const char kDocsUrl[] =
     "https://github.com/Ghoti-io/defiant-core/blob/master/documentation/templates.md";
@@ -3706,7 +3701,7 @@ static int tpl_sign(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalog,
       form_id, id, values, 3, token);
 }
 
-static int page_token(struct Page * page, const char * token) {
+int page_token(struct Page * page, const char * token) {
   return page_str(page, "<input type=\"hidden\" name=\"token\" value=\"") != 0 ||
          page_esc(page, token, strlen(token)) != 0 || page_str(page, "\">");
 }
@@ -3943,7 +3938,7 @@ static int tpl_flash_redirect(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog 
  */
 /* The typed confirmation a high-risk apply wants: the machine names of what the
  * stage touched, each once, one to a line, sorted. 0 when they do not fit. */
-static size_t touched_confirm(GDEFCORE_Changeset * cs, char * buf, size_t cap) {
+size_t touched_confirm(GDEFCORE_Changeset * cs, char * buf, size_t cap) {
   char names[8][64];
   size_t nn = 0;
   size_t i;
@@ -4478,7 +4473,7 @@ done:
 
 /* Routing ---------------------------------------------------------------- */
 
-static int starts_with(const char * s, const char * prefix) {
+int starts_with(const char * s, const char * prefix) {
   return strncmp(s, prefix, strlen(prefix)) == 0;
 }
 
@@ -6009,7 +6004,7 @@ static int nav_splice(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * catalo
   return 0;
 }
 
-static int unknown_admin(const char * method, struct GDEFWEB_Admin_Reply * out) {
+int unknown_admin(const char * method, struct GDEFWEB_Admin_Reply * out) {
   if (strcmp(method, "GET") == 0) {
     out->status = 200;
     out->reason = "OK";
@@ -9218,6 +9213,11 @@ int gdefweb_admin_serve(const GDEFWEB_Allocator * alloc, GDEFCORE_Catalog * cata
       rc = undo_write(alloc, catalog, request, keyring, root, root_len,
           (const char *)raw, raw_n, body, body_len, out);
     }
+  } else if (gdefweb_content_path(path)) {
+    /* One page for every content type: which types, and which entities, is the
+     * core's access answer, asked inside. */
+    rc = gdefweb_content_serve(alloc, catalog, request, keyring, root, root_len,
+        (const char *)raw, raw_n, routes, method, path, body, body_len, out);
   } else if (strcmp(path, "/admin/menus") == 0) {
     /* The page is there for whoever the route's own check lets follow it. */
     if (!gdefweb_nav_follows(routes, request, path, "core.admin-menus")) {
