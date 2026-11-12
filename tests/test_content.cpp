@@ -30,6 +30,7 @@
 #include "edge_fixture.h"
 
 #include <ghoti.io/defiant-core/entity.h>
+#include <ghoti.io/defiant-storage/value.h>
 
 namespace {
 
@@ -216,17 +217,19 @@ TEST_F(ContentAdmin, ATypeTheLibraryNeverHeardOfHasItsListCreateEditAndDeletePag
   EXPECT_TRUE(Has(form.body, "<textarea name=\"summary\"")) << "a long field is a text area";
   EXPECT_FALSE(Has(form.body, "Delete")) << "nothing is stored yet, so nothing to delete";
   Reply saved = Post(path, ada_, TokenOf(form.body, "save"),
-      "&do=save&title=Soup&notes=" + Enc("stock\r\nsalt\r\n\r\npepper") + "&summary=");
+      "&do=save&title=Soup&notes=stock&notes=salt&notes=&notes=pepper&summary=");
   EXPECT_EQ(303, saved.status) << saved.body;
   EXPECT_EQ("/admin/content/site.recipe", HeaderValue(saved, "Location"));
   /* The list shows it, with a way to edit it. */
   Reply listed = Get("/admin/content/site.recipe", ada_);
   EXPECT_TRUE(Has(listed.body, ">Soup</td>"));
   EXPECT_TRUE(Has(listed.body, path.c_str()));
-  /* Edit: the form shows what is stored, one value of a many field to a line. */
+  /* Edit: the form shows what is stored, one control to each value of a many field. */
   Reply edit = Get(path.c_str(), ada_);
   EXPECT_TRUE(Has(edit.body, "value=\"Soup\""));
-  EXPECT_TRUE(Has(edit.body, "stock\nsalt\npepper")) << edit.body;
+  EXPECT_TRUE(Has(edit.body, "name=\"notes\" value=\"stock\"")) << edit.body;
+  EXPECT_TRUE(Has(edit.body, "name=\"notes\" value=\"salt\""));
+  EXPECT_TRUE(Has(edit.body, "name=\"notes\" value=\"pepper\""));
   Reply changed = Post(path, ada_, TokenOf(edit.body, "save"),
       "&do=save&title=Broth&notes=stock");
   EXPECT_EQ(303, changed.status);
@@ -253,12 +256,13 @@ TEST_F(ContentAdmin, ARequiredFieldAndALimitRefuseTheFormAndGiveWhatWasTypedBack
   Reply empty = Post(path, ada_, TokenOf(form.body, "save"), "&do=save&title=&notes=a");
   EXPECT_EQ(200, empty.status);
   EXPECT_TRUE(Has(empty.body, "does not fit the field"));
-  EXPECT_TRUE(Has(empty.body, ">a</textarea>")) << "what was typed comes back";
+  EXPECT_TRUE(Has(empty.body, "name=\"notes\" value=\"a\"")) << "what was typed comes back";
   Reply form2 = Get(path.c_str(), ada_);
   Reply long_title = Post(path, ada_, TokenOf(form2.body, "save"),
       "&do=save&title=" + Enc(std::string(200, 'x')));
   EXPECT_EQ(200, long_title.status);
   EXPECT_TRUE(Has(long_title.body, "does not fit the field"));
+  EXPECT_TRUE(Has(long_title.body, "check its length, range or form")) << "beside the field";
   EXPECT_TRUE(Has(long_title.body, std::string(200, 'x').c_str()));
   EXPECT_TRUE(Has(Get("/admin/content/site.recipe", ada_).body, "Nothing here yet."));
   /* CONTROL: the same form with a value that fits. */
@@ -498,4 +502,370 @@ TEST_F(ContentAdmin, EmptyingAFieldClearsItAndTheMenuLeadsToTheAdmin) {
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
+}
+
+/* ---- every field type, rows and groups (web content admin story 2) -------- */
+
+namespace {
+
+const char kInvoice[] = "site.invoice";
+const char kOrder[] = "site.order";
+const char kPrivate[] = "site.diary";
+
+/* The value of the first control of this name on a page. */
+std::string ValueOf(const std::string & page, const std::string & name) {
+  const std::string key = "name=\"" + name + "\"";
+  size_t at = page.find(key);
+  if (at == std::string::npos) {
+    return "<none>";
+  }
+  size_t end = page.find('>', at);
+  size_t v = page.find(" value=\"", at);
+  if (v == std::string::npos || v > end) {
+    return "<none>";
+  }
+  v += 8;
+  return page.substr(v, page.find('"', v) - v);
+}
+
+size_t CountOf(const std::string & page, const std::string & needle) {
+  size_t n = 0;
+  for (size_t at = page.find(needle); at != std::string::npos; at = page.find(needle, at + 1)) {
+    n++;
+  }
+  return n;
+}
+
+class ContentFields : public ContentAdmin {
+ protected:
+  static GDEFCORE_Field Typed(const char * name, int type, int required = 0, int many = 0) {
+    GDEFCORE_Field f = Field(name, required, many, 0);
+    f.type = type;
+    return f;
+  }
+
+  static GDEFCORE_Field Group(const char * name, const GDEFCORE_Field * kids, size_t n,
+      int required = 0, int many = 0) {
+    GDEFCORE_Field f = Field(name, required, many, 0);
+    f.type = GDEFSTOR_FIELD_GROUP;
+    f.children = kids;
+    f.child_count = n;
+    return f;
+  }
+
+  void OpenTyped() {
+    Open();
+    GDEFCORE_Catalog * catalog = Catalog();
+    GDEFCORE_Field invoice[8] = {Field("title", 1, 0, 0), Typed("qty", GDEFSTOR_FIELD_INTEGER),
+        Typed("price", GDEFSTOR_FIELD_DECIMAL), Typed("paid", GDEFSTOR_FIELD_BOOLEAN),
+        Typed("due", GDEFSTOR_FIELD_DATE), Typed("at", GDEFSTOR_FIELD_DATETIME),
+        Typed("customer", GDEFSTOR_FIELD_REFERENCE), Typed("ratio", GDEFSTOR_FIELD_FLOAT)};
+    invoice[1].has_range = 1;
+    invoice[1].range_min = 1;
+    invoice[1].range_max = 100;
+    invoice[2].scale = 2;
+    GDEFCORE_Field taxes[2] = {Typed("rate", GDEFSTOR_FIELD_DECIMAL, 1), Field("note", 0, 0, 0)};
+    taxes[0].scale = 2;
+    GDEFCORE_Field line_kids[4] = {Field("item", 1, 0, 0), Typed("qty", GDEFSTOR_FIELD_INTEGER),
+        Field("tags", 0, 1, 0), Group("taxes", taxes, 2, 0, 1)};
+    GDEFCORE_Field ship_kids[1] = {Field("city", 1, 0, 0)};
+    GDEFCORE_Field order[4] = {Field("number", 1, 0, 0), Group("lines", line_kids, 4, 1, 1),
+        Group("ship", ship_kids, 1, 0, 0), Field("memo", 0, 0, 0)};
+    GDEFCORE_Field diary[4] = {Field("title", 1, 0, 0), Typed("owner", GDEFSTOR_FIELD_REFERENCE),
+        Field("secret", 0, 0, 0), Group("entries", ship_kids, 1, 0, 1)};
+    diary[2].personal = 1;
+    diary[2].subject = "owner";
+    diary[2].subject_len = 5;
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_type_define(catalog, kInvoice, strlen(kInvoice),
+                               GDEFCORE_TYPE_CONTENT, invoice, 8));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_type_define(catalog, kOrder, strlen(kOrder),
+                               GDEFCORE_TYPE_CONTENT, order, 4));
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_type_define(catalog, kPrivate, strlen(kPrivate),
+                               GDEFCORE_TYPE_CONTENT, diary, 4));
+    for (const char * type : {kInvoice, kOrder, kPrivate}) {
+      for (const char * action : {"create", "read", "update", "delete"}) {
+        Allow(catalog, type, action, {"admin"});
+      }
+    }
+    gdefcore_catalog_destroy(catalog);
+  }
+
+  /* A form saved from a fresh entity: the path of its page and the reply. */
+  Reply SaveNew(const char * type, const std::string & rest, std::string * path_out = NULL) {
+    const std::string path = StartNew(ada_, type);
+    Reply form = Get(path.c_str(), ada_);
+    EXPECT_EQ(200, form.status) << path;
+    if (path_out != NULL) {
+      *path_out = path;
+    }
+    return Post(path, ada_, TokenOf(form.body, "save"), "&do=save" + rest);
+  }
+};
+
+}  // namespace
+
+TEST_F(ContentFields, EveryFieldTypeHasTheControlItNeeds) {
+  OpenTyped();
+  Reply form = Get(StartNew(ada_, kInvoice).c_str(), ada_);
+  EXPECT_TRUE(Has(form.body, "name=\"qty\" type=\"number\" step=\"1\" min=\"1\" max=\"100\""))
+      << form.body;
+  EXPECT_TRUE(Has(form.body, "name=\"price\" type=\"text\" inputmode=\"decimal\" "
+                              "title=\"a number with at most 2 digits after the point\""));
+  EXPECT_TRUE(Has(form.body, "<select name=\"paid\">"));
+  EXPECT_TRUE(Has(form.body, "name=\"due\" type=\"date\""));
+  EXPECT_TRUE(Has(form.body, "name=\"at\" type=\"text\" placeholder=\"2026-11-12T09:30:00Z\""));
+  EXPECT_TRUE(Has(form.body, "name=\"customer\" type=\"text\" list=\"content-refs\""));
+  EXPECT_TRUE(Has(form.body, "name=\"ratio\" type=\"text\" inputmode=\"decimal\""));
+  EXPECT_TRUE(Has(form.body, "<datalist id=\"content-refs\">"));
+}
+
+TEST_F(ContentFields, AValueOfTheWrongKindIsToldBesideItsFieldAndWhatWasTypedComesBack) {
+  OpenTyped();
+  std::string path;
+  Reply bad = SaveNew(kInvoice,
+      "&title=Rent&qty=abc&price=1.234&paid=maybe&due=2026-13-45&at=yesterday"
+      "&customer=not-an-id&ratio=lots",
+      &path);
+  EXPECT_EQ(200, bad.status);
+  for (const char * msg : {"must be a whole number", "has more digits after the point",
+           "must be yes or no", "must be a date, as 2026-11-12",
+           "must be a date and time", "must be the id of one of the entities offered",
+           "must be a number"}) {
+    EXPECT_TRUE(Has(bad.body, msg)) << msg;
+  }
+  EXPECT_EQ("abc", ValueOf(bad.body, "qty"));
+  EXPECT_EQ("1.234", ValueOf(bad.body, "price"));
+  EXPECT_EQ("Rent", ValueOf(bad.body, "title"));
+  EXPECT_TRUE(Has(bad.body, "aria-invalid=\"true\""));
+  EXPECT_TRUE(Has(Get("/admin/content/site.invoice", ada_).body, "Nothing here yet."))
+      << "nothing was written";
+  /* A value the core's range refuses is told beside its field too. */
+  Reply form = Get(path.c_str(), ada_);
+  Reply range = Post(path, ada_, TokenOf(form.body, "save"), "&do=save&title=Rent&qty=500");
+  EXPECT_EQ(200, range.status);
+  EXPECT_TRUE(Has(range.body, "does not fit the field: check its length, range or form"));
+  EXPECT_EQ("500", ValueOf(range.body, "qty"));
+}
+
+TEST_F(ContentFields, EveryTypedValueIsSavedAndShownAsTheCoreHoldsIt) {
+  OpenTyped();
+  const std::string made = Make(ada_, "Soup");  /* a recipe, to refer to */
+  Reply recipes = Get("/admin/content/site.recipe", ada_);
+  ASSERT_TRUE(Has(recipes.body, "Soup"));
+  std::string path;
+  Reply listed = Get(StartNew(ada_, kInvoice).c_str(), ada_);
+  const std::string rid = made.substr(made.rfind('/') + 1);
+  EXPECT_TRUE(Has(listed.body, ("value=\"" + rid + "\"").c_str())) << "the entity is offered by its id";
+  EXPECT_TRUE(Has(listed.body, "label=\"site.recipe: Soup\"")) << "and known by its name";
+  Reply saved = SaveNew(kInvoice,
+      "&title=Rent&qty=5&price=12.5&paid=true&due=2026-11-12&at=2026-11-12T09:30:00Z"
+      "&customer=" + rid + "&ratio=0.25",
+      &path);
+  EXPECT_EQ(303, saved.status) << saved.body;
+  Reply edit = Get(path.c_str(), ada_);
+  EXPECT_EQ("5", ValueOf(edit.body, "qty"));
+  EXPECT_EQ("12.50", ValueOf(edit.body, "price"));
+  EXPECT_TRUE(Has(edit.body, "<option value=\"true\" selected>"));
+  EXPECT_EQ("2026-11-12", ValueOf(edit.body, "due"));
+  EXPECT_EQ("2026-11-12T09:30:00Z", ValueOf(edit.body, "at"));
+  EXPECT_EQ(rid, ValueOf(edit.body, "customer"));
+  /* Blank an optional field: it is cleared; the rest stays. */
+  Reply cleared = Post(path, ada_, TokenOf(edit.body, "save"), "&do=save&title=Rent&qty=5");
+  EXPECT_EQ(303, cleared.status) << cleared.body;
+  Reply again = Get(path.c_str(), ada_);
+  EXPECT_EQ("5", ValueOf(again.body, "qty"));
+  EXPECT_EQ("", ValueOf(again.body, "customer")) << "a reference left blank is cleared";
+  EXPECT_EQ("", ValueOf(again.body, "price"));
+  EXPECT_TRUE(Has(again.body, "<option value=\"\" selected>") ||
+              !Has(again.body, "<option value=\"true\" selected>"));
+}
+
+TEST_F(ContentFields, ACustomerOnlyTheEditorMaySeeIsNotOfferedAndNotAccepted) {
+  OpenTyped();
+  const std::string made = Make(ada_, "Secret soup");
+  const std::string rid = made.substr(made.rfind('/') + 1);
+  /* Bob may write invoices and read them, and may not read recipes. */
+  std::string bob = Person("bob", {"create", "read", "update"}, kInvoice);
+  const std::string path = StartNew(bob, kInvoice);
+  Reply form = Get(path.c_str(), bob);
+  EXPECT_EQ(200, form.status);
+  EXPECT_FALSE(Has(form.body, rid.c_str())) << "not offered";
+  EXPECT_FALSE(Has(form.body, "Secret soup"));
+  Reply typed = Post(path, bob, TokenOf(form.body, "save"),
+      "&do=save&title=Rent&customer=" + rid);
+  EXPECT_EQ(200, typed.status);
+  EXPECT_TRUE(Has(typed.body, "must be the id of one of the entities offered"));
+  EXPECT_TRUE(Has(Get("/admin/content/site.invoice", ada_).body, "Nothing here yet."));
+  /* CONTROL: the editor, who may read recipes, may name it. */
+  Reply ok = Post(path, ada_, TokenOf(Get(path.c_str(), ada_).body, "save"),
+      "&do=save&title=Rent&customer=" + rid);
+  EXPECT_EQ(303, ok.status) << ok.body;
+}
+
+TEST_F(ContentFields, AManyFieldIsARowToEachValueAndRowsCanBeAddedWithoutSaving) {
+  OpenTyped();
+  std::string path;
+  Reply saved = SaveNew("site.recipe", "&title=Soup&notes=stock&notes=salt", &path);
+  EXPECT_EQ(303, saved.status);
+  Reply edit = Get(path.c_str(), ada_);
+  EXPECT_EQ(4u, CountOf(edit.body, "name=\"notes\"")) << "two values and two blank rows";
+  /* Add rows: the typed values stay, two more rows come, and nothing is written. */
+  Reply more = Post(path, ada_, TokenOf(edit.body, "save"),
+      "&do=more&title=Changed&notes=stock&notes=salt&notes=&notes=");
+  EXPECT_EQ(200, more.status);
+  EXPECT_EQ(6u, CountOf(more.body, "name=\"notes\""));
+  EXPECT_EQ("Changed", ValueOf(more.body, "title"));
+  EXPECT_FALSE(Has(more.body, "does not fit"));
+  EXPECT_TRUE(Has(Get("/admin/content/site.recipe", ada_).body, ">Soup</td>"))
+      << "adding rows wrote nothing";
+  /* Take a value away by blanking its row; the blanks are not values. */
+  Reply form = Get(path.c_str(), ada_);
+  Reply dropped = Post(path, ada_, TokenOf(form.body, "save"),
+      "&do=save&title=Soup&notes=&notes=salt&notes=&notes=");
+  EXPECT_EQ(303, dropped.status);
+  Reply after = Get(path.c_str(), ada_);
+  EXPECT_FALSE(Has(after.body, "value=\"stock\""));
+  EXPECT_TRUE(Has(after.body, "name=\"notes\" value=\"salt\""));
+  EXPECT_EQ(3u, CountOf(after.body, "name=\"notes\"")) << "one value and two blank rows";
+  /* More rows needs the form's token as every post does. */
+  Reply forged = PostRaw(path.c_str(), ada_, "token=x&do=more&title=Soup");
+  EXPECT_TRUE(Has(forged.body, "this was changed while you were editing"));
+}
+
+TEST_F(ContentFields, AGroupIsItemsThatKeepTheirIdentityAndCanBeAddedAndTakenAway) {
+  OpenTyped();
+  std::string path;
+  Reply start = Get(StartNew(ada_, kOrder).c_str(), ada_);
+  EXPECT_TRUE(Has(start.body, "name=\"lines-0--i\" value=\"0\"")) << "one blank item to fill";
+  EXPECT_TRUE(Has(start.body, "name=\"lines-0-item\""));
+  EXPECT_TRUE(Has(start.body, "name=\"lines-0-taxes-0-rate\"")) << "a group in a group";
+  EXPECT_FALSE(Has(start.body, "name=\"lines-1-item\""));
+  /* A group that is required wants an item. */
+  Reply none = SaveNew(kOrder, "&number=1", &path);
+  EXPECT_EQ(200, none.status);
+  EXPECT_TRUE(Has(none.body, "at least one is required"));
+  /* Two items, tags, a tax and a single group. */
+  Reply form = Get(path.c_str(), ada_);
+  Reply saved = Post(path, ada_, TokenOf(form.body, "save"),
+      "&do=save&number=1&memo=hi"
+      "&lines-0--i=0&lines-0-item=Pipe&lines-0-qty=2&lines-0-tags=a&lines-0-tags=b"
+      "&lines-0-taxes-0--i=0&lines-0-taxes-0-rate=7.5&lines-0-taxes-0-note=VAT"
+      "&lines-1--i=0&lines-1-item=Tap&lines-1-qty=1"
+      "&lines-2--i=0&lines-2-item=&lines-2-qty="
+      "&ship-0--i=0&ship-0-city=Oslo");
+  EXPECT_EQ(303, saved.status) << saved.body;
+  Reply edit = Get(path.c_str(), ada_);
+  EXPECT_EQ("Pipe", ValueOf(edit.body, "lines-0-item")) << edit.body;
+  EXPECT_EQ("Tap", ValueOf(edit.body, "lines-1-item"));
+  EXPECT_EQ("<none>", ValueOf(edit.body, "lines-3-item")) << "a blank row was not an item";
+  EXPECT_EQ("7.50", ValueOf(edit.body, "lines-0-taxes-0-rate"));
+  EXPECT_EQ("Oslo", ValueOf(edit.body, "ship-0-city"));
+  EXPECT_TRUE(Has(edit.body, "name=\"lines-2-item\"")) << "and a blank item to add";
+  EXPECT_EQ("hi", ValueOf(edit.body, "memo"));
+  const std::string id0 = ValueOf(edit.body, "lines-0--i");
+  const std::string id1 = ValueOf(edit.body, "lines-1--i");
+  EXPECT_NE("0", id0);
+  EXPECT_NE(id0, id1);
+  /* Save again, changing one item and taking the other away: the one that
+   * stays keeps its identity. */
+  Reply second = Post(path, ada_, TokenOf(edit.body, "save"),
+      "&do=save&number=1&memo=hi"
+      "&lines-0--i=" + id0 + "&lines-0-item=Pipe&lines-0-qty=3&lines-0-tags=a"
+      "&lines-0-taxes-0--i=" + ValueOf(edit.body, "lines-0-taxes-0--i") +
+      "&lines-0-taxes-0-rate=7.5"
+      "&lines-1--i=" + id1 + "&lines-1--rm=1&lines-1-item=Tap"
+      "&ship-0--i=" + ValueOf(edit.body, "ship-0--i") + "&ship-0-city=Oslo");
+  EXPECT_EQ(303, second.status) << second.body;
+  Reply last = Get(path.c_str(), ada_);
+  EXPECT_EQ("3", ValueOf(last.body, "lines-0-qty"));
+  EXPECT_EQ(id0, ValueOf(last.body, "lines-0--i"));
+  EXPECT_EQ("", ValueOf(last.body, "lines-1-item")) << "the one taken away is gone; a blank one is to fill";
+  EXPECT_FALSE(Has(last.body, "value=\"Tap\""));
+  /* A value of the wrong kind inside an item is told beside it. */
+  Reply wrong = Post(path, ada_, TokenOf(last.body, "save"),
+      "&do=save&number=1&lines-0--i=" + id0 + "&lines-0-item=Pipe&lines-0-qty=many"
+      "&lines-0-taxes-0--i=0&lines-0-taxes-0-rate=lots");
+  EXPECT_EQ(200, wrong.status);
+  EXPECT_TRUE(Has(wrong.body, "must be a whole number"));
+  EXPECT_TRUE(Has(wrong.body, "must be a number"));
+  EXPECT_EQ("many", ValueOf(wrong.body, "lines-0-qty"));
+  /* A required field of an item that is there is wanted. */
+  Reply missing = Post(path, ada_, TokenOf(Get(path.c_str(), ada_).body, "save"),
+      "&do=save&number=1&lines-0--i=" + id0 + "&lines-0-item=&lines-0-qty=1");
+  EXPECT_EQ(200, missing.status);
+  EXPECT_TRUE(Has(missing.body, "is required"));
+  /* More items without saving. */
+  Reply more = Post(path, ada_, TokenOf(Get(path.c_str(), ada_).body, "save"),
+      "&do=more&number=1&lines-0--i=" + id0 + "&lines-0-item=Pipe&lines-0-qty=3");
+  EXPECT_EQ(200, more.status);
+  EXPECT_TRUE(Has(more.body, "name=\"lines-1-item\""));
+  EXPECT_EQ("Pipe", ValueOf(more.body, "lines-0-item"));
+}
+
+TEST_F(ContentFields, ATypeWithAPersonalFieldKeepsItsGroupsAsTheyAreAndSaysSo) {
+  OpenTyped();
+  std::string path;
+  Reply saved = SaveNew(kPrivate, "&title=Day+one", &path);
+  EXPECT_EQ(303, saved.status) << saved.body;
+  Reply edit = Get(path.c_str(), ada_);
+  EXPECT_TRUE(Has(edit.body, "entries is kept as it is: this type holds personal values"));
+  EXPECT_FALSE(Has(edit.body, "name=\"entries-0-city\""));
+  EXPECT_FALSE(Has(edit.body, "name=\"secret\""));
+  Reply changed = Post(path, ada_, TokenOf(edit.body, "save"), "&do=save&title=Day+two");
+  EXPECT_EQ(303, changed.status);
+  EXPECT_TRUE(Has(Get(path.c_str(), ada_).body, "value=\"Day two\""));
+}
+
+TEST_F(ContentFields, AFieldThePersonMayNotUpdateIsNotOnTheirFormAndIsKeptAsItWas) {
+  OpenTyped();
+  {
+    /* The memo of an order is the editor's alone: a permission of its own. */
+    GDEFCORE_Catalog * catalog = Catalog();
+    GDEFCORE_Permission p;
+    memset(&p, 0, sizeof p);
+    p.size = sizeof p;
+    p.label = "update memo of order";
+    p.label_len = strlen(p.label);
+    p.module_name = "site";
+    p.module_name_len = 4;
+    p.action = "update";
+    p.action_len = 6;
+    p.condition = GDEFCORE_ACCESS_ANY;
+    p.type_name = kOrder;
+    p.type_name_len = strlen(kOrder);
+    p.field = "memo";
+    p.field_len = 4;
+    ASSERT_EQ(GDEFCORE_OK, gdefcore_access_declare(catalog, &p));
+    ASSERT_EQ(GDEFCORE_OK,
+        gdefcore_access_grant(catalog, "admin", 5, p.label, p.label_len, "core.role", 9));
+    gdefcore_catalog_destroy(catalog);
+  }
+  std::string path;
+  Reply made = SaveNew(kOrder,
+      "&number=1&memo=keep&lines-0--i=0&lines-0-item=Pipe&lines-0-qty=1"
+      "&lines-0-tags=a&ship-0--i=0&ship-0-city=Oslo",
+      &path);
+  ASSERT_EQ(303, made.status) << made.body;
+  const std::string eve = Person("eve", {"read", "update"}, kOrder);
+  Reply form = Get(path.c_str(), eve);
+  EXPECT_EQ(200, form.status);
+  EXPECT_TRUE(Has(form.body, "name=\"number\""));
+  EXPECT_FALSE(Has(form.body, "name=\"memo\"")) << "not hers to change, so not on her form";
+  Reply saved = Post(path, eve, TokenOf(form.body, "save"),
+      "&do=save&number=2&lines-0--i=" + ValueOf(form.body, "lines-0--i") +
+      "&lines-0-item=Pipe&lines-0-qty=1&lines-0-tags=a&ship-0--i=" +
+      ValueOf(form.body, "ship-0--i") + "&ship-0-city=Oslo");
+  EXPECT_EQ(303, saved.status) << saved.body;
+  Reply after = Get(path.c_str(), ada_);
+  EXPECT_EQ("2", ValueOf(after.body, "number"));
+  EXPECT_EQ("keep", ValueOf(after.body, "memo")) << "what she could not change is as it was";
+  EXPECT_EQ("Pipe", ValueOf(after.body, "lines-0-item"));
+  EXPECT_EQ("Oslo", ValueOf(after.body, "ship-0-city"));
+  /* A memo she posts anyway is not taken. */
+  Reply forged = Post(path, eve, TokenOf(Get(path.c_str(), eve).body, "save"),
+      "&do=save&number=2&memo=forged&lines-0--i=" + ValueOf(after.body, "lines-0--i") +
+      "&lines-0-item=Pipe&lines-0-qty=1&ship-0--i=" + ValueOf(after.body, "ship-0--i") +
+      "&ship-0-city=Oslo");
+  EXPECT_EQ(303, forged.status);
+  EXPECT_EQ("keep", ValueOf(Get(path.c_str(), ada_).body, "memo"));
 }
