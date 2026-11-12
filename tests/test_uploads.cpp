@@ -28,6 +28,7 @@
  */
 
 #include "edge_fixture.h"
+#include "portable.h"
 
 #include <ghoti.io/defiant-core/entity.h>
 #include <ghoti.io/defiant-core/upload.h>
@@ -108,7 +109,8 @@ class Uploads : public Edge {
       EXPECT_EQ(GDEFCORE_OK, gdefcore_access_grant(catalog, "admin", 5, label.c_str(), label.size(), "core.role", 9));
     }
     gdefcore_catalog_destroy(catalog);
-    char tmpl[] = "/tmp/gdefweb-uploads-XXXXXX";
+    std::string tmpl_str = PortableTempDir() + "/gdefweb-uploads-XXXXXX";
+    char * tmpl = &tmpl_str[0];
     ASSERT_NE((char *)NULL, mkdtemp(tmpl));
     dir_ = tmpl;
     ASSERT_EQ(GDEFWEB_OK, gdefweb_blob_dir_open(tmpl, &blobs_));

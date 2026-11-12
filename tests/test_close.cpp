@@ -39,6 +39,7 @@
  */
 
 #include "edge_fixture.h"
+#include "portable.h"
 
 #include <ghoti.io/defiant-core/entity.h>
 #include <ghoti.io/defiant-core/upload.h>
@@ -51,21 +52,6 @@
 namespace {
 
 namespace fs = std::filesystem;
-
-std::string Enc(const std::string & in) {
-  std::string out;
-  for (unsigned char c : in) {
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
-        c == '_' || c == '.') {
-      out += (char)c;
-    } else {
-      char buf[4];
-      snprintf(buf, sizeof buf, "%%%02X", c);
-      out += buf;
-    }
-  }
-  return out;
-}
 
 /* The value of the first control of this name on a page. */
 std::string ValueOf(const std::string & page, const std::string & name) {
@@ -171,7 +157,8 @@ class Close : public Edge {
       }
     }
     gdefcore_catalog_destroy(catalog);
-    char tmpl[] = "/tmp/gdefweb-close-XXXXXX";
+    std::string tmpl_str = PortableTempDir() + "/gdefweb-close-XXXXXX";
+    char * tmpl = &tmpl_str[0];
     ASSERT_NE((char *)NULL, mkdtemp(tmpl));
     dir_ = tmpl;
     ASSERT_EQ(GDEFWEB_OK, gdefweb_blob_dir_open(tmpl, &blobs_));
